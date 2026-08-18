@@ -143,15 +143,39 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    nebo se podle nového cíle vybere jiný a příkaz se přezadá. Ve formuláři se
    zadává vždy základní cíl 1:1.
 
-   U obchodů s více kontrakty, než kolik jich má runner
+   U obchodů, které drží více kontraktů, než kolik jich zabírá runner
    (`trading.runner_quantity`, výchozí 1), je vedle tlačítek cíle i sekce
    **Runner**. Runner je část pozice prodávaná samostatným příkazem
    s vlastním cílem — kliknutím na násobek se zapne (nebo se mu cíl změní),
    *Zrušit runner* ho vypne a prodej se sloučí zpět do jednoho příkazu.
    SL sdílí runner se zbytkem pozice, takže na stopu se prodává všechno.
-   Když hlavní část dosáhne PT, obchod zůstává otevřený, dokud runner
-   nedoběhne; výsledek se pak skládá z obou částí. Runner jde zapnout
-   před nákupem i za běhu a přežije restart aplikace.
+   Když hlavní část dosáhne PT (nebo ji prodáte tlačítkem), obchod zůstává
+   otevřený, dokud runner nedoběhne; cíl běžícího runneru jde posouvat
+   i poté. Runner jde zapnout před nákupem i za běhu a přežije restart
+   aplikace.
+
+   Prodaný runner se zúčtuje do realizovaného výsledku obchodu a jeho
+   místo se uvolní — sekce Runner se znovu objeví a ze zbývající hlavní
+   části lze oddělit **další runner**, dokud pozice drží víc kontraktů,
+   než runner zabírá. Výsledek uzavřeného obchodu sčítá hlavní část se
+   všemi prodanými runnery (v závěrečné zprávě jako „runnery N ks ±X USD")
+   a stejně tak průběžný P/L i *Zisk na PT*.
+
+   U nakoupené pozice je na konci sekce Cíl tlačítko **Uzavřít pozici** —
+   zruší zajišťovací příkaz a prodá hlavní část trhem (bez runneru celou
+   pozici); případný runner běží dál se svým cílem. Obdobně **Uzavřít
+   runner** na konci sekce Runner prodá trhem jen runner a hlavní část
+   nechá být. Tržní prodej se v obou případech zadává až po potvrzení
+   zrušení podmíněného příkazu, aby se neprodalo víc kusů, než pozice
+   drží. Prodej všeho najednou zůstává v dialogu *Zrušit vybraný*.
+
+   Tlačítka se zobrazují jen tehdy, když má jejich akce smysl, a mizí
+   s částí pozice, které se týkají: po prodeji hlavní části zmizí sekce
+   Cíl (její cíl už není co řídit — spolu s ní zmizí i *Zrušit runner*,
+   protože sloučení už není kam provést), po prodeji runneru jeho sekce,
+   a během uzavírání trhem obojí, aby do rozjetého prodeje nešlo zasahovat.
+   Stejná pravidla vynucuje i aplikace sama, takže se změna cíle nemůže
+   omylem zapsat do tržního příkazu.
 
    Sloupce *Zisk na PT* a *Ztráta na SL* říkají, jak obchod dopadne, když
    podklad dosáhne cílové, resp. stop úrovně. Opce se přecení z implikované

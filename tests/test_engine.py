@@ -823,6 +823,265 @@ class TestRunner(ZakladTestu):
         self.assertGreater(flow.expected_profit, bez_runneru)
 
 
+class TestUzavreniCastiPozice(ZakladTestu):
+    """Okamžité uzavření hlavní části nebo runneru tržním příkazem."""
+
+    async def nakup(self, flow, mnozstvi):
+        """Simuluje vyplnění nákupu a zadání zajišťovacích příkazů."""
+        self.ib.fill(flow.entry_trade, mnozstvi, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+
+    async def test_uzavreni_cele_pozice_bez_runneru(self):
+        flow = await self.zaloz_call(quantity=2)
+        await self.nakup(flow, 2)
+        podmineny = flow.exit_trade
+
+        await self.engine.close_main(flow.id)
+        # Podmíněný příkaz se ruší; tržní prodej až po potvrzení
+        self.assertIn(podmineny, self.ib.cancelled)
+
+        await self.engine._tick()
+        trzni = flow.exit_trade
+        self.assertEqual(trzni.order.orderType, "MKT")
+        self.assertEqual(int(trzni.order.totalQuantity), 2)
+        self.assertEqual(trzni.order.conditions, [])
+
+        self.ib.fill(trzni, 2, 3.40)
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        self.assertEqual(flow.exit_reason, "ručně")
+        self.assertAlmostEqual(flow.unrealized_pnl, 80.0)
+
+    async def test_uzavreni_hlavni_casti_runner_bezi_dal(self):
+        flow = await self.zaloz_call(quantity=3)
+        await self.engine.set_runner(flow.id, 2.0)
+        await self.nakup(flow, 3)
+        runner_trade = flow.runner_trade
+
+        await self.engine.close_main(flow.id)
+        await self.engine._tick()
+
+        trzni = flow.exit_trade
+        self.assertEqual(trzni.order.orderType, "MKT")
+        self.assertEqual(int(trzni.order.totalQuantity), 2)
+        # Runner zůstává nedotčený
+        self.assertIs(flow.runner_trade, runner_trade)
+        self.assertNotIn(runner_trade, self.ib.cancelled)
+
+        self.ib.fill(trzni, 2, 3.40)
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.EXIT_ARMED)
+        self.assertIn("runner", flow.message)
+
+        # Runner později dosáhne cíle a obchod se uzavře s kombinovaným výsledkem
+        self.ib.price_underlying = 238.5
+        self.ib.fill(flow.runner_trade, 1, 5.00)
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        self.assertAlmostEqual(flow.unrealized_pnl, 280.0)
+
+    async def test_uzavreni_runneru_hlavni_bezi_dal(self):
+        flow = await self.zaloz_call(quantity=3)
+        await self.engine.set_runner(flow.id, 2.0)
+        await self.nakup(flow, 3)
+        hlavni = flow.exit_trade
+        podmineny_runner = flow.runner_trade
+
+        await self.engine.close_runner(flow.id)
+        self.assertIn(podmineny_runner, self.ib.cancelled)
+
+        await self.engine._tick()
+        trzni = flow.runner_trade
+        self.assertEqual(trzni.order.orderType, "MKT")
+        self.assertEqual(int(trzni.order.totalQuantity), 1)
+        # Hlavní příkaz zůstává v původním množství - žádné převzetí kusů
+        self.assertIs(flow.exit_trade, hlavni)
+        self.assertEqual(int(hlavni.order.totalQuantity), 2)
+
+        self.ib.fill(trzni, 1, 3.20)
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.EXIT_ARMED)
+        # Prodaný runner se zúčtoval a jeho pole se uvolnila pro další runner
+        self.assertFalse(flow.runner_active)
+        self.assertEqual(flow.runner_sold_quantity, 1)
+        self.assertAlmostEqual(flow.runner_realized_pnl, 20.0)
+
+        # Hlavní část dosáhne PT a obchod se uzavře
+        self.ib.price_underlying = 236.0
+        self.ib.fill(hlavni, 2, 4.00)
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        # (4,00 − 3,00) × 2 + (3,20 − 3,00) × 1, vše × 100
+        self.assertAlmostEqual(flow.unrealized_pnl, 220.0)
+
+    async def test_uzavrit_nelze_pred_nakupem(self):
+        flow = await self.zaloz_call(quantity=2)
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.close_main(flow.id)
+        self.assertIn("nakoupenou pozici", str(ctx.exception))
+
+    async def test_uzavrit_runner_bez_runneru_nelze(self):
+        flow = await self.zaloz_call(quantity=2)
+        await self.nakup(flow, 2)
+        with self.assertRaises(ValueError):
+            await self.engine.close_runner(flow.id)
+
+    async def test_opakovane_uzavreni_se_odmitne(self):
+        flow = await self.zaloz_call(quantity=2)
+        await self.nakup(flow, 2)
+        await self.engine.close_main(flow.id)
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.close_main(flow.id)
+        self.assertIn("už probíhá", str(ctx.exception))
+
+    async def test_cil_runneru_lze_menit_i_pri_uzavirani_hlavni_casti(self):
+        # Uzavření hlavní části se runneru netýká - jeho cíl musí jít dál posouvat
+        flow = await self.zaloz_call(quantity=3)
+        await self.engine.set_runner(flow.id, 2.0)
+        await self.nakup(flow, 3)
+        await self.engine.close_main(flow.id)
+
+        await self.engine.set_runner(flow.id, 3.0)
+        self.assertAlmostEqual(flow.runner_trade.order.conditions[0].price, 241.0)
+
+    async def test_po_prodeji_hlavni_casti_nelze_runner_zrusit(self):
+        # Sloučení zpět není kam provést - runner lze jen uzavřít, nebo nechat běžet
+        flow = await self.zaloz_call(quantity=3)
+        await self.engine.set_runner(flow.id, 2.0)
+        await self.nakup(flow, 3)
+        self.ib.price_underlying = 236.0
+        self.ib.fill(flow.exit_trade, 2, 4.00)
+        await self.engine._tick()
+
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.cancel_runner(flow.id)
+        self.assertIn("jen uzavřít trhem", str(ctx.exception))
+
+        # Uzavření runneru trhem naopak projít musí
+        await self.engine.close_runner(flow.id)
+        await self.engine._tick()
+        self.assertEqual(flow.runner_trade.order.orderType, "MKT")
+
+    async def test_cil_nelze_menit_po_prodeji_hlavni_casti(self):
+        # Hlavní část je prodaná, runner běží - její cíl už nemá co řídit
+        flow = await self.zaloz_call(quantity=3)
+        await self.engine.set_runner(flow.id, 2.0)
+        await self.nakup(flow, 3)
+        self.ib.price_underlying = 236.0
+        self.ib.fill(flow.exit_trade, 2, 4.00)
+        await self.engine._tick()
+
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.change_profit_target(flow.id, 240.0)
+        self.assertIn("nelze měnit", str(ctx.exception))
+
+    async def test_cil_nelze_menit_behem_uzavirani(self):
+        # Během uzavírání trhem by úprava přidala podmínky do tržního příkazu
+        flow = await self.zaloz_call(quantity=2)
+        await self.nakup(flow, 2)
+        await self.engine.close_main(flow.id)
+        await self.engine._tick()
+        self.assertEqual(flow.exit_trade.order.orderType, "MKT")
+
+        with self.assertRaises(ValueError):
+            await self.engine.change_profit_target(flow.id, 240.0)
+        # Tržní příkaz zůstal bez podmínek
+        self.assertEqual(flow.exit_trade.order.conditions, [])
+
+    async def test_behem_uzavirani_nelze_menit_runner(self):
+        flow = await self.zaloz_call(quantity=3)
+        await self.nakup(flow, 3)
+        await self.engine.close_main(flow.id)
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.set_runner(flow.id, 2.0)
+        self.assertIn("uzavírání", str(ctx.exception))
+
+
+class TestDalsihoRunneru(ZakladTestu):
+    """Po prodeji runneru lze z hlavní části oddělit další."""
+
+    async def nakup(self, flow, mnozstvi):
+        """Simuluje vyplnění nákupu a zadání zajišťovacích příkazů."""
+        self.ib.fill(flow.entry_trade, mnozstvi, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+
+    async def test_po_dosazeni_cile_runneru_lze_zapnout_dalsi(self):
+        # 3 ks: runner 1 ks dosáhne cíle, ze zbylých 2 ks lze oddělit další
+        flow = await self.zaloz_call(quantity=3)
+        await self.engine.set_runner(flow.id, 2.0)
+        await self.nakup(flow, 3)
+
+        self.ib.price_underlying = 238.5
+        self.ib.fill(flow.runner_trade, 1, 5.00)
+        await self.engine._tick()
+
+        self.assertFalse(flow.runner_active)
+        self.assertEqual(flow.held_quantity, 2)
+        self.assertAlmostEqual(flow.runner_realized_pnl, 200.0)
+
+        # Druhý runner se oddělí ze zbývající hlavní části
+        await self.engine.set_runner(flow.id, 3.0)
+        self.assertTrue(flow.runner_active)
+        self.assertEqual(int(flow.exit_trade.order.totalQuantity), 1)
+        self.assertEqual(int(flow.runner_trade.order.totalQuantity), 1)
+        self.assertAlmostEqual(flow.runner_trade.order.conditions[0].price, 241.0)
+
+    async def test_dalsi_runner_po_uzavreni_trhem(self):
+        flow = await self.zaloz_call(quantity=3)
+        await self.engine.set_runner(flow.id, 2.0)
+        await self.nakup(flow, 3)
+
+        await self.engine.close_runner(flow.id)
+        await self.engine._tick()
+        self.ib.fill(flow.runner_trade, 1, 3.20)
+        await self.engine._tick()
+        self.assertFalse(flow.runner_active)
+
+        await self.engine.set_runner(flow.id, 2.5)
+        self.assertTrue(flow.runner_active)
+        self.assertAlmostEqual(flow.runner_trade.order.conditions[0].price, 239.5)
+
+    async def test_dalsi_runner_vyzaduje_zbyvajici_mnozstvi(self):
+        # Po prodeji runneru zbývá 1 ks - další runner už oddělit nejde
+        flow = await self.zaloz_call(quantity=2)
+        await self.engine.set_runner(flow.id, 2.0)
+        await self.nakup(flow, 2)
+        self.ib.fill(flow.runner_trade, 1, 5.00)
+        await self.engine._tick()
+
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.set_runner(flow.id, 3.0)
+        self.assertIn("větším množstvím", str(ctx.exception))
+
+    async def test_vysledek_scita_vsechny_casti(self):
+        # Dva runnery prodané postupně + hlavní část na PT
+        flow = await self.zaloz_call(quantity=3)
+        await self.engine.set_runner(flow.id, 2.0)
+        await self.nakup(flow, 3)
+
+        self.ib.fill(flow.runner_trade, 1, 5.00)     # první runner +200
+        await self.engine._tick()
+        await self.engine.set_runner(flow.id, 3.0)
+        self.ib.fill(flow.runner_trade, 1, 6.00)     # druhý runner +300
+        await self.engine._tick()
+
+        self.assertEqual(flow.runner_sold_quantity, 2)
+        self.assertAlmostEqual(flow.runner_realized_pnl, 500.0)
+        self.assertEqual(int(flow.exit_trade.order.totalQuantity), 1)
+
+        # Hlavní část (1 ks) dosáhne PT
+        self.ib.price_underlying = 236.0
+        self.ib.fill(flow.exit_trade, 1, 4.00)
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        # +200 + 300 + (4,00 − 3,00) × 1 × 100
+        self.assertAlmostEqual(flow.unrealized_pnl, 600.0)
+        self.assertIn("runnery 2 ks", flow.message)
+
+
 class TestZruseniFlow(ZakladTestu):
     """Rušení obchodů."""
 

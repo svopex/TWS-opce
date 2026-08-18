@@ -86,7 +86,7 @@ account:
   #
   # Dokud TWS hodnotu nepošle, aplikace na to upozorní ve formuláři
   # a množství opcí nedoporučí.
-  size: 5000.0
+  size: 0
 
   # Kolik procent účtu se smí prodělat na jednom obchodu.
   # Při účtu 5000 USD a hodnotě 1.0 je riskovaná částka 50 USD.

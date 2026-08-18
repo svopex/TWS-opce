@@ -52,6 +52,10 @@ SAVED_FIELDS = (
     "runner_quantity",
     "runner_order_id",
     "runner_fill_price",
+    "runner_sold_quantity",
+    "runner_realized_pnl",
+    "main_close_requested",
+    "runner_close_requested",
     "entry_cancel_requested",
 )
 

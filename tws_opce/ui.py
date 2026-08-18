@@ -81,13 +81,19 @@ BODY_SLOT = """
         :class="['radek-nasobky', props.row.vybrany ? 'radek-vybrany' : '']"
         @click="() => $parent.$emit('radekKlik', props.row)">
     <q-td :colspan="props.cols.length" class="bunka-nasobku">
-      <span class="popisek-nasobky">Cíl:</span>
-      <q-btn v-for="n in props.row.nasobky" :key="n" dense size="sm"
-             class="q-ml-xs tlacitko-nasobek"
-             :outline="props.row.aktivni_nasobek !== n"
-             :color="props.row.aktivni_nasobek === n ? 'primary' : 'grey-7'"
-             :label="String(n).replace('.', ',') + '×'"
-             @click.stop="() => $parent.$emit('nasobek', {id: props.row.id, nasobek: n})" />
+      <template v-if="props.row.cil_mozny">
+        <span class="popisek-nasobky">Cíl:</span>
+        <q-btn v-for="n in props.row.nasobky" :key="n" dense size="sm"
+               class="q-ml-xs tlacitko-nasobek"
+               :outline="props.row.aktivni_nasobek !== n"
+               :color="props.row.aktivni_nasobek === n ? 'primary' : 'grey-7'"
+               :label="String(n).replace('.', ',') + '×'"
+               @click.stop="() => $parent.$emit('nasobek', {id: props.row.id, nasobek: n})" />
+      </template>
+      <q-btn v-if="props.row.lze_uzavrit" dense size="sm" outline color="red-8"
+             class="q-ml-sm tlacitko-nasobek"
+             label="Uzavřít pozici"
+             @click.stop="() => $parent.$emit('uzavritPozici', {id: props.row.id})" />
       <template v-if="props.row.runner_mozny">
         <span class="popisek-nasobky popisek-runner">Runner:</span>
         <q-btn v-for="n in props.row.nasobky" :key="'r' + n" dense size="sm"
@@ -96,10 +102,14 @@ BODY_SLOT = """
                :color="props.row.aktivni_runner_nasobek === n ? 'orange-8' : 'grey-7'"
                :label="String(n).replace('.', ',') + '×'"
                @click.stop="() => $parent.$emit('runnerNasobek', {id: props.row.id, nasobek: n})" />
-        <q-btn v-if="props.row.runner_aktivni" dense size="sm" outline color="red-8"
+        <q-btn v-if="props.row.runner_lze_zrusit" dense size="sm" outline color="red-8"
                class="q-ml-sm tlacitko-nasobek"
                label="Zrušit runner"
                @click.stop="() => $parent.$emit('runnerZrusit', {id: props.row.id})" />
+        <q-btn v-if="props.row.lze_uzavrit_runner" dense size="sm" outline color="red-8"
+               class="q-ml-xs tlacitko-nasobek"
+               label="Uzavřít runner"
+               @click.stop="() => $parent.$emit('uzavritRunner', {id: props.row.id})" />
       </template>
     </q-td>
   </q-tr>
@@ -288,6 +298,9 @@ class TradingUI:
             # Tlačítka runneru - vlastní cíl pro část pozice
             self.table.on("runnerNasobek", self._on_runner_multiple)
             self.table.on("runnerZrusit", self._on_runner_cancel)
+            # Okamžité uzavření části pozice tržním příkazem
+            self.table.on("uzavritPozici", self._on_close_main)
+            self.table.on("uzavritRunner", self._on_close_runner)
 
             self.detail_label = ui.label("Kliknutím na řádek přepnete na daný obchod.").classes(
                 "detail-radku"
@@ -526,6 +539,38 @@ class TradingUI:
         ui.notify(f"{flow.id}: runner zrušen.", type="warning")
         self._refresh()
 
+    async def _on_close_main(self, event: Any) -> None:
+        """Prodá trhem hlavní část pozice; bez runneru celou pozici."""
+        data = event.args or {}
+        flow = self.engine.flows.get(data.get("id", ""))
+        if flow is None:
+            return
+
+        try:
+            await self.engine.close_main(flow.id)
+        except Exception as exc:
+            ui.notify(str(exc), type="negative")
+            return
+
+        ui.notify(f"{flow.id}: {flow.message}", type="warning")
+        self._refresh()
+
+    async def _on_close_runner(self, event: Any) -> None:
+        """Prodá trhem runner; hlavní část pozice běží dál."""
+        data = event.args or {}
+        flow = self.engine.flows.get(data.get("id", ""))
+        if flow is None:
+            return
+
+        try:
+            await self.engine.close_runner(flow.id)
+        except Exception as exc:
+            ui.notify(str(exc), type="negative")
+            return
+
+        ui.notify(f"{flow.id}: {flow.message}", type="warning")
+        self._refresh()
+
     async def _submit(self) -> None:
         """Odešle zadání obchodu do trhu."""
         symbol, entry, pt, sl = self._form_values()
@@ -738,21 +783,59 @@ class TradingUI:
                 if abs(runner_aktualni - nabidnuty) < 0.01:
                     runner_nasobek = nabidnuty
                     break
+        # Sekce Cíl mizí, jakmile hlavní část přestane běžet - po jejím prodeji
+        # nebo během uzavírání trhem už cíl nemá co řídit
+        cil_mozny = (
+            flow.state.is_active
+            and flow.state != FlowState.CLOSING
+            and flow.exit_fill_price is None
+            and not flow.main_close_requested
+        )
+        lze_uzavrit = (
+            flow.state == FlowState.EXIT_ARMED
+            and flow.fill_price is not None
+            and flow.exit_fill_price is None
+            and not flow.main_close_requested
+        )
+        lze_uzavrit_runner = (
+            flow.state == FlowState.EXIT_ARMED
+            and flow.runner_active
+            and flow.runner_order_id is not None
+            and flow.runner_fill_price is None
+            and not flow.runner_close_requested
+        )
         runner_velikost = (
             flow.runner_quantity if flow.runner_active else self.cfg.trading.runner_quantity
         )
+        # Sekce Runner mizí, jakmile přestane dávat smysl: runner je prodaný,
+        # právě se uzavírá, nebo se uzavírá pozice a runner ještě nebyl zapnut
         runner_mozny = (
             flow.state.is_active
-            and (flow.filled_quantity or flow.quantity) > runner_velikost
+            and flow.state != FlowState.CLOSING
+            and flow.held_quantity > runner_velikost
+            and flow.runner_fill_price is None
+            and not flow.runner_close_requested
+            and (flow.runner_active or not flow.main_close_requested)
         )
         return {
             "id": flow.id,
             "live": flow.state.is_active and self.engine.is_monitoring,
             # Podklady pro řádek s tlačítky posunu cíle
-            "lze_menit": flow.state.is_active,
+            "lze_menit": cil_mozny or runner_mozny or lze_uzavrit or lze_uzavrit_runner,
+            "cil_mozny": cil_mozny,
             "runner_mozny": runner_mozny,
             "runner_aktivni": flow.runner_active,
             "aktivni_runner_nasobek": runner_nasobek,
+            # Tlačítka okamžitého uzavření - jen u částí, které skutečně běží
+            "lze_uzavrit": lze_uzavrit,
+            "lze_uzavrit_runner": lze_uzavrit_runner,
+            "runner_lze_zrusit": (
+                flow.runner_active
+                and flow.runner_fill_price is None
+                and not flow.runner_close_requested
+                and not flow.main_close_requested
+                and flow.exit_fill_price is None
+            ),
             "nasobky": list(PT_MULTIPLES),
             "aktivni_nasobek": aktivni_nasobek,
             "symbol": flow.symbol,
@@ -762,7 +845,11 @@ class TradingUI:
             "fill": fmt(flow.fill_price),
             # S runnerem se vedle hlavního cíle ukazuje i cíl runneru
             "pt": fmt(flow.profit_target)
-            + (f" · R {fmt(flow.runner_profit_target)}" if flow.runner_active else ""),
+            + (
+                f" · R {fmt(flow.runner_profit_target)}"
+                if flow.runner_active and flow.runner_fill_price is None
+                else ""
+            ),
             "sl": fmt(flow.stop_loss),
             "underlying": fmt(flow.underlying_price),
             "quote": f"{fmt(flow.option_bid)} / {fmt(flow.option_ask)}",

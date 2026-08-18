@@ -139,6 +139,14 @@ class Flow:
     runner_quantity: int = 0
     runner_order_id: int | None = None
     runner_fill_price: float | None = None
+    # Souhrn dříve prodaných runnerů - po prodeji se runner zúčtuje sem
+    # a jeho pole se uvolní, takže lze nastartovat další
+    runner_sold_quantity: int = 0
+    runner_realized_pnl: float = 0.0
+    # Vyžádané uzavření trhem - hlavní části, resp. runneru. Podmíněný příkaz
+    # se nejprve ruší a tržní prodej se zadává až po potvrzení zrušení.
+    main_close_requested: bool = False
+    runner_close_requested: bool = False
 
     # Očekávaný výsledek obchodu v USD, pokud podklad dosáhne PT resp. SL.
     # Přepočítává se průběžně podle aktuální ceny opce a podkladu, takže
@@ -168,17 +176,18 @@ class Flow:
         if self.fill_price is None:
             return None
 
-        # Pozice se může skládat ze dvou částí - hlavní a runneru; každá se
-        # oceňuje zvlášť: prodaná část realizovanou cenou, běžící středem trhu
+        # Pozice se skládá z hlavní části, případného běžícího runneru
+        # a realizovaného výsledku dříve prodaných runnerů. Prodaná část se
+        # oceňuje dosaženou cenou, běžící středem trhu.
         mid = None
         if self.option_bid is not None and self.option_ask is not None:
             mid = (self.option_bid + self.option_ask) / 2.0
 
         casti: list[tuple[float | None, int]] = [(self.exit_fill_price, self.main_quantity)]
-        if self.runner_active and self.runner_quantity < (self.filled_quantity or self.quantity):
+        if self.runner_active and self.runner_quantity <= self.held_quantity:
             casti.append((self.runner_fill_price, self.runner_quantity))
 
-        vysledek = 0.0
+        vysledek = self.runner_realized_pnl
         for cena, mnozstvi in casti:
             if cena is None:
                 cena = mid
@@ -220,12 +229,18 @@ class Flow:
         return self.runner_profit_target is not None and self.runner_quantity > 0
 
     @property
+    def held_quantity(self) -> int:
+        """Počet kontraktů, které pozice ještě drží (po prodaných runnerech)."""
+        total = (self.filled_quantity or self.quantity) - self.runner_sold_quantity
+        return max(total, 0)
+
+    @property
     def main_quantity(self) -> int:
-        """Počet kontraktů hlavní části pozice (bez runneru)."""
-        total = self.filled_quantity or self.quantity
-        if self.runner_active and self.runner_quantity < total:
-            return total - self.runner_quantity
-        return total
+        """Počet kontraktů hlavní části pozice (bez běžícího runneru)."""
+        drzeno = self.held_quantity
+        if self.runner_active and self.runner_quantity < drzeno:
+            return drzeno - self.runner_quantity
+        return drzeno
 
     @property
     def runner_multiple(self) -> float | None:
