@@ -130,6 +130,16 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    zbytek a zajistí skutečně nakoupené množství — TWS totiž nepovolí mít
    na jednom opčním kontraktu současně nákupní i prodejní příkaz.
 5. **Monitoring** — tabulka ukazuje všechny obchody, jejich ceny a stav.
+   Pod každým rozpracovaným obchodem je řada tlačítek **1× 1,5× 2× 2,5× 3×**
+   zarovnaná doprava; posunou cíl na násobek jeho původní vzdálenosti od
+   vstupu — u vstupu 232 a cíle 235 (tedy 3 body) znamená 2× cíl 238. Počítá
+   se vždy z původního zadání, takže opakované klikání násobky neřetězí,
+   a tlačítko odpovídající aktuálnímu cíli je barevně zvýrazněné. U nakoupené
+   pozice se rovnou upraví podmínka zajišťovacího příkazu; u obchodu před
+   nákupem záleží na `trading.pt_change_strike` — buď zůstane původní strike,
+   nebo se podle nového cíle vybere jiný a příkaz se přezadá. Ve formuláři se
+   zadává vždy základní cíl 1:1.
+
    Sloupce *Zisk na PT* a *Ztráta na SL* říkají, jak obchod dopadne, když
    podklad dosáhne cílové, resp. stop úrovně. Opce se přecení z implikované
    volatility odvozené z její aktuální ceny. Po nákupu se počítá ze skutečně

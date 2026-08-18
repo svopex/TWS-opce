@@ -243,5 +243,27 @@ class TestPreceneniOpce(unittest.TestCase):
         )
 
 
+class TestSmysluplnostiUrovni(unittest.TestCase):
+    """Kontrola, že cíl a stop leží v rozumné vzdálenosti od vstupu."""
+
+    def test_bezny_obchod_projde(self):
+        self.assertTrue(calc.levels_sane(311.5, 313.5, 309.5))
+        self.assertTrue(calc.levels_sane(545.0, 543.0, 547.0))
+
+    def test_cil_v_milionech_neprojde(self):
+        # Následek dřívější chyby, kdy se cíl opakovaným násobením vyšplhal
+        self.assertFalse(calc.levels_sane(311.5, 51_898_915.0, 309.5))
+
+    def test_zaporne_nebo_nulove_urovne_neprojdou(self):
+        self.assertFalse(calc.levels_sane(311.5, 0.0, 309.5))
+        self.assertFalse(calc.levels_sane(311.5, 313.5, -5.0))
+        self.assertFalse(calc.levels_sane(0.0, 313.5, 309.5))
+
+    def test_hranice_vzdalenosti(self):
+        # Vzdálenost do 50 % vstupu je přijatelná, nad ní už ne
+        self.assertTrue(calc.levels_sane(100.0, 145.0, 95.0))
+        self.assertFalse(calc.levels_sane(100.0, 155.0, 95.0))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

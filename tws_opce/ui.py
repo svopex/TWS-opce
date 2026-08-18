@@ -33,6 +33,9 @@ STATE_CLASSES = {
     FlowState.ERROR: "stav-chyba",
 }
 
+# Násobky původní vzdálenosti cíle od vstupu, nabízené tlačítky pod polem PT
+PT_MULTIPLES = (1.0, 1.5, 2.0, 2.5, 3.0)
+
 # Definice sloupců monitorovací tabulky
 TABLE_COLUMNS = [
     {"name": "live", "label": "", "field": "live", "align": "center"},
@@ -53,59 +56,51 @@ TABLE_COLUMNS = [
     {"name": "state", "label": "Stav", "field": "state", "align": "left"},
 ]
 
-# Obecná šablona buňky - zvýrazní všechny buňky vybraného obchodu
-CELL_SLOT = """
-<q-td :props="props" :class="props.row.vybrany ? 'bunka-vybrana' : ''">
-  {{ props.value }}
-</q-td>
-"""
-
-# Šablona buňky s indikátorem hlídání - tepe jen u obchodů, které aplikace
-# skutečně sleduje; u ukončených i při nefunkčním monitoringu zůstane prázdná
-LIVE_SLOT = """
-<q-td :props="props" :class="props.row.vybrany ? 'bunka-vybrana' : ''">
-  <span v-if="props.row.live" class="puntik-hlidani">
-    <q-tooltip>Aplikace obchod hlídá</q-tooltip>
-  </span>
-</q-td>
-"""
-
-# Šablona buňky se stavem - barva se řídí třídou uloženou v řádku
-STATE_SLOT = """
-<q-td :props="props" :class="props.row.vybrany ? 'bunka-vybrana' : ''">
-  <span :class="'odznak ' + props.row.state_class">{{ props.value }}</span>
-</q-td>
-"""
-
-# Šablony buněk s očekávaným výsledkem obchodu při dosažení PT a SL
-PROFIT_SLOT = """
-<q-td :props="props" :class="'text-right ' + (props.row.vybrany ? 'bunka-vybrana' : '')">
-  <span class="zisk">{{ props.value }}</span>
-</q-td>
-"""
-
-LOSS_SLOT = """
-<q-td :props="props" :class="'text-right ' + (props.row.vybrany ? 'bunka-vybrana' : '')">
-  <span class="ztrata">{{ props.value }}</span>
-</q-td>
-"""
-
-# Šablona buňky se ziskem/ztrátou - zelená při zisku, červená při ztrátě
-PNL_SLOT = """
-<q-td :props="props" :class="'text-right ' + (props.row.vybrany ? 'bunka-vybrana' : '')">
-  <span :class="props.row.pnl_class">{{ props.value }}</span>
-</q-td>
+# Šablona řádku tabulky. Vykresluje se ručně, protože pod každý obchod patří
+# druhý řádek s tlačítky pro posun cíle; Quasar při vlastním vykreslení řádku
+# přestává hlásit kliknutí, proto se událost emituje přímo ze šablony.
+BODY_SLOT = """
+  <q-tr :props="props"
+        :class="[props.row.vybrany ? 'radek-vybrany' : '',
+                 props.row.lze_menit ? 'radek-s-nasobky' : '']"
+        @click="() => $parent.$emit('radekKlik', props.row)">
+    <q-td v-for="col in props.cols" :key="col.name" :props="props">
+      <span v-if="col.name === 'live'">
+        <span v-if="props.row.live" class="puntik-hlidani"></span>
+      </span>
+      <span v-else-if="col.name === 'state'" :class="'odznak ' + props.row.state_class">
+        {{ col.value }}
+      </span>
+      <span v-else-if="col.name === 'pnl'" :class="props.row.pnl_class">{{ col.value }}</span>
+      <span v-else-if="col.name === 'exp_profit'" class="zisk">{{ col.value }}</span>
+      <span v-else-if="col.name === 'exp_loss'" class="ztrata">{{ col.value }}</span>
+      <span v-else>{{ col.value }}</span>
+    </q-td>
+  </q-tr>
+  <q-tr v-if="props.row.lze_menit" :props="props"
+        :class="['radek-nasobky', props.row.vybrany ? 'radek-vybrany' : '']"
+        @click="() => $parent.$emit('radekKlik', props.row)">
+    <q-td :colspan="props.cols.length" class="bunka-nasobku">
+      <span class="popisek-nasobky">Cíl:</span>
+      <q-btn v-for="n in props.row.nasobky" :key="n" dense size="sm"
+             class="q-ml-xs tlacitko-nasobek"
+             :outline="props.row.aktivni_nasobek !== n"
+             :color="props.row.aktivni_nasobek === n ? 'primary' : 'grey-7'"
+             :label="String(n).replace('.', ',') + '×'"
+             @click.stop="() => $parent.$emit('nasobek', {id: props.row.id, nasobek: n})" />
+    </q-td>
+  </q-tr>
 """
 
 
-def css_href() -> str:
+def staticky_soubor(nazev: str) -> str:
     """
-    URL stylopisu doplněná o čas jeho poslední úpravy.
-    Prohlížeč tak po změně stylů načte novou verzi místo té z keše.
+    URL statického souboru doplněná o čas jeho poslední úpravy.
+    Prohlížeč tak po změně načte novou verzi místo té z keše.
     """
-    css_file = STATIC_DIR / "styles.css"
-    stamp = int(css_file.stat().st_mtime) if css_file.exists() else 0
-    return f"/static/styles.css?v={stamp}"
+    soubor = STATIC_DIR / nazev
+    stamp = int(soubor.stat().st_mtime) if soubor.exists() else 0
+    return f"/static/{nazev}?v={stamp}"
 
 
 def fmt(value: float | None, digits: int = 2, suffix: str = "") -> str:
@@ -129,7 +124,7 @@ class TradingUI:
 
     def build(self) -> None:
         """Vykreslí celou stránku - hlavičku, formulář, přehled a log."""
-        ui.add_head_html(f'<link rel="stylesheet" href="{css_href()}">')
+        ui.add_head_html(f'<link rel="stylesheet" href="{staticky_soubor("styles.css")}">')
 
         # Vybrané flow v monitorovací tabulce (drží se zvlášť pro každého klienta)
         self.selected_id: str | None = None
@@ -272,14 +267,11 @@ class TradingUI:
                 .classes("tabulka")
                 .props('dense flat no-data-label="Zatím nebyl zadán žádný obchod."')
             )
-            self.table.add_slot("body-cell", CELL_SLOT)
-            self.table.add_slot("body-cell-live", LIVE_SLOT)
-            self.table.add_slot("body-cell-state", STATE_SLOT)
-            self.table.add_slot("body-cell-pnl", PNL_SLOT)
-            self.table.add_slot("body-cell-exp_profit", PROFIT_SLOT)
-            self.table.add_slot("body-cell-exp_loss", LOSS_SLOT)
+            self.table.add_slot("body", BODY_SLOT)
             # Klik na řádek přepne formulář na daný obchod
-            self.table.on("rowClick", self._on_row_click)
+            self.table.on("radekKlik", self._on_row_click)
+            # Tlačítko v řádku posune cíl obchodu na zvolený násobek
+            self.table.on("nasobek", self._on_pt_multiple)
 
             self.detail_label = ui.label("Kliknutím na řádek přepnete na daný obchod.").classes(
                 "detail-radku"
@@ -451,6 +443,36 @@ class TradingUI:
         self.preview_detail.set_text(" | ".join(detail_parts))
         self.preview_warning.set_text(" ".join(preview.warnings))
 
+    async def _on_pt_multiple(self, event: Any) -> None:
+        """
+        Posune cíl obchodu na zvolený násobek původní vzdálenosti od vstupu.
+        Obsluhuje tlačítka v druhém řádku monitorovací tabulky.
+        """
+        data = event.args or {}
+        flow = self.engine.flows.get(data.get("id", ""))
+        nasobek = data.get("nasobek")
+        if flow is None or nasobek is None:
+            return
+
+        # Základem je cíl ze zadání, aby opakované klikání násobky neřetězilo.
+        # Chybí-li (obchod z dřívější verze), stane se jím aktuální cíl.
+        if not flow.original_profit_target:
+            flow.original_profit_target = flow.profit_target
+        zaklad = flow.original_profit_target
+        novy_pt = round(flow.entry_price + (zaklad - flow.entry_price) * float(nasobek), 2)
+
+        try:
+            await self.engine.change_profit_target(flow.id, novy_pt)
+        except Exception as exc:
+            ui.notify(str(exc), type="negative")
+            return
+
+        ui.notify(f"{flow.id}: cíl {fmt(novy_pt)} ({nasobek:g}× původní).", type="positive")
+        # Formulář ukazuje vybraný obchod, hodnotu je třeba srovnat
+        if self.selected_id == flow.id:
+            self.pt_input.set_value(novy_pt)
+        self._refresh()
+
     async def _submit(self) -> None:
         """Odešle zadání obchodu do trhu."""
         symbol, entry, pt, sl = self._form_values()
@@ -585,8 +607,7 @@ class TradingUI:
         Přepnutí na obchod klikem v tabulce.
         Quasar posílá v argumentech událost, data řádku a jeho pořadí.
         """
-        args = event.args or []
-        row = args[1] if len(args) > 1 else None
+        row = event.args
         if not isinstance(row, dict):
             return
 
@@ -645,9 +666,22 @@ class TradingUI:
     def _row(self, flow: Flow) -> dict[str, Any]:
         """Převede flow na řádek monitorovací tabulky."""
         pnl = flow.unrealized_pnl
+
+        # Zvýrazní se tlačítko odpovídající aktuálnímu násobku cíle
+        aktualni = flow.pt_multiple
+        aktivni_nasobek = None
+        if aktualni is not None:
+            for nabidnuty in PT_MULTIPLES:
+                if abs(aktualni - nabidnuty) < 0.01:
+                    aktivni_nasobek = nabidnuty
+                    break
         return {
             "id": flow.id,
             "live": flow.state.is_active and self.engine.is_monitoring,
+            # Podklady pro řádek s tlačítky posunu cíle
+            "lze_menit": flow.state.is_active,
+            "nasobky": list(PT_MULTIPLES),
+            "aktivni_nasobek": aktivni_nasobek,
             "symbol": flow.symbol,
             "contract": f"{flow.right_label} {flow.expiration} @ {flow.strike:g}",
             "qty": flow.quantity,

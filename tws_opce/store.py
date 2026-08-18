@@ -30,6 +30,7 @@ SAVED_FIELDS = (
     "symbol",
     "entry_price",
     "profit_target",
+    "original_profit_target",
     "stop_loss",
     "quantity",
     "max_spread_pct",
@@ -75,6 +76,11 @@ def dict_to_flow(data: dict[str, Any]) -> Flow:
     except ValueError:
         flow.state = FlowState.ERROR
         flow.message = "Uložený stav obchodu nebylo možné rozpoznat."
+
+    # Starší uložený stav pole nezná; bez něj by se násobky cíle počítaly
+    # z už posunuté hodnoty a při každém kliknutí by se řetězily
+    if not flow.original_profit_target:
+        flow.original_profit_target = flow.profit_target
 
     for name in TIME_FIELDS:
         hodnota = data.get(name)

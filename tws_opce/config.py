@@ -14,6 +14,8 @@ log = logging.getLogger(__name__)
 
 # Povolené typy vstupního příkazu (nákup opce po splnění cenové podmínky na podkladu)
 ENTRY_ORDER_TYPES = ("LMT_ASK", "MKT", "LMT_MID")
+# Co udělat se strikem, když se u obchodu před nákupem změní PT
+PT_STRIKE_MODES = ("keep", "recalculate")
 # Povolené typy výstupního příkazu (jeden příkaz s podmínkami pro PT i SL)
 EXIT_ORDER_TYPES = ("MKT", "LMT")
 # Povolené režimy výběru expirace
@@ -81,6 +83,10 @@ class TradingConfig:
     rearm_spread_margin_pct: float = 10.0
     # Nejkratší prodleva mezi odstraněním příkazu z trhu a jeho novým zadáním
     rearm_delay_sec: float = 5.0
+    # Chování při změně PT u obchodu, který ještě nenakoupil:
+    #   keep        = ponechat původní strike, mění se jen cílová úroveň
+    #   recalculate = přepočítat strike podle nového PT a příkaz přezadat
+    pt_change_strike: str = "keep"
     # Průběžná aktualizace limitní ceny nákupního příkazu podle aktuálního ASK / MID
     relimit_enabled: bool = True
     # Minimální změna limitní ceny (v procentech), která vyvolá modifikaci příkazu
@@ -232,6 +238,11 @@ def validate_config(cfg: AppConfig) -> None:
         problems.append(
             f"trading.exit_order_type musí být jedna z {EXIT_ORDER_TYPES}, "
             f"nalezeno '{cfg.trading.exit_order_type}'"
+        )
+    if cfg.trading.pt_change_strike not in PT_STRIKE_MODES:
+        problems.append(
+            f"trading.pt_change_strike musí být jedna z {PT_STRIKE_MODES}, "
+            f"nalezeno '{cfg.trading.pt_change_strike}'"
         )
     if cfg.expiration.mode not in EXPIRATION_MODES:
         problems.append(

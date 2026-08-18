@@ -441,6 +441,87 @@ class TestPrevzetiPrikazu(ZakladObnovy):
         self.assertEqual(novy.flows, {})
 
 
+class TestZakladuCile(ZakladObnovy):
+    """Původní cíl musí přežít restart, jinak se násobky řetězí."""
+
+    async def test_puvodni_cil_se_uklada(self):
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        await self.engine.change_profit_target(flow.id, 238.0)
+
+        ulozeny = store.load(self.cfg.state.file)[0]
+        # Uložený stav si pamatuje zadání, ne posunutý cíl
+        self.assertAlmostEqual(ulozeny.original_profit_target, 235.0)
+        self.assertAlmostEqual(ulozeny.profit_target, 238.0)
+
+    async def test_nasobky_se_po_restartu_neretezi(self):
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        await self.engine.change_profit_target(flow.id, 238.0)
+
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        obnoveny = novy.flows[flow.id]
+
+        # Po obnově musí dvojnásobek dál znamenat 238, ne 244
+        self.assertAlmostEqual(obnoveny.original_profit_target, 235.0)
+        self.assertAlmostEqual(obnoveny.pt_multiple, 2.0)
+
+        zaklad = obnoveny.original_profit_target
+        dvojnasobek = obnoveny.entry_price + (zaklad - obnoveny.entry_price) * 2
+        self.assertAlmostEqual(dvojnasobek, 238.0)
+
+    async def test_stav_bez_puvodniho_cile_se_doplni(self):
+        # Stav uložený starší verzí pole nezná
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        import json
+
+        cesta = Path(self.cfg.state.file)
+        obsah = json.loads(cesta.read_text(encoding="utf-8"))
+        del obsah["flows"][0]["original_profit_target"]
+        cesta.write_text(json.dumps(obsah), encoding="utf-8")
+
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        obnoveny = novy.flows[flow.id]
+
+        self.assertAlmostEqual(obnoveny.original_profit_target, 235.0)
+        self.assertAlmostEqual(obnoveny.pt_multiple, 1.0)
+
+    async def test_obchod_s_poskozenymi_urovnemi_se_oznaci_za_chybny(self):
+        # Stav uložený dřívější verzí mohl obsahovat cíl vyšplhaný do milionů
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        import json
+
+        cesta = Path(self.cfg.state.file)
+        obsah = json.loads(cesta.read_text(encoding="utf-8"))
+        obsah["flows"][0]["profit_target"] = 51_898_915.0
+        obsah["flows"][0]["original_profit_target"] = 51_898_915.0
+        cesta.write_text(json.dumps(obsah), encoding="utf-8")
+
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        obnoveny = novy.flows[flow.id]
+
+        self.assertEqual(obnoveny.state, FlowState.ERROR)
+        self.assertIn("nesmyslné úrovně", obnoveny.message)
+
+    async def test_nesmyslny_cil_se_odmitne(self):
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.change_profit_target(flow.id, 51_898_915.0)
+        self.assertIn("nesmyslně daleko", str(ctx.exception))
+        self.assertAlmostEqual(flow.profit_target, 235.0)
+
+
 class TestObnovaStavu(ZakladObnovy):
     """Odvození stavu obchodu ze skutečnosti v TWS."""
 

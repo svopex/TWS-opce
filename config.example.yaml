@@ -188,6 +188,16 @@ trading:
   # a jeho novým zadáním.
   rearm_delay_sec: 5.0
 
+  # Co se má stát se strikem, když v monitoringu posunete cíl obchodu
+  # tlačítky s násobky (1×, 1,5×, 2× …):
+  #   keep        = ponechat původní strike, mění se jen cílová úroveň (výchozí)
+  #   recalculate = vybrat podle nového cíle jiný strike; aplikace kvůli tomu
+  #                 zruší nákupní příkaz a zadá nový na jinou opci
+  #
+  # Uplatní se jen u obchodu PŘED nákupem. Je-li opce už koupena, strike
+  # měnit nelze a upraví se pouze podmínka zajišťovacího příkazu.
+  pt_change_strike: keep
+
   # true = dokud se nákupní příkaz nevyplní, aplikace průběžně přepočítává
   # jeho limitní cenu podle aktuálního ASK / MID, aby limit nezastaral.
   # Netýká se typu MKT.
@@ -211,7 +221,7 @@ expiration:
   #   0 = povolena i dnešní expirace (0DTE)
   #   2 = přeskočí se expirace dřívější než za dva dny
   # Pokud žádná expirace podmínku nesplní, použije se nejvzdálenější dostupná.
-  min_dte: 0
+  min_dte: 1
 
   # Pevné datum expirace ve formátu YYYYMMDD, například 20260828.
   # Uplatní se pouze při mode: fixed, jinak se ignoruje.

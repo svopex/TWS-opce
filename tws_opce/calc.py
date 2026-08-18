@@ -168,6 +168,25 @@ def select_expiration(
     return available[-1]
 
 
+def levels_sane(entry_price: float, profit_target: float, stop_loss: float,
+                max_distance_pct: float = 50.0) -> bool:
+    """
+    Ověří, že cíl a stop leží v rozumné vzdálenosti od vstupní ceny.
+
+    Chrání před obchodem s poškozenými úrovněmi - například z dřívější
+    chyby ve výpočtu, kdy se cíl opakovaným násobením vyšplhal do milionů.
+    """
+    if entry_price <= 0:
+        return False
+    for uroven in (profit_target, stop_loss):
+        if uroven <= 0 or not math.isfinite(uroven):
+            return False
+        odchylka = abs(uroven - entry_price) / entry_price * 100.0
+        if odchylka > max_distance_pct:
+            return False
+    return True
+
+
 def entry_still_valid(right: str, current_price: float, entry_price: float) -> bool:
     """
     Ověří, že cena podkladu ještě nedosáhla vstupní úrovně.

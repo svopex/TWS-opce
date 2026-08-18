@@ -95,6 +95,10 @@ class Flow:
     max_spread_pct: float
     right: str = "C"
 
+    # PT zadané při založení obchodu; násobky cíle se počítají z něj,
+    # aby opakovaná změna nevycházela z už posunuté hodnoty
+    original_profit_target: float = 0.0
+
     # Vybraný opční kontrakt
     expiration: str = ""
     strike: float = 0.0
@@ -191,6 +195,15 @@ class Flow:
         """Změní stav flow a zaznamená čas změny."""
         self.state = state
         self.touch(message)
+
+    @property
+    def pt_multiple(self) -> float | None:
+        """Kolikanásobek původní vzdálenosti cíle od vstupu je aktuální PT."""
+        zaklad = self.original_profit_target or self.profit_target
+        puvodni_vzdalenost = abs(zaklad - self.entry_price)
+        if puvodni_vzdalenost <= 0:
+            return None
+        return abs(self.profit_target - self.entry_price) / puvodni_vzdalenost
 
     def option_label(self) -> str:
         """Popis opčního kontraktu pro tabulku, například 'AAPL 20260828 C 230'."""

@@ -580,6 +580,78 @@ class TestNakupAVystup(ZakladTestu):
         self.assertIn("bez zajištění", flow.message)
 
 
+class TestZmenyCile(ZakladTestu):
+    """Posunutí cílové úrovně u běžícího obchodu."""
+
+    async def test_zmena_pred_nakupem_ponecha_strike(self):
+        flow = await self.zaloz_call()
+        puvodni_strike = flow.strike
+        pocet_prikazu = len(self.ib.placed)
+
+        await self.engine.change_profit_target(flow.id, 238.0)
+
+        self.assertAlmostEqual(flow.profit_target, 238.0)
+        self.assertEqual(flow.strike, puvodni_strike)
+        # Nákupní příkaz se nijak nedotkne
+        self.assertEqual(len(self.ib.placed), pocet_prikazu)
+        self.assertEqual(self.ib.cancelled, [])
+
+    async def test_zmena_po_nakupu_upravi_zajistovaci_prikaz(self):
+        flow = await self.zaloz_call(quantity=2)
+        self.ib.fill(flow.entry_trade, 2, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.EXIT_ARMED)
+
+        await self.engine.change_profit_target(flow.id, 240.0)
+
+        podminky = self.ib.placed[-1].order.conditions
+        self.assertAlmostEqual(podminky[0].price, 240.0)
+        # SL zůstává beze změny a spojka dál znamená OR
+        self.assertAlmostEqual(podminky[1].price, 229.0)
+        self.assertEqual(podminky[0].conjunction, "o")
+        self.assertEqual(podminky[1].conjunction, "a")
+
+    async def test_nasobek_se_pocita_z_puvodniho_cile(self):
+        # Vstup 232, původní PT 235 -> vzdálenost 3 body
+        flow = await self.zaloz_call()
+        self.assertAlmostEqual(flow.original_profit_target, 235.0)
+
+        await self.engine.change_profit_target(flow.id, 238.0)
+        self.assertAlmostEqual(flow.pt_multiple, 2.0)
+
+        # Další změna vychází stále z původních 3 bodů, ne z posunutých 6
+        await self.engine.change_profit_target(flow.id, 241.0)
+        self.assertAlmostEqual(flow.pt_multiple, 3.0)
+
+    async def test_cil_na_spatne_strane_se_odmitne(self):
+        flow = await self.zaloz_call()
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.change_profit_target(flow.id, 230.0)
+        self.assertIn("nad vstupní cenou", str(ctx.exception))
+
+    async def test_cil_u_ukonceneho_obchodu_nelze_menit(self):
+        flow = await self.zaloz_call()
+        await self.engine.cancel_flow(flow.id)
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.change_profit_target(flow.id, 238.0)
+        self.assertIn("běžícího obchodu", str(ctx.exception))
+
+    async def test_prepocet_strike_zada_prikaz_znovu(self):
+        # Nastavení recalculate vybere podle nového cíle jiný kontrakt
+        self.cfg.trading.pt_change_strike = "recalculate"
+        flow = await self.zaloz_call()
+        puvodni_strike = flow.strike
+        puvodni_prikaz = flow.entry_trade
+
+        await self.engine.change_profit_target(flow.id, 240.0)
+
+        self.assertNotEqual(flow.strike, puvodni_strike)
+        self.assertIn(puvodni_prikaz, self.ib.cancelled)
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertIsNotNone(flow.entry_trade)
+
+
 class TestZruseniFlow(ZakladTestu):
     """Rušení obchodů."""
 

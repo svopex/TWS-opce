@@ -166,6 +166,46 @@
   flex: 1 1 30%;
 }
 
+/* --- Řádek s tlačítky pro posun cíle --- */
+/* Datový řádek a tlačítka pod ním tvoří jeden celek, proto mezi nimi
+   nesmí být vodorovná linka; odděluje se až následující obchod */
+.tabulka tbody tr.radek-s-nasobky td {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+/* Quasar dává řádkům pevnou výšku; tlačítka mají tvořit patičku obchodu,
+   ne samostatný pruh, proto se výška srazí na obsah */
+.tabulka tbody tr.radek-nasobky,
+.tabulka tbody tr.radek-nasobky td {
+  height: auto;
+  min-height: 0;
+}
+
+.tabulka tbody tr.radek-nasobky td {
+  border-top: none;
+  line-height: 1;
+  padding: 0 8px 6px;
+}
+
+/* Tlačítka drží u levého okraje, aby tabulku neroztahovala do šířky */
+.tabulka tbody td.bunka-nasobku {
+  padding-left: 56px;
+  text-align: left;
+}
+
+.popisek-nasobky {
+  color: #64748b;
+  font-size: 0.75rem;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.tlacitko-nasobek {
+  font-size: 0.7rem;
+  min-width: 42px;
+}
+
 /* --- Náhled připraveného obchodu --- */
 .nahled {
   background-color: #f1f5f9;
@@ -212,24 +252,39 @@
   cursor: pointer;
 }
 
-.tabulka tbody tr:hover {
-  background-color: #eef2ff;
+/* Obchod tvoří dvojici řádků - datový a řádek s tlačítky. Prohlížeč je bere
+   jako samostatné řádky, proto se při najetí myší obarvuje vždy i druhý řádek
+   dvojice: partner pod kurzorem přes sousedící selektor, partner nad kurzorem
+   přes :has(). Prefix body zajišťuje přednost před šedým hoverem Quasaru,
+   který by jinak obarvil jen řádek pod kurzorem. Barva je stejná jako
+   u vybraného obchodu. */
+body .tabulka tbody tr:hover > td,
+body .tabulka tbody tr.radek-s-nasobky:hover + tr.radek-nasobky > td,
+body .tabulka tbody tr.radek-s-nasobky:has(+ tr.radek-nasobky:hover) > td {
+  background-color: #dbeafe !important;
 }
 
-/* Vybraný obchod - zvýrazní se všechny buňky řádku */
-.tabulka tbody td.bunka-vybrana {
-  background-color: #dbeafe;
+/* Quasar kreslí vlastní šedý hover překryvem přes pseudo-element td::before,
+   který leží NAD barvou pozadí - žádné background-color ho proto nepřebije
+   a řádek pod kurzorem by zůstával šedý. Překryv se vypíná úplně. */
+body .tabulka tbody td::before {
+  display: none !important;
+}
+
+/* Vybraný obchod - zvýrazní se celý řádek včetně řádku s tlačítky */
+body .tabulka tbody tr.radek-vybrany > td {
+  background-color: #dbeafe !important;
   font-weight: 500;
 }
 
 /* Levý pruh označuje začátek vybraného řádku */
-.tabulka tbody td.bunka-vybrana:first-child {
+.tabulka tbody tr.radek-vybrany td:first-child {
   box-shadow: inset 3px 0 0 0 #1d4ed8;
 }
 
-/* Zvýraznění musí zůstat čitelné i při najetí myší */
-.tabulka tbody tr:hover td.bunka-vybrana {
-  background-color: #bfdbfe;
+/* Kurzor napovídá, že kliknout lze kdekoliv v bloku obchodu */
+.tabulka tbody tr.radek-nasobky {
+  cursor: pointer;
 }
 
 .detail-radku {

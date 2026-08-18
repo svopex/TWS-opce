@@ -415,6 +415,7 @@ class FlowEngine:
                 symbol=symbol,
                 entry_price=request.entry_price,
                 profit_target=request.profit_target,
+                original_profit_target=request.profit_target,
                 stop_loss=stop_loss,
                 quantity=quantity,
                 max_spread_pct=max_spread,
@@ -606,6 +607,117 @@ class FlowEngine:
             f"PT {flow.profit_target:g} / SL {flow.stop_loss:g}.",
         )
         self.log_event(f"{flow.id}: {flow.message}")
+
+    async def change_profit_target(self, flow_id: str, novy_pt: float) -> Flow:
+        """
+        Změní cílovou úroveň běžícího obchodu.
+
+        Po nákupu se nová úroveň promítne do zajišťovacího příkazu; strike
+        se měnit nedá, opce je už koupená. Před nákupem záleží na nastavení
+        trading.pt_change_strike: buď se ponechá původní strike, nebo se
+        podle nového PT vybere jiný kontrakt a příkaz se přezadá.
+        """
+        flow = self.flows.get(flow_id)
+        if flow is None:
+            raise ValueError(f"Flow '{flow_id}' neexistuje.")
+        if not flow.state.is_active:
+            raise ValueError("Cíl lze měnit jen u běžícího obchodu.")
+
+        # Základ pro násobky musí být znám, jinak by se cíl při každé změně
+        # počítal z už posunuté hodnoty a rostl by bez omezení
+        if not flow.original_profit_target:
+            flow.original_profit_target = flow.profit_target
+
+        # Pojistka proti zjevně chybné hodnotě: cíl nesmí být dál než
+        # dvacetinásobek původní vzdálenosti od vstupu
+        puvodni_vzdalenost = abs(flow.original_profit_target - flow.entry_price)
+        if puvodni_vzdalenost > 0:
+            nova_vzdalenost = abs(novy_pt - flow.entry_price)
+            if nova_vzdalenost > puvodni_vzdalenost * 20:
+                raise ValueError(
+                    f"Cíl {novy_pt:g} je nesmyslně daleko od vstupu {flow.entry_price:g} "
+                    f"(původní cíl {flow.original_profit_target:g})."
+                )
+
+        # Nový cíl musí zůstat na správné straně vstupu, jinak by obchod ztratil smysl
+        if flow.right == "C" and novy_pt <= flow.entry_price:
+            raise ValueError("U CALL opce musí PT zůstat nad vstupní cenou podkladu.")
+        if flow.right == "P" and novy_pt >= flow.entry_price:
+            raise ValueError("U PUT opce musí PT zůstat pod vstupní cenou podkladu.")
+
+        async with self._lock:
+            puvodni = flow.profit_target
+            flow.profit_target = novy_pt
+
+            if flow.state.is_before_entry:
+                await self._apply_pt_before_entry(flow)
+            elif flow.exit_trade is not None:
+                self._update_exit_conditions(flow)
+
+            nasobek = flow.pt_multiple
+            popis = f" ({nasobek:g}× původní cíl)" if nasobek else ""
+            self.log_event(
+                f"{flow.id}: cíl změněn z {puvodni:,.2f} na {novy_pt:,.2f}{popis}.".replace(",", " ")
+            )
+            self._notify()
+            return flow
+
+    async def _apply_pt_before_entry(self, flow: Flow) -> None:
+        """
+        Promítne nový cíl do obchodu, který ještě nenakoupil.
+        Podle konfigurace buď ponechá strike, nebo vybere nový kontrakt.
+        """
+        if self.cfg.trading.pt_change_strike != "recalculate":
+            return
+
+        chain = await self.ib.option_chain(flow.underlying_contract)
+        novy_strike = calc.nearest_strike(sorted(chain.strikes), flow.profit_target)
+        if novy_strike is None or novy_strike == flow.strike:
+            return
+
+        # Příkaz na původní kontrakt už neplatí, musí z trhu pryč
+        self.ib.cancel(flow.entry_trade)
+        self.ib.unsubscribe(flow.option_contract)
+
+        option, details = await self.ib.qualify_option(
+            flow.symbol, flow.expiration, novy_strike, flow.right, chain.tradingClass
+        )
+        flow.option_contract = option
+        flow.option_conid = option.conId
+        flow.strike = novy_strike
+        flow.min_tick = details.minTick or flow.min_tick
+        flow.entry_trade = None
+        flow.entry_order_id = None
+        self.ib.subscribe(option)
+
+        self.log_event(f"{flow.id}: strike přepočítán na {novy_strike:g}, příkaz se zadá znovu.")
+        self._place_entry(flow)
+
+    def _update_exit_conditions(self, flow: Flow) -> None:
+        """Promítne aktuální PT a SL do podmínek zajišťovacího příkazu."""
+        trade = flow.exit_trade
+        if trade is None or trade.orderStatus.status not in MODIFIABLE_ORDER_STATES:
+            self.log_event(
+                f"{flow.id}: zajišťovací příkaz nelze upravit "
+                f"({trade.orderStatus.status if trade else 'chybí'}) - cíl platí jen v přehledu."
+            )
+            return
+
+        _, pt_more, sl_more = calc.condition_directions(flow.right)
+        podminky = [
+            self.ib.price_condition(flow.underlying_conid, pt_more, flow.profit_target),
+            self.ib.price_condition(flow.underlying_conid, sl_more, flow.stop_loss),
+        ]
+
+        order = trade.order
+        # Spojka patří k následující podmínce, poslední ji už nepoužije
+        posledni = len(podminky) - 1
+        for index, podminka in enumerate(podminky):
+            podminka.conjunction = "a" if index == posledni else "o"
+        order.conditions = podminky
+
+        flow.exit_trade = self.ib.place(flow.option_contract, order)
+        flow.touch(f"Zajišťovací příkaz upraven na PT {flow.profit_target:g} / SL {flow.stop_loss:g}.")
 
     async def cancel_flow(self, flow_id: str, close_position: bool = False) -> None:
         """
@@ -939,6 +1051,21 @@ class FlowEngine:
 
         self.ib.subscribe(flow.underlying_contract)
         self.ib.subscribe(flow.option_contract)
+
+        if not flow.original_profit_target:
+            flow.original_profit_target = flow.profit_target
+
+        # Uložený stav mohl vzniknout ještě s chybným výpočtem cíle; obchod
+        # s nesmyslnými úrovněmi se do trhu vracet nesmí
+        if not calc.levels_sane(flow.entry_price, flow.profit_target, flow.stop_loss):
+            flow.set_state(
+                FlowState.ERROR,
+                f"Obnovený obchod má nesmyslné úrovně (vstup {flow.entry_price:,.2f}, "
+                f"PT {flow.profit_target:,.2f}, SL {flow.stop_loss:,.2f}). "
+                f"Zrušte jej a zadejte znovu.".replace(",", " "),
+            )
+            self.log_event(f"{flow.id}: {flow.message}")
+            return
 
         flow.entry_trade = prikazy.get(order_ref(flow.id, "entry"))
         flow.exit_trade = prikazy.get(order_ref(flow.id, "exit"))
