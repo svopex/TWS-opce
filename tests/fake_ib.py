@@ -29,6 +29,8 @@ class FakeIBService(IBService):
         self.greek_delta: float | None = 0.35
         # Velikost účtu vracená místo dotazu do TWS
         self.net_liquidation_value: float | None = 12345.0
+        # Test může spojení shodit a znovu navázat
+        self.connected_flag: bool = True
         # Záznam odeslaných a zrušených příkazů
         self.placed: list[Trade] = []
         self.cancelled: list[Trade] = []
@@ -40,8 +42,20 @@ class FakeIBService(IBService):
 
     @property
     def connected(self) -> bool:
-        """Testovací služba je vždy připojená."""
-        return True
+        """Stav spojení, který test přepíná pro scénáře výpadku."""
+        return self.connected_flag
+
+    async def connect(self) -> None:
+        """
+        Připojení bez sítě.
+        Zásadní pojistka: bez tohoto předefinování by testy volaly skutečné
+        připojení k TWS a mohly by zasáhnout do běžící aplikace.
+        """
+        self.connected_flag = True
+
+    async def disconnect(self) -> None:
+        """Odpojení bez sítě."""
+        self.connected_flag = False
 
     async def net_liquidation(self) -> float | None:
         """Velikost účtu nastavená testem."""

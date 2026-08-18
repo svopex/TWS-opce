@@ -258,9 +258,12 @@ Aplikace na každou opční pozici, ke které nemá obchod, upozorní hláškou
 „POZOR" v průběhu a nechá ji na vás — sama k ní nic nezadává, protože nezná
 původní PT ani SL.
 
-Podmínkou je, aby po restartu aplikace používala **stejné `client_id`** —
-jinak jí TWS vlastní příkazy nevydá. Ukládání lze vypnout přes
-`state.enabled: false`.
+Totéž proběhne po **každém obnovení spojení** — po ručním odpojení a připojení
+tlačítkem i po výpadku sítě. Objekty příkazů z minulého spojení už nejsou platné,
+takže se obchody pokaždé znovu spárují s tím, co je skutečně v TWS.
+
+Podmínkou je, aby aplikace používala **stejné `client_id`** — jinak jí TWS
+vlastní příkazy nevydá. Ukládání lze vypnout přes `state.enabled: false`.
 
 ## Upozornění
 

@@ -7,6 +7,7 @@ nikoliv od zápisu v uloženém souboru.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 import tempfile
@@ -112,6 +113,141 @@ class TestOchranaUlozenehoStavu(ZakladObnovy):
         # Průchod smyčkou před obnovou nesmí uložený stav přepsat
         await novy._tick()
         self.assertEqual(len(store.load(self.cfg.state.file)), 1)
+
+
+class TestZnovupripojeni(ZakladObnovy):
+    """Obnova při odpojení a opětovném připojení za běhu aplikace."""
+
+    async def test_smazany_prikaz_se_po_pripojeni_zada_znovu(self):
+        # Obchod běží, uživatel se odpojí a příkaz v TWS ručně smaže
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        self.assertEqual(flow.state, FlowState.ARMED)
+
+        self.engine._synced = False          # simulace odpojení
+        self.ib.cancel(flow.entry_trade)
+        self.ib.placed.clear()
+
+        # Po opětovném připojení se stav srovná se skutečností v TWS
+        await self.engine.restore()
+        self.assertEqual(flow.state, FlowState.NO_QUOTES)
+        self.assertIn("bude zadán znovu", flow.message)
+
+        # A smyčka příkaz vrátí do trhu
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(self.ib.placed[-1].order.action, "BUY")
+
+    async def test_ztrata_spojeni_shodi_priznak_sparovani(self):
+        # Bez automatického připojování zůstane příznak shozený až do ruční obnovy
+        self.cfg.connection.auto_reconnect = False
+        await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        self.assertTrue(self.engine._synced)
+
+        self.ib.connected_flag = False
+        await self.engine._tick()
+        self.assertFalse(self.engine._synced)
+
+        # Ruční připojení tlačítkem v rozhraní pak obchody znovu spáruje
+        self.ib.connected_flag = True
+        await self.engine.restore()
+        self.assertTrue(self.engine._synced)
+
+    async def test_automaticke_pripojeni_obchody_sparuje(self):
+        # Smyčka po obnovení spojení sama zajistí nové spárování
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        self.ib.connected_flag = False
+        await self.engine._tick()
+
+        self.assertTrue(self.engine._synced)
+        self.assertEqual(flow.state, FlowState.ARMED)
+        udalosti = " ".join(zprava for _, zprava in self.engine.events)
+        self.assertIn("ověřuji stav obchodů v TWS", udalosti)
+
+    async def test_opakovane_pripojeni_neduplikuje_obchody(self):
+        await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        pocet = len(self.engine.flows)
+
+        for _ in range(3):
+            self.engine._synced = False
+            await self.engine.restore()
+
+        self.assertEqual(len(self.engine.flows), pocet)
+
+    async def test_uzavirani_pozice_pokracuje_po_pripojeni(self):
+        # Probíhající uzavírání se nesmí přepsat stavem odvozeným z TWS
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        self.ib.fill(flow.entry_trade, 1, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        self.ib.held_positions[OPTION_CONID] = 1
+
+        await self.engine.cancel_flow(flow.id, close_position=True)
+        self.assertEqual(flow.state, FlowState.CLOSING)
+
+        self.engine._synced = False
+        await self.engine.restore()
+        self.assertEqual(flow.state, FlowState.CLOSING)
+
+
+class TestSoubehObnovy(ZakladObnovy):
+    """Obnova a monitorovací smyčka si nesmí lézt do cesty."""
+
+    async def test_behem_obnovy_se_nemonitoruje(self):
+        # Smyčka pracující s příkazy z minulého spojení by stav rozhodila
+        await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        pocet_pred = len(self.ib.placed)
+
+        await self.engine._restore_lock.acquire()
+        try:
+            await self.engine._tick()
+        finally:
+            self.engine._restore_lock.release()
+
+        # Průchod se přeskočil, nic se nezadalo ani nezrušilo
+        self.assertEqual(len(self.ib.placed), pocet_pred)
+        self.assertEqual(self.ib.cancelled, [])
+
+    async def test_selhani_obnovy_je_videt_v_prubehu(self):
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+
+        # Ověření kontraktu v TWS selže
+        async def selze(*args, **kwargs):
+            raise RuntimeError("kontrakt se nepodařilo ověřit")
+
+        self.ib.qualify_option = selze
+        self.engine._synced = False
+        await self.engine.restore()
+
+        self.assertEqual(flow.state, FlowState.ERROR)
+        udalosti = " ".join(zprava for _, zprava in self.engine.events)
+        self.assertIn("obnova selhala", udalosti)
+        self.assertIn(flow.id, udalosti)
+
+    async def test_soubezne_volani_obnovy_probehne_jednou(self):
+        await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        self.engine._synced = False
+
+        # Dvě souběžná volání (tlačítko v rozhraní a smyčka) nesmí obnovu zdvojit
+        await asyncio.gather(self.engine.restore(), self.engine.restore())
+
+        obnoveni = sum(1 for _, z in self.engine.events if "obnoveno" in z)
+        self.assertEqual(obnoveni, 1)
 
 
 class TestPrevzetiPrikazu(ZakladObnovy):

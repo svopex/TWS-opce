@@ -80,13 +80,18 @@ class FlowEngine:
         self._preview: Preview | None = None
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        # Obnova a monitorovací smyčka nesmí běžet současně - obnova čeká
+        # na odpovědi z TWS a smyčka by mezitím pracovala s neplatnými příkazy
+        self._restore_lock = asyncio.Lock()
         self.on_change: Callable[[], None] | None = None
         # Řídí automatické navazování spojení ve smyčce; ruční odpojení jej vypíná
         self.auto_connect: bool = True
         # Zjištěná velikost účtu z TWS (používá se při account.use_live_account_size)
         self._live_account_size: float | None = None
-        # Obnova uloženého stavu proběhne po prvním připojení
+        # Uložený stav se z disku čte jen jednou, při prvním spuštění
         self._restored: bool = False
+        # Po každém (znovu)připojení je potřeba obchody spárovat s příkazy v TWS
+        self._synced: bool = False
         # Opční pozice na účtu, které aplikace neřídí
         self.unmanaged: dict[int, PositionInfo] = {}
         self._unmanaged_checked: float = 0.0
@@ -590,7 +595,13 @@ class FlowEngine:
 
     async def _tick(self) -> None:
         """Jeden průchod monitoringem všech aktivních flow."""
+        # Během obnovy se nemonitoruje - příkazy z minulého spojení nejsou platné
+        if self._restore_lock.locked():
+            return
+
         if not self.ib.connected:
+            # Po obnovení spojení se obchody musí znovu spárovat s příkazy v TWS
+            self._synced = False
             # Automatické připojení jen pokud je povoleno konfigurací i uživatelem
             if self.cfg.connection.auto_reconnect and self.auto_connect:
                 await self._try_reconnect()
@@ -625,20 +636,39 @@ class FlowEngine:
         označí jako vyžadující pozornost, a naopak stav vyplněných příkazů
         se převezme z TWS.
         """
-        if self._restored:
-            return
-        self._restored = True
-        if not self.cfg.state.enabled:
-            return
+        async with self._restore_lock:
+            await self._restore_locked()
 
-        ulozene = store.load(self.cfg.state.file)
+    async def _restore_locked(self) -> None:
+        """Vlastní obnova; volá se pod zámkem, aby neběžela souběžně se smyčkou."""
+        if self._synced:
+            return
+        self._synced = True
+
         prikazy = await self.ib.app_trades()
         pozice = await self.ib.positions()
 
-        if ulozene:
-            self.log_event(f"Obnovuji {len(ulozene)} uložených obchodů a ověřuji je v TWS.")
+        # Ze souboru se čte jen při prvním spuštění; při dalším připojení
+        # je stav v paměti aktuálnější než ten uložený
+        ulozene: list[Flow] = []
+        if not self._restored:
+            self._restored = True
+            if self.cfg.state.enabled:
+                ulozene = store.load(self.cfg.state.file)
+                if ulozene:
+                    self.log_event(
+                        f"Obnovuji {len(ulozene)} uložených obchodů a ověřuji je v TWS."
+                    )
+        else:
+            self.log_event("Spojení navázáno, ověřuji stav obchodů v TWS.")
 
-        for flow in ulozene:
+        # Obchody z paměti se po obnově spojení musí znovu spárovat s příkazy
+        # v TWS - objekty z minulého spojení už nejsou platné
+        k_overeni = ulozene + [
+            flow for flow in self.flows.values() if flow.state.is_active and flow not in ulozene
+        ]
+
+        for flow in k_overeni:
             # Ukončené obchody se jen vrátí do přehledu, nic se u nich neověřuje
             if not flow.state.is_active:
                 self.flows[flow.id] = flow
@@ -648,6 +678,9 @@ class FlowEngine:
             except Exception as exc:
                 log.exception("Obchod %s se nepodařilo obnovit.", flow.id)
                 flow.set_state(FlowState.ERROR, f"Obnova obchodu selhala: {exc}")
+                # Chyba musí být vidět i v průběhu, jinak obchod tiše zůstane
+                # ve stavu, který neodpovídá skutečnosti v TWS
+                self.log_event(f"{flow.id}: obnova selhala - {exc}")
             self.flows[flow.id] = flow
 
         # Příkazy se značkou aplikace, které v uloženém stavu nejsou,
@@ -810,6 +843,11 @@ class FlowEngine:
         vystup = flow.exit_trade
         vstup = flow.entry_trade
 
+        # Uzavírání na pokyn obchodníka pokračuje dál, stav se nepřepisuje
+        if flow.state == FlowState.CLOSING:
+            flow.touch("Spojení obnoveno, pozice se dál uzavírá.")
+            return
+
         # Pozice je otevřená - rozhoduje stav prodejního příkazu
         if drzeno > 0:
             flow.filled_quantity = drzeno
@@ -948,21 +986,10 @@ class FlowEngine:
         try:
             await self.ib.connect()
             self.log_event("Spojení s TWS obnoveno.")
-            # Po prvním úspěšném připojení se dohledají obchody z minulého běhu
+            # Obnova zároveň znovu založí odběry tržních dat
             await self.restore()
-            # Po obnově spojení je potřeba znovu založit odběry tržních dat
-            for flow in self.flows.values():
-                if flow.state.is_active:
-                    self._resubscribe(flow)
         except Exception:
             await asyncio.sleep(self.cfg.connection.reconnect_delay_sec)
-
-    def _resubscribe(self, flow: Flow) -> None:
-        """Obnoví odběry tržních dat flow po znovupřipojení k TWS."""
-        if flow.underlying_contract is not None:
-            self.ib.subscribe(flow.underlying_contract)
-        if flow.option_contract is not None:
-            self.ib.subscribe(flow.option_contract)
 
     async def _monitor(self, flow: Flow) -> bool:
         """
