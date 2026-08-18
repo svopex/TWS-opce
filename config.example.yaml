@@ -105,7 +105,7 @@ trading:
   # Je-li spread vyšší, nákupní příkaz se do trhu nezadá; pokud už zadán byl
   # a dosud se nevyplnil, aplikace jej z trhu odstraní. Hodnotu lze pro každý
   # obchod přepsat přímo ve formuláři.
-  max_spread_pct: 5.0
+  max_spread_pct: 7.0
 
   # Typ nákupního příkazu, který se použije po splnění cenové podmínky
   # na podkladovém aktivu:
@@ -175,7 +175,7 @@ trading:
   rearm_on_spread_ok: true
 
   # O kolik procent pod limitem musí spread být, aby se příkaz vrátil do trhu.
-  # Při limitu 5 % a hodnotě 10 se příkaz vrátí až při spreadu 4,5 % a nižším.
+  # Při limitu 7 % a hodnotě 10 se příkaz vrátí až při spreadu 6,3 % a nižším.
   # Brání tomu, aby se příkaz opakovaně zadával a rušil, když spread kolísá
   # těsně kolem limitu.
   rearm_spread_margin_pct: 10.0

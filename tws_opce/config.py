@@ -53,7 +53,7 @@ class TradingConfig:
 
     # Výchozí poměr SL vůči PT, pokud uživatel SL nezadá (1.0 = 1:1)
     sl_to_pt_ratio: float = 1.0
-    max_spread_pct: float = 5.0
+    max_spread_pct: float = 7.0
     entry_order_type: str = "LMT_ASK"
     # Tolerance nad ASK v procentech pro typ příkazu LMT_ASK
     ask_tolerance_pct: float = 2.0

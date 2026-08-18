@@ -102,6 +102,12 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    hodnoty tedy zmizí pouze na výslovné kliknutí, ne samovolně při psaní.
    V náhledu je vždy vidět, co by výpočet doporučil.
 
+   Zadáte-li ticker, na kterém už běží obchod, formulář se naplní jeho
+   parametry — stejně, jako když na obchod kliknete v monitoringu. U tickeru
+   bez obchodu se pole naopak vyprázdní, aby se do nového zadání nepřenesly
+   ceny toho předchozího; limit spreadu se vrátí na hodnotu z konfigurace
+   a zruší se výběr řádku.
+
 2. **Nákup** — do TWS se zadá příkaz na opci s cenovou podmínkou na podkladu.
    Dokud se nevyplní, aplikace průběžně upravuje jeho limitní cenu podle
    aktuálního ASK (resp. MID) a hlídá spread.

@@ -110,13 +110,17 @@ class TradingUI:
         self.last_log_stamp: datetime | None = None
         # Pořadové číslo přípravy zadání - rozlišuje souběžně běžící požadavky
         self.preview_seq: int = 0
-        # Naposledy zobrazené pozice bez dozoru - pruh se překresluje jen při změně
-        self.last_unmanaged: set[int] = set()
+        # Ticker, ke kterému patří hodnoty ve formuláři
+        self.last_symbol: str | None = None
+        # Naposledy zobrazené pozice bez dozoru; None znamená, že pruh ještě nebyl
+        # vykreslen - prázdná množina je platný stav a nesmí se s tím zaměnit
+        self.last_unmanaged: set[int] | None = None
 
         self._build_header()
 
         # Pruh s upozorněním na pozice, které aplikace neřídí
         self.warning_bar = ui.row().classes("pruh-varovani")
+        self.warning_bar.set_visibility(False)
 
         with ui.row().classes("obsah"):
             with ui.column().classes("panel-formular"):
@@ -286,6 +290,34 @@ class TradingUI:
         sl = float(self.sl_input.value) if self.sl_input.value not in (None, "") else None
         return symbol, entry, pt, sl
 
+    def _fill_from_flow(self, flow: Flow) -> None:
+        """Naplní formulář parametry existujícího obchodu."""
+        self.last_symbol = flow.symbol
+        self.selected_id = flow.id
+        self.symbol_input.set_value(flow.symbol)
+        self.entry_input.set_value(round(flow.entry_price, 2))
+        self.pt_input.set_value(round(flow.profit_target, 2))
+        self.sl_input.set_value(round(flow.stop_loss, 2))
+        self.spread_input.set_value(flow.max_spread_pct)
+        self.qty_input.set_value(flow.quantity)
+
+    def _clear_inputs(self) -> None:
+        """
+        Vyprázdní ceny a množství ve formuláři.
+        Volá se při přechodu na jiný ticker, aby se do nového zadání
+        nepřenesly hodnoty dříve načteného obchodu.
+        """
+        for pole in (self.entry_input, self.pt_input, self.sl_input, self.qty_input):
+            pole.set_value(None)
+        # Limit spreadu se vrací na hodnotu z konfigurace
+        self.spread_input.set_value(self.cfg.trading.max_spread_pct)
+
+        # Výběr v monitoringu se ruší, protože se už netýká rozepsaného zadání
+        self.selected_id = None
+        self.preview = None
+        self.preview_detail.set_text("")
+        self.preview_warning.set_text("")
+
     async def _load_preview(self, rezim: str = "nacist") -> None:
         """
         Připraví obchod podle vyplněných polí - určí typ opce, expiraci, strike,
@@ -298,6 +330,20 @@ class TradingUI:
         symbol, entry, pt, sl = self._form_values()
         if not symbol:
             return
+
+        # Při přechodu na jiný ticker se formulář naplní podle toho, zda na něm
+        # běží obchod: jeho parametry se načtou, jinak se pole vyprázdní
+        if symbol != self.last_symbol:
+            bezici = self.engine.active_flow_for(symbol)
+            if bezici is not None:
+                self._fill_from_flow(bezici)
+                entry, pt, sl = bezici.entry_price, bezici.profit_target, bezici.stop_loss
+                ui.notify(f"Načten běžící obchod {bezici.id}.", type="info")
+            else:
+                self._clear_inputs()
+                entry = pt = sl = None
+        self.last_symbol = symbol
+
         if not self.ib.connected:
             self.preview_label.set_text("Není navázáno spojení s TWS.")
             return
@@ -513,14 +559,8 @@ class TradingUI:
         if flow is None:
             return
 
-        self.selected_id = flow.id
         # Parametry vybraného obchodu se načtou zpět do formuláře
-        self.symbol_input.set_value(flow.symbol)
-        self.entry_input.set_value(round(flow.entry_price, 2))
-        self.pt_input.set_value(round(flow.profit_target, 2))
-        self.sl_input.set_value(round(flow.stop_loss, 2))
-        self.spread_input.set_value(flow.max_spread_pct)
-        self.qty_input.set_value(flow.quantity)
+        self._fill_from_flow(flow)
         self._refresh()
 
     # ------------------------------------------------------------------
