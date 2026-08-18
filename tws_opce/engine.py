@@ -1,0 +1,1221 @@
+"""
+Obchodní logika aplikace - příprava zadání, zadávání příkazů do TWS
+a monitorovací smyčka nad všemi běžícími flow.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import itertools
+import logging
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Callable
+
+from . import calc, store
+from .config import AppConfig
+from .ib_service import IBService, PositionInfo, order_ref, parse_order_ref, valid_price
+from .models import Flow, FlowRequest, FlowState
+
+log = logging.getLogger(__name__)
+
+# Stavy příkazu v TWS, které znamenají, že příkaz již není v trhu
+DEAD_ORDER_STATES = ("Cancelled", "ApiCancelled", "Inactive")
+
+# Stavy, ve kterých lze příkaz v TWS ještě upravit. Příkaz čekající na
+# potvrzení zrušení ("PendingCancel") mezi ně nepatří - jeho úprava končí
+# hlášením TWS "Order has been cancelled already, too late to replace".
+MODIFIABLE_ORDER_STATES = ("PreSubmitted", "Submitted")
+
+
+@dataclass
+class Preview:
+    """
+    Výsledek přípravy zadání - podklady pro předvyplnění formuláře.
+    Vzniká ještě před odesláním jakéhokoliv příkazu do trhu.
+    """
+
+    symbol: str
+    current_price: float | None = None
+    right: str = "C"
+    expiration: str = ""
+    strike: float = 0.0
+    stop_loss: float = 0.0
+    delta: float | None = None
+    # True, pokud delta nepřišla z TWS a byla dopočítána z ceny opce
+    delta_estimated: bool = False
+    option_bid: float | None = None
+    option_ask: float | None = None
+    spread_pct: float | None = None
+    quantity: int = 1
+    risk_amount: float = 0.0
+    account_size: float = 0.0
+    warnings: list[str] = field(default_factory=list)
+
+    # Runtime kontrakty pro následné založení flow
+    underlying: Any = field(default=None, repr=False)
+    option: Any = field(default=None, repr=False)
+    min_tick: float = 0.01
+
+    @property
+    def right_label(self) -> str:
+        """CALL / PUT pro zobrazení ve formuláři."""
+        return "CALL" if self.right == "C" else "PUT"
+
+
+class FlowEngine:
+    """
+    Správa všech obchodních flow.
+    Drží jejich stav, zadává příkazy a v periodické smyčce hlídá spread,
+    vyplnění nákupu a následné zadání výstupního příkazu.
+    """
+
+    def __init__(self, cfg: AppConfig, ib: IBService) -> None:
+        self.cfg = cfg
+        self.ib = ib
+        self.flows: dict[str, Flow] = {}
+        self.events: deque[tuple[datetime, str]] = deque(maxlen=cfg.ui.log_lines)
+        self._ids = itertools.count(1)
+        self._preview: Preview | None = None
+        self._task: asyncio.Task | None = None
+        self._lock = asyncio.Lock()
+        self.on_change: Callable[[], None] | None = None
+        # Řídí automatické navazování spojení ve smyčce; ruční odpojení jej vypíná
+        self.auto_connect: bool = True
+        # Zjištěná velikost účtu z TWS (používá se při account.use_live_account_size)
+        self._live_account_size: float | None = None
+        # Obnova uloženého stavu proběhne po prvním připojení
+        self._restored: bool = False
+        # Opční pozice na účtu, které aplikace neřídí
+        self.unmanaged: dict[int, PositionInfo] = {}
+        self._unmanaged_checked: float = 0.0
+
+    # ------------------------------------------------------------------
+    # Pomocné
+    # ------------------------------------------------------------------
+
+    def log_event(self, message: str) -> None:
+        """Zaznamená událost do provozního logu zobrazovaného v UI."""
+        self.events.appendleft((datetime.now(), message))
+        log.info(message)
+        self._notify()
+
+    def _persist(self) -> None:
+        """
+        Uloží stav obchodů na disk, aby přežil restart i pád aplikace.
+
+        Před dokončením obnovy se nezapisuje. Jinak by první událost po startu
+        (například hláška o navázání spojení) přepsala uložený stav prázdným
+        seznamem dřív, než se stihne načíst.
+        """
+        if not self.cfg.state.enabled or not self._restored:
+            return
+        store.save(list(self.flows.values()), self.cfg.state.file)
+
+    def _notify(self) -> None:
+        """Informuje UI o změně dat a zároveň uloží stav obchodů."""
+        self._persist()
+        if self.on_change:
+            try:
+                self.on_change()
+            except Exception:
+                log.exception("Chyba při notifikaci UI.")
+
+    @property
+    def account_size(self) -> float:
+        """Velikost účtu - podle konfigurace buď pevná, nebo načtená z TWS."""
+        if self.cfg.account.use_live_account_size and self._live_account_size:
+            return self._live_account_size
+        return self.cfg.account.size
+
+    @property
+    def risk_amount(self) -> float:
+        """Částka v USD riskovaná na jednom obchodu."""
+        return self.account_size * self.cfg.account.risk_pct / 100.0
+
+    def active_flow_for(self, symbol: str) -> Flow | None:
+        """Najde aktivní flow daného tickeru (na jeden ticker je povoleno jedno)."""
+        symbol = symbol.upper().strip()
+        for flow in self.flows.values():
+            if flow.symbol == symbol and flow.state.is_active:
+                return flow
+        return None
+
+    def sorted_flows(self) -> list[Flow]:
+        """Flow seřazená od nejnovějšího pro zobrazení v tabulce."""
+        return sorted(self.flows.values(), key=lambda f: f.created_at, reverse=True)
+
+    # ------------------------------------------------------------------
+    # Příprava zadání
+    # ------------------------------------------------------------------
+
+    async def prepare(
+        self,
+        symbol: str,
+        entry_price: float | None = None,
+        profit_target: float | None = None,
+        stop_loss: float | None = None,
+    ) -> Preview:
+        """
+        Připraví zadání obchodu: načte cenu podkladu, určí typ opce, expiraci,
+        strike podle PT, dopočítá SL a doporučené množství kontraktů.
+        Nezadává žádný příkaz do trhu.
+        """
+        if not self.ib.connected:
+            raise RuntimeError("Není navázáno spojení s TWS.")
+
+        symbol = symbol.upper().strip()
+        if not symbol:
+            raise ValueError("Zadejte ticker.")
+
+        preview = Preview(symbol=symbol, account_size=self.account_size, risk_amount=self.risk_amount)
+
+        # Podklad a jeho aktuální cena
+        underlying = await self.ib.qualify_stock(symbol)
+        preview.underlying = underlying
+        self.ib.subscribe(underlying)
+        await self.ib.wait_for_quotes(underlying, self.cfg.engine.market_data_timeout_sec)
+        preview.current_price = self.ib.underlying_price(underlying)
+
+        if preview.current_price is None:
+            preview.warnings.append(
+                "Z TWS zatím nedorazila cena podkladu - zkontrolujte odběr tržních dat."
+            )
+
+        # Bez vstupní ceny a PT nelze určit kontrakt, vrací se jen cena podkladu
+        if entry_price is None or profit_target is None:
+            self._replace_preview(preview)
+            return preview
+
+        reference = preview.current_price if preview.current_price is not None else entry_price
+        preview.right = calc.determine_right(reference, entry_price)
+
+        # SL buď zadaný uživatelem, nebo dopočtený podle poměru z konfigurace
+        preview.stop_loss = (
+            stop_loss
+            if stop_loss is not None
+            else calc.default_stop_loss(entry_price, profit_target, self.cfg.trading.sl_to_pt_ratio)
+        )
+
+        # Výběr expirace a strike nejbližšího k PT
+        chain = await self.ib.option_chain(underlying)
+        expiration = calc.select_expiration(
+            list(chain.expirations),
+            self.cfg.expiration.mode,
+            self.cfg.expiration.min_dte,
+            self.cfg.expiration.fixed_date,
+        )
+        if expiration is None:
+            raise ValueError(
+                f"Pro ticker {symbol} nebyla nalezena vhodná expirace "
+                f"(režim '{self.cfg.expiration.mode}')."
+            )
+        preview.expiration = expiration
+
+        strike = calc.nearest_strike(sorted(chain.strikes), profit_target)
+        if strike is None:
+            raise ValueError(f"Pro ticker {symbol} nejsou dostupné strike ceny.")
+        preview.strike = strike
+
+        option, details = await self.ib.qualify_option(
+            symbol, expiration, strike, preview.right, chain.tradingClass
+        )
+        preview.option = option
+        preview.min_tick = details.minTick or 0.01
+
+        # Tržní data opce kvůli deltě a spreadu
+        self.ib.subscribe(option)
+        await self.ib.wait_for_quotes(option, self.cfg.engine.market_data_timeout_sec)
+        bid, ask, delta = self.ib.option_quotes(option)
+        preview.option_bid = bid
+        preview.option_ask = ask
+        preview.spread_pct = calc.spread_pct(bid, ask)
+        preview.delta = delta
+
+        # TWS model greeks u opcí neposílá spolehlivě, proto se delta v takovém
+        # případě dopočítá z tržní ceny opce; teprve pak se sáhne po náhradní hodnotě
+        if delta is None:
+            delta = self._estimate_delta(preview)
+            if delta is not None:
+                preview.delta = delta
+                preview.delta_estimated = True
+
+        if delta is None:
+            preview.warnings.append(
+                f"Deltu opce se nepodařilo získat ani dopočítat - množství je spočítáno "
+                f"s náhradní hodnotou {self.cfg.trading.default_delta:g}."
+            )
+        used_delta = delta if delta is not None else self.cfg.trading.default_delta
+
+        preview.quantity = calc.suggest_quantity(
+            self.risk_amount,
+            entry_price,
+            preview.stop_loss,
+            used_delta,
+            self.cfg.trading.min_quantity,
+            self.cfg.trading.max_quantity,
+        )
+
+        if preview.spread_pct is not None and preview.spread_pct > self.cfg.trading.max_spread_pct:
+            preview.warnings.append(
+                f"Aktuální spread {preview.spread_pct:.2f} % překračuje limit "
+                f"{self.cfg.trading.max_spread_pct:g} %."
+            )
+
+        self._replace_preview(preview)
+        return preview
+
+    def _estimate_delta(self, preview: Preview) -> float | None:
+        """
+        Dopočítá deltu z tržní ceny opce, když ji TWS nepošle.
+        Používá se střed trhu, při jeho nedostupnosti poslední známá cena.
+        """
+        cena = None
+        if preview.option_bid is not None and preview.option_ask is not None:
+            cena = (preview.option_bid + preview.option_ask) / 2.0
+        elif preview.option_ask is not None:
+            cena = preview.option_ask
+
+        if cena is None or preview.current_price is None:
+            return None
+
+        return calc.estimate_delta(
+            cena,
+            preview.current_price,
+            preview.strike,
+            preview.expiration,
+            self.cfg.trading.risk_free_rate_pct,
+            preview.right,
+        )
+
+    def _replace_preview(self, preview: Preview) -> None:
+        """
+        Nahradí držený náhled novým a uvolní odběry tržních dat toho předchozího.
+        Kontrakty použité v založeném flow zůstávají odebírané díky počítadlu odběratelů.
+        """
+        old = self._preview
+        self._preview = preview
+        if old is not None:
+            self.ib.unsubscribe(old.underlying)
+            self.ib.unsubscribe(old.option)
+
+    def release_preview(self) -> None:
+        """Uvolní odběry držené posledním náhledem."""
+        if self._preview is not None:
+            self.ib.unsubscribe(self._preview.underlying)
+            self.ib.unsubscribe(self._preview.option)
+            self._preview = None
+
+    # ------------------------------------------------------------------
+    # Založení a zrušení flow
+    # ------------------------------------------------------------------
+
+    def _validate(self, right: str, entry: float, pt: float, sl: float) -> None:
+        """
+        Ověří vzájemnou polohu vstupní ceny, PT a SL vůči typu opce.
+        U CALL musí být PT nad vstupem a SL pod ním, u PUT opačně.
+        """
+        if right == "C":
+            if pt <= entry:
+                raise ValueError("U CALL opce musí být PT nad vstupní cenou podkladu.")
+            if sl >= entry:
+                raise ValueError("U CALL opce musí být SL pod vstupní cenou podkladu.")
+        else:
+            if pt >= entry:
+                raise ValueError("U PUT opce musí být PT pod vstupní cenou podkladu.")
+            if sl <= entry:
+                raise ValueError("U PUT opce musí být SL nad vstupní cenou podkladu.")
+
+    async def start_flow(self, request: FlowRequest) -> Flow:
+        """
+        Založí nové flow: ověří zadání, vybere kontrakt a zadá nákupní příkaz
+        s cenovou podmínkou na podkladu do TWS.
+        """
+        async with self._lock:
+            symbol = request.symbol.upper().strip()
+
+            # Na jeden ticker je povoleno jedno aktivní flow
+            if self.active_flow_for(symbol) is not None:
+                raise ValueError(f"Pro ticker {symbol} již běží aktivní flow. Nejprve jej zrušte.")
+
+            preview = await self.prepare(
+                symbol, request.entry_price, request.profit_target, request.stop_loss
+            )
+
+            stop_loss = request.stop_loss if request.stop_loss is not None else preview.stop_loss
+            self._validate(preview.right, request.entry_price, request.profit_target, stop_loss)
+
+            quantity = int(request.quantity or preview.quantity)
+            if quantity < 1:
+                raise ValueError("Množství opcí musí být alespoň 1 kontrakt.")
+
+            max_spread = (
+                request.max_spread_pct
+                if request.max_spread_pct is not None
+                else self.cfg.trading.max_spread_pct
+            )
+
+            flow = Flow(
+                id=f"{symbol}-{next(self._ids)}",
+                symbol=symbol,
+                entry_price=request.entry_price,
+                profit_target=request.profit_target,
+                stop_loss=stop_loss,
+                quantity=quantity,
+                max_spread_pct=max_spread,
+                right=preview.right,
+                expiration=preview.expiration,
+                strike=preview.strike,
+                min_tick=preview.min_tick,
+                option_contract=preview.option,
+                underlying_contract=preview.underlying,
+                option_conid=preview.option.conId,
+                underlying_conid=preview.underlying.conId,
+                underlying_price=preview.current_price,
+                option_bid=preview.option_bid,
+                option_ask=preview.option_ask,
+                option_spread_pct=preview.spread_pct,
+                delta=preview.delta,
+            )
+
+            # Flow přebírá vlastní odběr tržních dat obou kontraktů
+            self.ib.subscribe(flow.underlying_contract)
+            self.ib.subscribe(flow.option_contract)
+
+            self.flows[flow.id] = flow
+            self.log_event(
+                f"{flow.id}: založeno flow {flow.option_label()}, množství {quantity}, "
+                f"vstup {request.entry_price:g}, PT {request.profit_target:g}, SL {stop_loss:g}."
+            )
+
+            # Při příliš širokém spreadu se příkaz zatím nezadává
+            if flow.option_spread_pct is not None and flow.option_spread_pct > max_spread:
+                flow.set_state(
+                    FlowState.SPREAD_BLOCKED,
+                    f"Spread {flow.option_spread_pct:.2f} % > limit {max_spread:g} %, "
+                    f"příkaz nebyl zadán.",
+                )
+                self.log_event(f"{flow.id}: {flow.message}")
+            else:
+                self._place_entry(flow)
+
+            self._notify()
+            return flow
+
+    def _place_entry(self, flow: Flow) -> bool:
+        """
+        Zadá nákupní příkaz s cenovou podmínkou na dosažení vstupní ceny podkladu.
+        Vrací False, pokud příkaz zatím zadat nelze - o zadání se pokusí další průchod smyčkou.
+        """
+        limit = self._entry_limit(flow)
+
+        # Bez kotací opce nelze určit limitní cenu. Tržní příkaz by se v takové
+        # situaci vyplnil za neznámou cenu, proto se čeká na data z TWS.
+        if self.cfg.trading.entry_order_type != "MKT" and limit is None:
+            flow.set_state(
+                FlowState.NO_QUOTES,
+                "Z TWS nedorazily kotace opce, limitní příkaz zatím nelze zadat "
+                "(mimo obchodní hodiny nebo chybí předplatné dat).",
+            )
+            return False
+
+        entry_more, _, _ = calc.condition_directions(flow.right)
+        condition = self.ib.price_condition(flow.underlying_conid, entry_more, flow.entry_price)
+        order = self.ib.build_entry_order(
+            flow.quantity, limit, [condition], order_ref(flow.id, "entry")
+        )
+        flow.entry_trade = self.ib.place(flow.option_contract, order)
+        flow.entry_order_id = flow.entry_trade.order.orderId
+        flow.entry_limit = limit
+
+        limit_text = f"LMT {limit:g}" if limit is not None else "MKT"
+        direction = ">=" if entry_more else "<="
+        flow.set_state(
+            FlowState.ARMED,
+            f"Příkaz v trhu ({limit_text}), podmínka: {flow.symbol} {direction} {flow.entry_price:g}.",
+        )
+        self.log_event(f"{flow.id}: nákupní příkaz zadán - {flow.message}")
+        return True
+
+    def _entry_limit(self, flow: Flow) -> float | None:
+        """Limitní cena nákupu podle typu příkazu z konfigurace, zaokrouhlená na tik."""
+        bid, ask, _ = self.ib.option_quotes(flow.option_contract)
+        price = calc.entry_limit_price(
+            self.cfg.trading.entry_order_type, bid, ask, self.cfg.trading.ask_tolerance_pct
+        )
+        if price is None:
+            return None
+        return calc.round_to_tick(price, flow.min_tick)
+
+    def _place_exit(self, flow: Flow, quantity: int) -> None:
+        """
+        Zadá jediný prodejní příkaz pokrývající PT i SL.
+        Obě cenové podmínky na podklad jsou spojeny logickým OR.
+        """
+        _, pt_more, sl_more = calc.condition_directions(flow.right)
+        conditions = [
+            self.ib.price_condition(flow.underlying_conid, pt_more, flow.profit_target),
+            self.ib.price_condition(flow.underlying_conid, sl_more, flow.stop_loss),
+        ]
+
+        limit = None
+        if self.cfg.trading.exit_order_type == "LMT":
+            bid, _, _ = self.ib.option_quotes(flow.option_contract)
+            price = calc.exit_limit_price(bid, self.cfg.trading.bid_tolerance_pct)
+            limit = calc.round_to_tick(price, flow.min_tick) if price is not None else None
+
+        order = self.ib.build_exit_order(
+            quantity, limit, conditions, order_ref(flow.id, "exit")
+        )
+        flow.exit_trade = self.ib.place(flow.option_contract, order)
+        flow.exit_order_id = flow.exit_trade.order.orderId
+
+        limit_text = f"LMT {limit:g}" if limit is not None else "MKT"
+        flow.set_state(
+            FlowState.EXIT_ARMED,
+            f"Prodejní příkaz ({limit_text}) na {quantity} ks, "
+            f"PT {flow.profit_target:g} / SL {flow.stop_loss:g}.",
+        )
+        self.log_event(f"{flow.id}: {flow.message}")
+
+    async def cancel_flow(self, flow_id: str, close_position: bool = False) -> None:
+        """
+        Zruší flow podle identifikátoru včetně jeho příkazů v TWS.
+        S close_position se navíc uzavře držená pozice tržním příkazem.
+        """
+        flow = self.flows.get(flow_id)
+        if flow is None:
+            raise ValueError(f"Flow '{flow_id}' neexistuje.")
+        await self._cancel(flow, close_position)
+
+    async def cancel_by_symbol(self, symbol: str, close_position: bool = False) -> Flow:
+        """Zruší aktivní flow podle tickeru - varianta použitá tlačítkem ve formuláři."""
+        flow = self.active_flow_for(symbol)
+        if flow is None:
+            raise ValueError(f"Pro ticker {symbol.upper().strip()} neběží žádné aktivní flow.")
+        await self._cancel(flow, close_position)
+        return flow
+
+    async def _cancel(self, flow: Flow, close_position: bool = False) -> None:
+        """
+        Zruší příkazy flow a ukončí jej.
+
+        Drží-li obchod pozici, rozhoduje close_position: buď se pozice uzavře
+        tržním příkazem, nebo zůstane otevřená a bez zajištění k ručnímu řízení.
+        """
+        async with self._lock:
+            self.ib.cancel(flow.entry_trade)
+            self.ib.cancel(flow.exit_trade)
+
+            v_pozici = flow.fill_price is not None
+
+            if v_pozici and close_position:
+                # Prodejní příkaz se zadá až po zrušení nákupního, protože TWS
+                # nepovolí oba příkazy na jednom kontraktu současně
+                flow.set_state(FlowState.CLOSING, "Zrušeno obchodníkem, pozice se uzavírá trhem.")
+            elif v_pozici:
+                flow.set_state(
+                    FlowState.CANCELLED,
+                    "Flow zrušeno. POZOR: pozice zůstává otevřená v TWS bez zajištění - "
+                    "prodejní příkaz byl zrušen, uzavřete ji ručně.",
+                )
+                self._release(flow)
+            else:
+                flow.set_state(
+                    FlowState.CANCELLED, "Flow zrušeno před nákupem, příkaz odstraněn z trhu."
+                )
+                self._release(flow)
+
+            self.log_event(f"{flow.id}: {flow.message}")
+            self._notify()
+
+    def _release(self, flow: Flow) -> None:
+        """Uvolní odběry tržních dat držené ukončeným flow."""
+        self.ib.unsubscribe(flow.underlying_contract)
+        self.ib.unsubscribe(flow.option_contract)
+        flow.underlying_contract = None
+        flow.option_contract = None
+
+    def remove_flow(self, flow_id: str) -> None:
+        """Odstraní ukončené flow z přehledu."""
+        flow = self.flows.get(flow_id)
+        if flow is None:
+            return
+        if flow.state.is_active:
+            raise ValueError("Aktivní flow nelze odstranit, nejprve jej zrušte.")
+        self.flows.pop(flow_id, None)
+        self._notify()
+
+    # ------------------------------------------------------------------
+    # Monitorovací smyčka
+    # ------------------------------------------------------------------
+
+    def start(self) -> None:
+        """Spustí periodickou monitorovací smyčku."""
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        """Zastaví monitorovací smyčku."""
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    async def _run(self) -> None:
+        """Hlavní smyčka - periodicky prochází aktivní flow a hlídá spojení."""
+        while True:
+            try:
+                await self._tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Chyba v monitorovací smyčce.")
+            await asyncio.sleep(self.cfg.engine.poll_interval_sec)
+
+    async def _tick(self) -> None:
+        """Jeden průchod monitoringem všech aktivních flow."""
+        if not self.ib.connected:
+            # Automatické připojení jen pokud je povoleno konfigurací i uživatelem
+            if self.cfg.connection.auto_reconnect and self.auto_connect:
+                await self._try_reconnect()
+            return
+
+        # Velikost účtu z TWS se načítá jen při odpovídajícím nastavení
+        if self.cfg.account.use_live_account_size and self._live_account_size is None:
+            self._live_account_size = await self.ib.net_liquidation()
+
+        # Pozice bez dozoru aplikace se kontrolují v delším intervalu
+        await self._check_unmanaged()
+
+        changed = False
+        for flow in list(self.flows.values()):
+            if not flow.state.is_active:
+                continue
+            try:
+                changed |= await self._monitor(flow)
+            except Exception as exc:
+                log.exception("Chyba při monitoringu flow %s.", flow.id)
+                flow.set_state(FlowState.ERROR, f"Chyba monitoringu: {exc}")
+                changed = True
+
+        if changed:
+            self._notify()
+
+    async def restore(self) -> None:
+        """
+        Obnoví obchody z uloženého stavu a srovná je se skutečností v TWS.
+
+        Uložený soubor říká, jaké obchody aplikace vedla; závazné jsou ale
+        příkazy a pozice v TWS. Obchod, jehož příkazy v TWS nejsou, se proto
+        označí jako vyžadující pozornost, a naopak stav vyplněných příkazů
+        se převezme z TWS.
+        """
+        if self._restored:
+            return
+        self._restored = True
+        if not self.cfg.state.enabled:
+            return
+
+        ulozene = store.load(self.cfg.state.file)
+        prikazy = await self.ib.app_trades()
+        pozice = await self.ib.positions()
+
+        if ulozene:
+            self.log_event(f"Obnovuji {len(ulozene)} uložených obchodů a ověřuji je v TWS.")
+
+        for flow in ulozene:
+            # Ukončené obchody se jen vrátí do přehledu, nic se u nich neověřuje
+            if not flow.state.is_active:
+                self.flows[flow.id] = flow
+                continue
+            try:
+                await self._restore_flow(flow, prikazy, pozice)
+            except Exception as exc:
+                log.exception("Obchod %s se nepodařilo obnovit.", flow.id)
+                flow.set_state(FlowState.ERROR, f"Obnova obchodu selhala: {exc}")
+            self.flows[flow.id] = flow
+
+        # Příkazy se značkou aplikace, které v uloženém stavu nejsou,
+        # se dohledají přímo v TWS - záchrana pro případ ztráty souboru
+        await self._adopt_orphans(prikazy, pozice)
+
+        # Pozice, ke kterým se nepodařilo přiřadit obchod, jsou bez dozoru aplikace
+        self._warn_unmanaged(pozice)
+
+        # Číslování dalších obchodů musí navázat za obnovené záznamy
+        nejvyssi = 0
+        for flow in self.flows.values():
+            cast = flow.id.rsplit("-", 1)[-1]
+            if cast.isdigit():
+                nejvyssi = max(nejvyssi, int(cast))
+        self._ids = itertools.count(nejvyssi + 1)
+
+        # Uložený stav se přepisuje jen tehdy, když se skutečně něco obnovilo
+        if self.flows:
+            self._notify()
+
+    def _warn_unmanaged(self, pozice: dict) -> None:
+        """
+        Upozorní na opční pozice na účtu, které aplikace neřídí.
+
+        Nastává, když se ztratí uložený stav a pozice už byla nakoupena -
+        vyplněné příkazy TWS vrací bez značky v orderRef, takže je nelze
+        k obchodu přiřadit. Aplikace k nim proto sama nic nezadává, protože
+        nezná původní PT ani SL, a nechává rozhodnutí na obchodníkovi.
+        """
+        rizene = {
+            flow.option_conid
+            for flow in self.flows.values()
+            if flow.state.is_active and flow.option_conid
+        }
+        for conid, info in pozice.items():
+            if conid in rizene:
+                continue
+            self.unmanaged[conid] = info
+            self.log_event(f"POZOR: {self.unmanaged_text(info)}")
+
+    async def _adopt_orphans(self, prikazy: dict, pozice: dict) -> None:
+        """
+        Dohledá příkazy označené značkou aplikace, ke kterým chybí uložený obchod.
+
+        Nastává, když se soubor se stavem ztratí nebo poškodí. Obchod se sestaví
+        z parametrů příkazu: vstupní cena z jeho cenové podmínky, PT a SL
+        z podmínek prodejního příkazu. Není-li prodejní příkaz k dispozici,
+        odvodí se PT ze strike a SL z poměru v konfiguraci - proto se takový
+        obchod označí jako dopočítaný a je vhodné jej zkontrolovat.
+        """
+        for ref, trade in prikazy.items():
+            rozklad = parse_order_ref(ref)
+            if rozklad is None:
+                continue
+            flow_id, druh = rozklad
+            # Obchod už je obnovený z uloženého stavu, nebo jde o výstupní
+            # příkaz, který se dohledá spolu se svým obchodem
+            if flow_id in self.flows or druh != "entry":
+                continue
+            # Zrušený příkaz bez pozice už není co přebírat; vyplněný ano,
+            # protože k němu může být otevřená pozice bez zajištění
+            if trade.orderStatus.status in DEAD_ORDER_STATES:
+                continue
+            if trade.orderStatus.filled <= 0 and trade.orderStatus.status == "Filled":
+                continue
+
+            try:
+                flow = await self._flow_from_trade(flow_id, trade, prikazy, pozice)
+            except Exception as exc:
+                log.exception("Osiřelý příkaz %s se nepodařilo převzít.", ref)
+                self.log_event(f"Příkaz {ref} se nepodařilo převzít: {exc}")
+                continue
+
+            self.flows[flow.id] = flow
+            self.log_event(
+                f"{flow.id}: převzat příkaz nalezený v TWS ({flow.option_label()}) - "
+                f"{flow.state.label}. {flow.message}"
+            )
+
+    async def _flow_from_trade(
+        self, flow_id: str, trade: Any, prikazy: dict, pozice: dict
+    ) -> Flow:
+        """Sestaví obchod z příkazu nalezeného v TWS."""
+        kontrakt = trade.contract
+        podminky = trade.order.conditions
+        if not podminky:
+            raise ValueError("příkaz nemá cenovou podmínku na podkladu")
+
+        entry_price = float(podminky[0].price)
+        right = kontrakt.right
+        strike = float(kontrakt.strike)
+        quantity = int(trade.order.totalQuantity)
+
+        # PT a SL nese prodejní příkaz; bez něj se odvodí ze strike a konfigurace
+        vystup = prikazy.get(order_ref(flow_id, "exit"))
+        dopocteno = False
+        if vystup is not None and len(vystup.order.conditions) >= 2:
+            profit_target = float(vystup.order.conditions[0].price)
+            stop_loss = float(vystup.order.conditions[1].price)
+        else:
+            dopocteno = True
+            profit_target = strike
+            stop_loss = calc.default_stop_loss(
+                entry_price, profit_target, self.cfg.trading.sl_to_pt_ratio
+            )
+
+        flow = Flow(
+            id=flow_id,
+            symbol=kontrakt.symbol,
+            entry_price=entry_price,
+            profit_target=profit_target,
+            stop_loss=stop_loss,
+            quantity=quantity,
+            max_spread_pct=self.cfg.trading.max_spread_pct,
+            right=right,
+            expiration=kontrakt.lastTradeDateOrContractMonth,
+            strike=strike,
+        )
+        flow.entry_order_id = trade.order.orderId
+        flow.entry_limit = valid_price(trade.order.lmtPrice)
+
+        await self._restore_flow(flow, prikazy, pozice)
+
+        if dopocteno:
+            flow.message += (
+                " PT a SL nebyly v TWS k dispozici, jsou dopočítané ze strike "
+                "a konfigurace - zkontrolujte je."
+            )
+        return flow
+
+    async def _restore_flow(self, flow: Flow, prikazy: dict, pozice: dict) -> None:
+        """Obnoví jeden obchod - kontrakty, odběry dat a skutečný stav příkazů."""
+        # Kontrakty je nutné znovu ověřit, runtime objekty se neukládají
+        flow.underlying_contract = await self.ib.qualify_stock(flow.symbol)
+        option, details = await self.ib.qualify_option(
+            flow.symbol, flow.expiration, flow.strike, flow.right
+        )
+        flow.option_contract = option
+        flow.option_conid = option.conId
+        flow.underlying_conid = flow.underlying_contract.conId
+        flow.min_tick = details.minTick or flow.min_tick
+
+        self.ib.subscribe(flow.underlying_contract)
+        self.ib.subscribe(flow.option_contract)
+
+        flow.entry_trade = prikazy.get(order_ref(flow.id, "entry"))
+        flow.exit_trade = prikazy.get(order_ref(flow.id, "exit"))
+        info = pozice.get(option.conId)
+        drzeno = int(info.quantity) if info else 0
+
+        self._restore_state(flow, drzeno)
+        self.log_event(f"{flow.id}: obnoveno - {flow.state.label}. {flow.message}")
+
+    def _restore_state(self, flow: Flow, drzeno: int) -> None:
+        """
+        Určí stav obchodu podle toho, co se skutečně nachází v TWS.
+        Rozhoduje existence pozice a stav nalezených příkazů, nikoliv uložený zápis.
+        """
+        vystup = flow.exit_trade
+        vstup = flow.entry_trade
+
+        # Pozice je otevřená - rozhoduje stav prodejního příkazu
+        if drzeno > 0:
+            flow.filled_quantity = drzeno
+            if vystup is not None and vystup.orderStatus.status not in DEAD_ORDER_STATES:
+                flow.set_state(
+                    FlowState.EXIT_ARMED,
+                    f"Obnoveno: drženo {drzeno} ks, prodejní příkaz je v TWS.",
+                )
+            else:
+                # Pozice bez zajištění - smyčka prodejní příkaz zadá v dalším průchodu
+                flow.set_state(
+                    FlowState.FILLED,
+                    f"Obnoveno: drženo {drzeno} ks bez prodejního příkazu, zajištění se doplní.",
+                )
+                flow.entry_cancel_requested = True
+            return
+
+        # Pozice není a prodejní příkaz byl vyplněn - obchod se uzavřel během výpadku
+        if vystup is not None and vystup.orderStatus.status == "Filled":
+            flow.exit_fill_price = valid_price(vystup.orderStatus.avgFillPrice)
+            flow.exit_reason = self._exit_reason(flow)
+            flow.set_state(FlowState.CLOSED, "Obnoveno: pozice byla uzavřena během výpadku.")
+            self._release(flow)
+            return
+
+        # Nákupní příkaz stále čeká v trhu
+        if vstup is not None and vstup.orderStatus.status not in DEAD_ORDER_STATES:
+            if vstup.orderStatus.filled > 0:
+                flow.set_state(FlowState.FILLED, "Obnoveno: nákup vyplněn, zajištění se doplní.")
+            else:
+                flow.entry_limit = valid_price(vstup.order.lmtPrice) or flow.entry_limit
+                flow.set_state(FlowState.ARMED, "Obnoveno: nákupní příkaz čeká v trhu.")
+            return
+
+        # Obchod byl před nákupem a příkaz v TWS není - vrátí se do trhu smyčkou
+        if flow.fill_price is None:
+            flow.entry_trade = None
+            flow.entry_order_id = None
+            flow.set_state(
+                FlowState.NO_QUOTES,
+                "Obnoveno: nákupní příkaz v TWS nenalezen, bude zadán znovu.",
+            )
+            return
+
+        # Zbývá případ, kdy byl obchod nakoupen, ale pozice ani příkaz nejsou
+        flow.set_state(
+            FlowState.ERROR,
+            "Obnoveno: obchod byl nakoupen, ale v TWS není pozice ani prodejní příkaz. "
+            "Zkontrolujte účet ručně.",
+        )
+
+    async def _check_unmanaged(self) -> None:
+        """
+        Periodicky hlídá opční pozice na účtu, ke kterým aplikace nemá obchod.
+        Takové pozice nemají zajištění a obchodník o nich musí vědět.
+        """
+        interval = self.cfg.engine.unmanaged_check_sec
+        if interval <= 0:
+            return
+
+        loop = asyncio.get_running_loop()
+        if loop.time() - self._unmanaged_checked < interval:
+            return
+        self._unmanaged_checked = loop.time()
+
+        pozice = await self.ib.positions()
+        rizene = {
+            flow.option_conid
+            for flow in self.flows.values()
+            if flow.state.is_active and flow.option_conid
+        }
+        nalezene = {conid: info for conid, info in pozice.items() if conid not in rizene}
+
+        # Do průběhu se hlásí jen změna, aby se log nezaplnil stejnou hláškou
+        if nalezene.keys() != self.unmanaged.keys():
+            for conid, info in nalezene.items():
+                if conid not in self.unmanaged:
+                    self.log_event(f"POZOR: {self.unmanaged_text(info)}")
+            self.unmanaged = nalezene
+            self._notify()
+        else:
+            self.unmanaged = nalezene
+
+    def unmanaged_text(self, info: PositionInfo) -> str:
+        """
+        Popis pozice bez zajištění pro upozornění.
+
+        Běží-li na stejném tickeru obchod, jde nutně o jiný opční kontrakt
+        (jiný strike nebo expiraci) - to bývá zdrojem nedorozumění, proto se
+        na to upozorní výslovně.
+        """
+        jine = [
+            flow
+            for flow in self.flows.values()
+            if flow.state.is_active and flow.symbol == info.symbol
+        ]
+        popis = (
+            f"{info.label} ({int(info.quantity)} ks) je bez zajištění "
+            f"a aplikace ji neřídí."
+        )
+        if jine:
+            flow = jine[0]
+            popis += (
+                f" Obchod {flow.id} v přehledu se týká jiného kontraktu "
+                f"({flow.right_label} {flow.strike:g}, expirace {flow.expiration}), "
+                f"tuto pozici nehlídá."
+            )
+        popis += " Zkontrolujte ji v TWS."
+        return popis
+
+    async def _try_reconnect(self) -> None:
+        """Pokusí se obnovit spojení s TWS po jeho výpadku."""
+        try:
+            await self.ib.connect()
+            self.log_event("Spojení s TWS obnoveno.")
+            # Po prvním úspěšném připojení se dohledají obchody z minulého běhu
+            await self.restore()
+            # Po obnově spojení je potřeba znovu založit odběry tržních dat
+            for flow in self.flows.values():
+                if flow.state.is_active:
+                    self._resubscribe(flow)
+        except Exception:
+            await asyncio.sleep(self.cfg.connection.reconnect_delay_sec)
+
+    def _resubscribe(self, flow: Flow) -> None:
+        """Obnoví odběry tržních dat flow po znovupřipojení k TWS."""
+        if flow.underlying_contract is not None:
+            self.ib.subscribe(flow.underlying_contract)
+        if flow.option_contract is not None:
+            self.ib.subscribe(flow.option_contract)
+
+    async def _monitor(self, flow: Flow) -> bool:
+        """
+        Jeden krok stavového automatu flow.
+        Vrací True, pokud došlo ke změně, která se má promítnout do UI.
+        """
+        changed = self._refresh_market_data(flow)
+
+        if flow.state in (FlowState.ARMED, FlowState.SPREAD_BLOCKED, FlowState.NO_QUOTES):
+            changed |= self._handle_before_entry(flow)
+        elif flow.state == FlowState.FILLED:
+            changed |= self._handle_filled(flow)
+        elif flow.state == FlowState.EXIT_ARMED:
+            changed |= self._handle_exit(flow)
+        elif flow.state == FlowState.CLOSING:
+            changed |= self._handle_closing(flow)
+
+        return changed
+
+    def _refresh_market_data(self, flow: Flow) -> bool:
+        """Načte aktuální ceny podkladu i opce a přepočítá spread."""
+        price = self.ib.underlying_price(flow.underlying_contract)
+        bid, ask, delta = self.ib.option_quotes(flow.option_contract)
+
+        flow.underlying_price = price if price is not None else flow.underlying_price
+        flow.option_bid = bid
+        flow.option_ask = ask
+        flow.option_spread_pct = calc.spread_pct(bid, ask)
+        if delta is not None:
+            flow.delta = delta
+        return True
+
+    def _handle_before_entry(self, flow: Flow) -> bool:
+        """
+        Stav před nákupem: kontrola vyplnění, hlídání spreadu
+        a průběžná aktualizace limitní ceny.
+        """
+        trade = flow.entry_trade
+
+        # Vyplnění nákupu má přednost před vším ostatním
+        if trade is not None and trade.orderStatus.filled > 0:
+            return self._register_fill(flow)
+
+        # Příkaz zrušený mimo aplikaci (například ručně v TWS)
+        if trade is not None and trade.orderStatus.status in DEAD_ORDER_STATES:
+            if flow.state == FlowState.ARMED:
+                flow.set_state(
+                    FlowState.CANCELLED,
+                    f"Nákupní příkaz byl zrušen v TWS ({trade.orderStatus.status}).",
+                )
+                self._release(flow)
+                self.log_event(f"{flow.id}: {flow.message}")
+                return True
+
+        spread = flow.option_spread_pct
+        trading = self.cfg.trading
+
+        # Spread nad limitem - nevyplněný příkaz se odstraňuje z trhu
+        if flow.state == FlowState.ARMED and spread is not None and spread > flow.max_spread_pct:
+            if trading.cancel_on_spread_breach:
+                self.ib.cancel(flow.entry_trade)
+                flow.entry_trade = None
+                flow.entry_order_id = None
+                flow.blocked_since = datetime.now()
+                flow.set_state(
+                    FlowState.SPREAD_BLOCKED,
+                    f"Spread {spread:.2f} % > limit {flow.max_spread_pct:g} %, "
+                    f"příkaz odstraněn z trhu.",
+                )
+                self.log_event(f"{flow.id}: {flow.message}")
+                return True
+            return False
+
+        # Spread zpět v limitu - příkaz se vrací do trhu
+        if flow.state == FlowState.SPREAD_BLOCKED:
+            if trading.rearm_on_spread_ok and self._can_rearm(flow, spread):
+                return self._place_entry(flow)
+            return False
+
+        # Čekání na kotace - jakmile dorazí a spread vyhovuje, příkaz se zadá
+        if flow.state == FlowState.NO_QUOTES:
+            if spread is not None and spread > flow.max_spread_pct:
+                flow.set_state(
+                    FlowState.SPREAD_BLOCKED,
+                    f"Spread {spread:.2f} % > limit {flow.max_spread_pct:g} %, příkaz nebyl zadán.",
+                )
+                return True
+            return self._place_entry(flow)
+
+        # Průběžná aktualizace limitní ceny nevyplněného příkazu
+        if flow.state == FlowState.ARMED and trading.relimit_enabled:
+            return self._update_entry_limit(flow)
+
+        return False
+
+    def _can_rearm(self, flow: Flow, spread: float | None) -> bool:
+        """
+        Posoudí, zda lze příkaz vrátit do trhu po zablokování spreadem.
+        Spread musí klesnout s rezervou pod limit a od odstranění příkazu
+        musí uplynout nastavená prodleva - jinak by se příkaz při kolísání
+        spreadu kolem limitu opakovaně zadával a rušil.
+        """
+        if spread is None:
+            return False
+
+        trading = self.cfg.trading
+        prah = flow.max_spread_pct * (1.0 - trading.rearm_spread_margin_pct / 100.0)
+        if spread > prah:
+            return False
+
+        if flow.blocked_since is not None:
+            uplynulo = (datetime.now() - flow.blocked_since).total_seconds()
+            if uplynulo < trading.rearm_delay_sec:
+                return False
+
+        return True
+
+    def _update_entry_limit(self, flow: Flow) -> bool:
+        """
+        Přepočítá limitní cenu nákupního příkazu podle aktuálního ASK / MID.
+        Příkaz se modifikuje jen při změně větší než práh z konfigurace,
+        aby se TWS nezahlcovala drobnými úpravami.
+        """
+        if flow.entry_trade is None or self.cfg.trading.entry_order_type == "MKT":
+            return False
+
+        # Příkaz, který TWS už ruší nebo vyplňuje, se upravovat nesmí
+        if flow.entry_trade.orderStatus.status not in MODIFIABLE_ORDER_STATES:
+            return False
+
+        new_limit = self._entry_limit(flow)
+        if new_limit is None or flow.entry_limit is None:
+            return False
+
+        change_pct = abs(new_limit - flow.entry_limit) / flow.entry_limit * 100.0
+        if change_pct < self.cfg.trading.relimit_min_change_pct:
+            return False
+
+        order = flow.entry_trade.order
+        order.lmtPrice = new_limit
+        # Odeslání příkazu se stejným orderId znamená jeho modifikaci
+        flow.entry_trade = self.ib.place(flow.option_contract, order)
+        flow.entry_limit = new_limit
+        flow.touch()
+        return True
+
+    def _register_fill(self, flow: Flow) -> bool:
+        """Zaznamená nákup opce a připraví flow na zadání výstupního příkazu."""
+        status = flow.entry_trade.orderStatus
+        flow.fill_price = valid_price(status.avgFillPrice) or flow.entry_limit
+        flow.fill_time = datetime.now()
+        flow.filled_quantity = int(status.filled)
+        price_text = f"{flow.fill_price:g}" if flow.fill_price is not None else "neznámou cenu"
+        flow.set_state(
+            FlowState.FILLED,
+            f"Nakoupeno {int(status.filled)} ks za {price_text}.",
+        )
+        self.log_event(f"{flow.id}: {flow.message}")
+        return True
+
+    def _handle_filled(self, flow: Flow) -> bool:
+        """
+        Po nákupu zadá jediný prodejní příkaz s podmínkami pro PT i SL.
+
+        TWS nepovolí mít na jednom opčním kontraktu současně nákupní i prodejní
+        příkaz (chyba 201). Při částečném vyplnění se proto nejprve zruší
+        nevyplněný zbytek nákupu a na zrušení se počká; teprve potom lze
+        zajistit už nakoupenou pozici.
+        """
+        trade = flow.entry_trade
+        filled = int(trade.orderStatus.filled) if trade else flow.quantity
+        if filled < 1:
+            return False
+
+        if trade is not None and trade.orderStatus.status not in ("Filled",) + DEAD_ORDER_STATES:
+            # Zrušení se vyžaduje jen jednou, další průchody čekají na potvrzení z TWS
+            if not flow.entry_cancel_requested:
+                self.ib.cancel(trade)
+                flow.entry_cancel_requested = True
+                flow.touch(
+                    f"Nakoupeno {filled} ks z {flow.quantity}, ruší se nevyplněný zbytek "
+                    f"nákupu, aby šlo zadat prodejní příkaz."
+                )
+                self.log_event(f"{flow.id}: {flow.message}")
+                return True
+            return False
+
+        self._place_exit(flow, filled)
+        return True
+
+    def _handle_exit(self, flow: Flow) -> bool:
+        """
+        Stav po zadání výstupního příkazu.
+        Hlídá doplnění částečně vyplněného nákupu a uzavření pozice.
+        """
+        changed = False
+
+        # Nákup se mohl doplnit až po zadání výstupu - množství se dorovná
+        if (
+            flow.entry_trade is not None
+            and flow.exit_trade is not None
+            and flow.exit_trade.orderStatus.status in MODIFIABLE_ORDER_STATES
+        ):
+            filled = int(flow.entry_trade.orderStatus.filled)
+            exit_qty = int(flow.exit_trade.order.totalQuantity)
+            if filled > exit_qty:
+                order = flow.exit_trade.order
+                order.totalQuantity = filled
+                flow.exit_trade = self.ib.place(flow.option_contract, order)
+                flow.filled_quantity = filled
+                self.log_event(
+                    f"{flow.id}: množství prodejního příkazu upraveno na {filled} ks "
+                    f"(nákup byl doplněn)."
+                )
+                changed = True
+
+        trade = flow.exit_trade
+        if trade is None:
+            return changed
+
+        # Uzavření pozice
+        if trade.orderStatus.status == "Filled":
+            flow.exit_fill_price = valid_price(trade.orderStatus.avgFillPrice)
+            flow.exit_reason = self._exit_reason(flow)
+            pnl = flow.unrealized_pnl
+            pnl_text = f", výsledek {pnl:+.2f} USD" if pnl is not None else ""
+            price_text = f"{flow.exit_fill_price:g}" if flow.exit_fill_price is not None else "?"
+            flow.set_state(
+                FlowState.CLOSED,
+                f"Pozice uzavřena ({flow.exit_reason}) za {price_text}{pnl_text}.",
+            )
+            self._release(flow)
+            self.log_event(f"{flow.id}: {flow.message}")
+            return True
+
+        # Prodejní příkaz zrušený mimo aplikaci
+        if trade.orderStatus.status in DEAD_ORDER_STATES:
+            flow.set_state(
+                FlowState.ERROR,
+                f"Prodejní příkaz byl zrušen v TWS ({trade.orderStatus.status}) - "
+                f"pozice je bez zajištění.",
+            )
+            self.log_event(f"{flow.id}: {flow.message}")
+            return True
+
+        return changed
+
+    def _handle_closing(self, flow: Flow) -> bool:
+        """
+        Uzavírá pozici na pokyn obchodníka.
+        Čeká na zrušení dřívějších příkazů a poté zadá prodej trhem.
+        """
+        # Dokud je nákupní příkaz aktivní, prodejní by TWS odmítla
+        for trade in (flow.entry_trade, flow.exit_trade):
+            if trade is not None and trade.orderStatus.status in MODIFIABLE_ORDER_STATES:
+                return False
+
+        mnozstvi = flow.filled_quantity or flow.quantity
+
+        # Prodej se zadává jednou; v dalších průchodech se sleduje jeho vyplnění
+        if flow.exit_trade is None or flow.exit_trade.orderStatus.status in DEAD_ORDER_STATES:
+            order = self.ib.market_sell_order(mnozstvi, order_ref(flow.id, "exit"))
+            flow.exit_trade = self.ib.place(flow.option_contract, order)
+            flow.exit_order_id = flow.exit_trade.order.orderId
+            flow.touch(f"Uzavírám pozici trhem ({mnozstvi} ks).")
+            self.log_event(f"{flow.id}: {flow.message}")
+            return True
+
+        if flow.exit_trade.orderStatus.status == "Filled":
+            flow.exit_fill_price = valid_price(flow.exit_trade.orderStatus.avgFillPrice)
+            flow.exit_reason = "ručně"
+            pnl = flow.unrealized_pnl
+            pnl_text = f", výsledek {pnl:+.2f} USD" if pnl is not None else ""
+            cena = f"{flow.exit_fill_price:g}" if flow.exit_fill_price is not None else "?"
+            flow.set_state(FlowState.CLOSED, f"Pozice uzavřena obchodníkem za {cena}{pnl_text}.")
+            self._release(flow)
+            self.log_event(f"{flow.id}: {flow.message}")
+            return True
+
+        return False
+
+    def _exit_reason(self, flow: Flow) -> str:
+        """Určí, zda pozice skončila na PT nebo SL, podle ceny podkladu při uzavření."""
+        price = flow.underlying_price
+        if price is None:
+            return "PT/SL"
+        if flow.right == "C":
+            return "PT" if price >= flow.profit_target else "SL"
+        return "PT" if price <= flow.profit_target else "SL"

@@ -1,0 +1,281 @@
+# =============================================================================
+#  Konfigurace aplikace pro obchodování opcí přes Interactive Brokers TWS API
+# =============================================================================
+#
+#  Tento soubor je vzor. Aplikace při prvním spuštění vytvoří vlastní
+#  config.yaml jako jeho kopii — upravujte tedy config.yaml, ne tento soubor.
+#  Jiné umístění lze předat přepínačem:  python main.py -c /cesta/config.yaml
+#
+#  Všechny klíče jsou nepovinné. Co v souboru chybí, použije se s výchozí
+#  hodnotou uvedenou u každé položky. Neznámé klíče aplikace ignoruje
+#  a vypíše na ně varování do logu.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# SPOJENÍ S TWS / IB GATEWAY
+# -----------------------------------------------------------------------------
+connection:
+  # Adresa, kde běží TWS nebo IB Gateway. Při běhu na stejném počítači 127.0.0.1.
+  host: 127.0.0.1
+
+  # Port API rozhraní. Standardní hodnoty podle aplikace a typu účtu:
+  #   7496 = TWS (nastaveno na tomto stroji)
+  #   7497 = TWS druhý profil (papírový/ostrý podle instalace)
+  #   4002 = IB Gateway papírový účet
+  #   4001 = IB Gateway ostrý účet
+  # Port musí být v TWS povolen: Global Configuration > API > Settings >
+  # "Enable ActiveX and Socket Clients".
+  port: 7496
+
+  # Identifikátor klienta API. Každá aplikace připojená k jedné TWS musí mít
+  # jiné číslo. Změňte, pokud se k TWS připojujete i jiným programem.
+  client_id: 17
+
+  # true = aplikace se připojí v režimu jen pro čtení a NEBUDE moci zadávat
+  # příkazy. Vhodné pro vyzkoušení aplikace bez rizika. Pro reálné obchodování
+  # musí zůstat false.
+  readonly: false
+
+  # Číslo účtu, na který se zadávají příkazy (například "DU1234567").
+  # Prázdná hodnota = použije se první účet dostupný na spojení.
+  # Vyplňte, pokud máte pod jedním přihlášením více účtů.
+  account: ''
+
+  # Typ tržních dat vyžádaný od TWS:
+  #   1 = živá data (vyžaduje předplatné tržních dat)
+  #   2 = frozen — poslední známé hodnoty ze zavřeného trhu
+  #   3 = zpožděná data (zdarma, zpoždění ~15 minut) — POZOR: pro reálné
+  #       obchodování nevhodné, cenové podmínky se vyhodnotí pozdě
+  #   4 = zpožděná frozen data
+  #
+  # Mimo obchodní hodiny TWS u opcí neposílá BID/ASK při žádném z těchto
+  # nastavení; delta bývá dostupná při hodnotách 2 až 4. Obchod pak čeká
+  # ve stavu "Čeká na kotace opce", dokud kotace nedorazí.
+  market_data_type: 1
+
+  # Kolik sekund čekat na navázání spojení, než se pokus vyhodnotí jako neúspěšný.
+  connect_timeout: 8.0
+
+  # true = po výpadku spojení se aplikace sama pokouší připojit znovu.
+  # Ruční odpojení tlačítkem v rozhraní automatiku vypne až do dalšího
+  # ručního připojení.
+  auto_reconnect: true
+
+  # Prodleva mezi neúspěšnými pokusy o obnovení spojení, v sekundách.
+  reconnect_delay_sec: 5.0
+
+
+# -----------------------------------------------------------------------------
+# VELIKOST ÚČTU A RISK MANAGEMENT
+# -----------------------------------------------------------------------------
+# Z těchto hodnot se počítá předvyplněné množství opcí ve formuláři:
+#
+#   riskovaná částka   = size * risk_pct / 100
+#   ztráta na kontrakt = |vstupní cena − SL| * |delta opce| * 100
+#   množství           = riskovaná částka / ztráta na kontrakt (zaokrouhleno dolů)
+#
+# Množství je pouze návrh — ve formuláři jej lze kdykoliv přepsat.
+# -----------------------------------------------------------------------------
+account:
+  # Velikost obchodního účtu v USD.
+  size: 5000.0
+
+  # Kolik procent účtu se smí prodělat na jednom obchodu.
+  # Při účtu 5000 USD a hodnotě 1.0 je riskovaná částka 50 USD.
+  risk_pct: 1.0
+
+  # true = velikost účtu se místo hodnoty "size" načte z TWS (NetLiquidation).
+  # Hodnota se zjišťuje jednou po připojení.
+  use_live_account_size: false
+
+
+# -----------------------------------------------------------------------------
+# OBCHODNÍ LOGIKA — PŘÍKAZY, SPREAD, KONTRAKTY
+# -----------------------------------------------------------------------------
+trading:
+  # Poměr vzdálenosti SL vůči PT, když uživatel SL ve formuláři nevyplní.
+  #   1.0 = SL je od vstupu stejně daleko jako PT (poměr 1:1)
+  #   0.5 = SL je na poloviční vzdálenosti (rizikovější, ale těsnější stop)
+  # SL se vždy umístí na opačnou stranu vstupu než PT.
+  sl_to_pt_ratio: 1.0
+
+  # Maximální povolený spread opce v procentech, počítaný ze středu trhu:
+  #   spread [%] = (ASK − BID) / ((ASK + BID) / 2) * 100
+  # Je-li spread vyšší, nákupní příkaz se do trhu nezadá; pokud už zadán byl
+  # a dosud se nevyplnil, aplikace jej z trhu odstraní. Hodnotu lze pro každý
+  # obchod přepsat přímo ve formuláři.
+  max_spread_pct: 5.0
+
+  # Typ nákupního příkazu, který se použije po splnění cenové podmínky
+  # na podkladovém aktivu:
+  #   LMT_ASK = limitní příkaz na ASK navýšený o ask_tolerance_pct (výchozí)
+  #   MKT     = tržní příkaz, vyplní se vždy, ale za neznámou cenu
+  #   LMT_MID = limitní příkaz na střed trhu ((BID + ASK) / 2)
+  entry_order_type: LMT_ASK
+
+  # O kolik procent nad ASK se u typu LMT_ASK umístí limitní cena.
+  # Vyšší hodnota = jistější vyplnění, ale horší nákupní cena.
+  ask_tolerance_pct: 2.0
+
+  # Typ prodejního příkazu pro PT i SL (jde o jediný příkaz se dvěma
+  # cenovými podmínkami spojenými logickým OR):
+  #   MKT = tržní příkaz — po splnění podmínky se vyplní jistě (výchozí)
+  #   LMT = limitní příkaz na BID snížený o bid_tolerance_pct
+  exit_order_type: MKT
+
+  # O kolik procent pod BID se u výstupního typu LMT umístí limitní cena.
+  # Uplatní se pouze při exit_order_type: LMT.
+  bid_tolerance_pct: 2.0
+
+  # Delta se pro výpočet množství bere z model greeks TWS. Ty ale u opcí
+  # nechodí spolehlivě (závisí na účtu a předplatném dat), a proto ji aplikace
+  # v takovém případě dopočítá z tržní ceny opce podle modelu Black-Scholes.
+  # Ve formuláři je taková delta označena jako dopočítaná.
+  #
+  # Bezriziková sazba v procentech, kterou dopočet používá.
+  risk_free_rate_pct: 4.0
+
+  # Náhradní delta pro případ, že ji nelze získat z TWS ani dopočítat
+  # (například když opce nemá žádnou tržní cenu).
+  default_delta: 0.40
+
+  # Dolní a horní mez pro vypočtené množství kontraktů. Slouží jako pojistka
+  # proti nesmyslnému návrhu při chybných vstupech.
+  min_quantity: 1
+  max_quantity: 100
+
+  # Burza pro směrování příkazů a pro vyhodnocení cenových podmínek.
+  # SMART = automatické směrování Interactive Brokers.
+  exchange: SMART
+
+  # Měna kontraktů.
+  currency: USD
+
+  # Doba platnosti příkazů:
+  #   GTC = platí, dokud nejsou zrušeny (vhodné pro čekání na cenovou podmínku)
+  #   DAY = platnost pouze do konce obchodního dne
+  tif: GTC
+
+  # true = příkazy se smějí vyplnit i mimo řádné obchodní hodiny a cenové
+  # podmínky se vyhodnocují i mimo ně. U opcí obvykle ponechte false.
+  outside_rth: false
+
+  # Metoda, kterou TWS vyhodnocuje splnění cenové podmínky na podkladu:
+  #   0 = výchozí nastavení TWS, 1 = double bid/ask, 2 = last,
+  #   3 = double last, 4 = bid/ask, 7 = last nebo bid/ask, 8 = mid-point
+  trigger_method: 0
+
+  # true = při překročení maximálního spreadu se dosud nevyplněný nákupní
+  # příkaz odstraní z trhu (chování požadované zadáním).
+  cancel_on_spread_breach: true
+
+  # true = jakmile spread klesne zpět pod limit, aplikace nákupní příkaz
+  # znovu zadá. false = obchod zůstane blokovaný až do ručního zásahu.
+  rearm_on_spread_ok: true
+
+  # O kolik procent pod limitem musí spread být, aby se příkaz vrátil do trhu.
+  # Při limitu 5 % a hodnotě 10 se příkaz vrátí až při spreadu 4,5 % a nižším.
+  # Brání tomu, aby se příkaz opakovaně zadával a rušil, když spread kolísá
+  # těsně kolem limitu.
+  rearm_spread_margin_pct: 10.0
+
+  # Nejkratší prodleva v sekundách mezi odstraněním příkazu z trhu
+  # a jeho novým zadáním.
+  rearm_delay_sec: 5.0
+
+  # true = dokud se nákupní příkaz nevyplní, aplikace průběžně přepočítává
+  # jeho limitní cenu podle aktuálního ASK / MID, aby limit nezastaral.
+  # Netýká se typu MKT.
+  relimit_enabled: true
+
+  # O kolik procent se musí nová limitní cena lišit od zadané, aby se příkaz
+  # skutečně upravil. Zabraňuje zbytečnému zahlcování TWS drobnými změnami.
+  relimit_min_change_pct: 0.5
+
+
+# -----------------------------------------------------------------------------
+# VÝBĚR EXPIRACE OPCE
+# -----------------------------------------------------------------------------
+expiration:
+  # Způsob výběru expirace:
+  #   nearest = nejbližší expirace splňující min_dte (výchozí)
+  #   fixed   = pevné datum uvedené v fixed_date
+  mode: nearest
+
+  # Minimální počet dní do expirace při režimu "nearest".
+  #   0 = povolena i dnešní expirace (0DTE)
+  #   2 = přeskočí se expirace dřívější než za dva dny
+  # Pokud žádná expirace podmínku nesplní, použije se nejvzdálenější dostupná.
+  min_dte: 0
+
+  # Pevné datum expirace ve formátu YYYYMMDD, například 20260828.
+  # Uplatní se pouze při mode: fixed, jinak se ignoruje.
+  fixed_date: ''
+
+
+# -----------------------------------------------------------------------------
+# MONITOROVACÍ SMYČKA
+# -----------------------------------------------------------------------------
+engine:
+  # Jak často (v sekundách) aplikace kontroluje spread, stav příkazů
+  # a vyplnění nákupu. Nižší hodnota = rychlejší reakce, vyšší zátěž TWS.
+  poll_interval_sec: 1.0
+
+  # Jak dlouho čekat na první ceny z TWS při přípravě zadání, než se
+  # pokračuje i bez nich (například mimo obchodní hodiny).
+  market_data_timeout_sec: 6.0
+
+  # Jak často (v sekundách) aplikace kontroluje opční pozice na účtu, ke kterým
+  # nemá obchod ani zajišťovací příkaz. Na takové pozice upozorní pruhem
+  # v záhlaví, sama k nim ale nic nezadává. Hodnota 0 kontrolu vypne.
+  unmanaged_check_sec: 30.0
+
+
+# -----------------------------------------------------------------------------
+# UKLÁDÁNÍ STAVU OBCHODŮ
+# -----------------------------------------------------------------------------
+# Stav obchodů se průběžně zapisuje na disk, takže restart ani pád aplikace
+# o rozpracované obchody nepřipraví. Po startu se uložený stav vždy srovná
+# se skutečností v TWS — rozhoduje to, co je v TWS, nikoliv zápis v souboru:
+#
+#   * drží-li účet pozici a prodejní příkaz chybí, aplikace jej doplní
+#   * pozice uzavřená během výpadku se označí jako uzavřený obchod
+#   * nákupní příkaz, který v TWS není, se zadá znovu
+#   * nakoupený obchod bez pozice i bez příkazu se označí jako chyba
+#     a vyžaduje ruční kontrolu účtu
+#
+# Aby aplikace své příkazy po restartu poznala, označuje je v poli orderRef
+# značkou "TWSOPCE:<obchod>:entry" resp. ":exit". Cizích příkazů na účtu
+# si nevšímá.
+# -----------------------------------------------------------------------------
+state:
+  # false = stav se neukládá a po restartu aplikace o dřívějších obchodech neví
+  enabled: true
+
+  # Soubor se stavem. Relativní cesta se vztahuje k adresáři, odkud je
+  # aplikace spuštěna.
+  file: state.json
+
+
+# -----------------------------------------------------------------------------
+# WEBOVÉ ROZHRANÍ
+# -----------------------------------------------------------------------------
+ui:
+  # Adresa, na které rozhraní naslouchá.
+  #   127.0.0.1 = dostupné pouze z tohoto počítače (doporučeno)
+  #   0.0.0.0   = dostupné i z jiných počítačů v síti — POZOR, rozhraní nemá
+  #               přihlašování a kdokoliv v síti by mohl zadávat příkazy
+  host: 127.0.0.1
+
+  # Port webového rozhraní. Aplikace pak běží na http://127.0.0.1:8080
+  port: 8080
+
+  # Jak často (v sekundách) se překresluje monitorovací tabulka a ceny.
+  refresh_interval_sec: 1.0
+
+  # true = tmavý vzhled rozhraní.
+  dark: false
+
+  # Kolik posledních událostí se uchovává v provozním logu.
+  log_lines: 300
