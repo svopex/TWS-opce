@@ -132,6 +132,95 @@ class TestZalozeniFlow(ZakladTestu):
         self.assertAlmostEqual(self.ib.placed[0].order.lmtPrice, 3.05)
 
 
+class TestSmeruVstupu(ZakladTestu):
+    """Obchod se zadává jen dokud cena vstupní úroveň nepřekonala."""
+
+    async def test_call_pod_vstupem_se_zada(self):
+        # Cena 230 je pod vstupem 232, průraz nahoru teprve nastane
+        flow = await self.zaloz_call()
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(len(self.ib.placed), 1)
+
+    async def test_call_nad_vstupem_se_odmitne(self):
+        # Cena už vstupní úroveň překonala - obchod ujel
+        self.ib.price_underlying = 233.0
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.start_flow(
+                FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+            )
+        self.assertIn("propásnutý", str(ctx.exception))
+        self.assertEqual(self.ib.placed, [])
+
+    async def test_put_nad_vstupem_se_zada(self):
+        self.ib.price_underlying = 230.0
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=228.0, profit_target=225.0)
+        )
+        self.assertEqual(flow.right, "P")
+        self.assertEqual(flow.state, FlowState.ARMED)
+
+    async def test_put_pod_vstupem_se_odmitne(self):
+        # U PUT je to zrcadlově - cena pod vstupem znamená propásnutý průraz dolů
+        self.ib.price_underlying = 230.0
+        self.ib.greek_delta = -0.35
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.start_flow(
+                FlowRequest(symbol="AAPL", entry_price=231.0, profit_target=228.0)
+            )
+        self.assertIn("propásnutý", str(ctx.exception))
+
+    async def test_pri_navratu_po_spreadu_se_overi_smer(self):
+        flow = await self.zaloz_call()
+
+        # Spread vyskočí a příkaz se odstraní z trhu
+        self.ib.price_bid, self.ib.price_ask = 3.00, 3.50
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
+
+        # Než se spread vrátí, cena mezitím vstupní úroveň překoná
+        self.ib.price_bid, self.ib.price_ask = 3.00, 3.10
+        self.ib.price_underlying = 233.0
+        flow.blocked_since = datetime.now() - timedelta(seconds=30)
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.MISSED)
+        self.assertIn("vstup propásnut", flow.message)
+        # Příkaz se do trhu nevrátil
+        self.assertEqual(len(self.ib.placed), 1)
+
+    async def test_propasnuty_vstup_uvolni_ticker(self):
+        # Ukončený obchod nesmí blokovat nové zadání na stejném tickeru
+        flow = await self.zaloz_call()
+        self.ib.price_bid, self.ib.price_ask = 3.00, 3.50
+        await self.engine._tick()
+        self.ib.price_bid, self.ib.price_ask = 3.00, 3.10
+        self.ib.price_underlying = 233.0
+        flow.blocked_since = datetime.now() - timedelta(seconds=30)
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.MISSED)
+        self.assertFalse(flow.state.is_active)
+
+        # Nový obchod s vyšším vstupem projde
+        novy = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=235.0, profit_target=238.0)
+        )
+        self.assertEqual(novy.state, FlowState.ARMED)
+
+    async def test_bez_ceny_podkladu_se_prikaz_nezada(self):
+        flow = await self.zaloz_call()
+        self.ib.price_bid, self.ib.price_ask = 3.00, 3.50
+        await self.engine._tick()
+
+        # Cena podkladu přestane chodit - není podle čeho rozhodnout
+        self.ib.price_underlying = None
+        self.ib.price_bid, self.ib.price_ask = 3.00, 3.10
+        flow.blocked_since = datetime.now() - timedelta(seconds=30)
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.NO_QUOTES)
+        self.assertEqual(len(self.ib.placed), 1)
+
+
 class TestSpread(ZakladTestu):
     """Hlídání spreadu před nákupem."""
 

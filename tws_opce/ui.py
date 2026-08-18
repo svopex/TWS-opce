@@ -28,6 +28,7 @@ STATE_CLASSES = {
     FlowState.EXIT_ARMED: "stav-nakoupeno",
     FlowState.CLOSING: "stav-uzavira",
     FlowState.CLOSED: "stav-uzavreno",
+    FlowState.MISSED: "stav-propasnuto",
     FlowState.CANCELLED: "stav-zruseno",
     FlowState.ERROR: "stav-chyba",
 }
@@ -44,6 +45,7 @@ TABLE_COLUMNS = [
     {"name": "underlying", "label": "Podklad", "field": "underlying", "align": "right"},
     {"name": "quote", "label": "Bid / Ask", "field": "quote", "align": "right"},
     {"name": "spread", "label": "Spread", "field": "spread", "align": "right"},
+    {"name": "spread_limit", "label": "Max. spread", "field": "spread_limit", "align": "right"},
     {"name": "pnl", "label": "P/L", "field": "pnl", "align": "right"},
     {"name": "state", "label": "Stav", "field": "state", "align": "left"},
 ]
@@ -152,7 +154,7 @@ class TradingUI:
                     .props("outlined dense")
                 )
                 # Po opuštění pole se načte cena podkladu a připraví se kontrakt
-                self.symbol_input.on("blur", lambda _: self._load_preview("nacist"))
+                self.symbol_input.on("blur", lambda _: self._load_preview("auto"))
                 ui.button("Načíst", on_click=lambda: self._load_preview("nacist")).props(
                     "outline"
                 ).classes("tlacitko-vedle").tooltip(
@@ -162,32 +164,31 @@ class TradingUI:
 
             with ui.row().classes("radek"):
                 self.entry_input = (
-                    ui.number("Vstup na podkladu", format="%.2f", step=0.01)
+                    ui.number("Vstup na podkladu", format="%.2f")
                     .classes("pole")
-                    .props("outlined dense")
+                    .props("outlined dense step=any")
                 )
                 self.pt_input = (
-                    ui.number("PT na podkladu", format="%.2f", step=0.01)
+                    ui.number("PT na podkladu", format="%.2f")
                     .classes("pole")
-                    .props("outlined dense")
+                    .props("outlined dense step=any")
                 )
 
             with ui.row().classes("radek"):
                 self.sl_input = (
-                    ui.number("SL (nepovinné)", format="%.2f", step=0.01)
+                    ui.number("SL (nepovinné)", format="%.2f")
                     .classes("pole")
-                    .props("outlined dense")
+                    .props("outlined dense step=any")
                 )
                 self.spread_input = (
                     ui.number(
                         "Max. spread [%]",
                         value=self.cfg.trading.max_spread_pct,
                         format="%.2f",
-                        step=0.1,
-                        min=0.01,
+                        min=0,
                     )
                     .classes("pole")
-                    .props("outlined dense")
+                    .props("outlined dense step=any")
                 )
 
             with ui.row().classes("radek"):
@@ -205,7 +206,7 @@ class TradingUI:
 
             # Opuštění pole jen obnoví načtená data; hodnoty ve formuláři zůstávají
             for field_widget in (self.entry_input, self.pt_input, self.sl_input):
-                field_widget.on("blur", lambda _: self._load_preview("nacist"))
+                field_widget.on("blur", lambda _: self._load_preview("auto"))
 
             # Přehled vypočtených parametrů obchodu
             with ui.column().classes("nahled"):
@@ -323,25 +324,30 @@ class TradingUI:
         Připraví obchod podle vyplněných polí - určí typ opce, expiraci, strike,
         načte kotace a deltu a spočítá doporučený SL i množství kontraktů.
 
-        Režim 'nacist' pouze obnoví načtená data a doplní dosud prázdná pole.
-        Režim 'prepocitat' navíc přepíše SL i množství vypočtenými hodnotami,
-        proto se u něj zadaný SL ignoruje a počítá se znovu podle konfigurace.
+        Režimy:
+          'auto'        - vyvolá opuštění pole; hodnoty ve formuláři nechává být
+                          a mění je jen při přechodu na jiný ticker
+          'nacist'      - tlačítko Načíst; běží-li na tickeru obchod, přepíše
+                          formulář jeho parametry i přes ručně zadané hodnoty
+          'prepocitat'  - tlačítko Přepočítat; přepíše SL a množství vypočtenými
+                          hodnotami, zadaný SL se ignoruje a počítá se znovu
         """
         symbol, entry, pt, sl = self._form_values()
         if not symbol:
             return
 
-        # Při přechodu na jiný ticker se formulář naplní podle toho, zda na něm
-        # běží obchod: jeho parametry se načtou, jinak se pole vyprázdní
-        if symbol != self.last_symbol:
-            bezici = self.engine.active_flow_for(symbol)
-            if bezici is not None:
-                self._fill_from_flow(bezici)
-                entry, pt, sl = bezici.entry_price, bezici.profit_target, bezici.stop_loss
-                ui.notify(f"Načten běžící obchod {bezici.id}.", type="info")
-            else:
-                self._clear_inputs()
-                entry = pt = sl = None
+        bezici = self.engine.active_flow_for(symbol)
+        zmena_tickeru = symbol != self.last_symbol
+
+        # Načtení se vyžaduje buď tlačítkem, nebo přechodem na jiný ticker
+        if bezici is not None and (rezim == "nacist" or zmena_tickeru):
+            self._fill_from_flow(bezici)
+            entry, pt, sl = bezici.entry_price, bezici.profit_target, bezici.stop_loss
+            ui.notify(f"Načten běžící obchod {bezici.id}.", type="info")
+        elif bezici is None and zmena_tickeru:
+            # Ticker bez obchodu - hodnoty předchozího se nesmí přenést
+            self._clear_inputs()
+            entry = pt = sl = None
         self.last_symbol = symbol
 
         if not self.ib.connected:
@@ -622,6 +628,7 @@ class TradingUI:
             "underlying": fmt(flow.underlying_price),
             "quote": f"{fmt(flow.option_bid)} / {fmt(flow.option_ask)}",
             "spread": fmt(flow.option_spread_pct, 2, " %"),
+            "spread_limit": fmt(flow.max_spread_pct, 2, " %"),
             "pnl": fmt(pnl) if pnl is not None else "-",
             "state": flow.state.label,
             "state_class": STATE_CLASSES.get(flow.state, ""),

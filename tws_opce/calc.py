@@ -168,6 +168,20 @@ def select_expiration(
     return available[-1]
 
 
+def entry_still_valid(right: str, current_price: float, entry_price: float) -> bool:
+    """
+    Ověří, že cena podkladu ještě nedosáhla vstupní úrovně.
+
+    U CALL se čeká průraz nahoru, takže cena musí být pod vstupem; u PUT
+    je to zrcadlově. Pokud už cena vstupní úroveň překonala, obchod ujel
+    a nemá smysl jej do trhu zadávat - podmínka by se splnila okamžitě
+    a nakupovalo by se za horší cenu.
+    """
+    if right == "C":
+        return current_price < entry_price
+    return current_price > entry_price
+
+
 def condition_directions(right: str) -> tuple[bool, bool, bool]:
     """
     Směry cenových podmínek na podkladu pro daný typ opce.

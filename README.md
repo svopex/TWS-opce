@@ -104,13 +104,19 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    hodnoty tedy zmizí pouze na výslovné kliknutí, ne samovolně při psaní.
    V náhledu je vždy vidět, co by výpočet doporučil.
 
-   Zadáte-li ticker, na kterém už běží obchod, formulář se naplní jeho
-   parametry — stejně, jako když na obchod kliknete v monitoringu. U tickeru
-   bez obchodu se pole naopak vyprázdní, aby se do nového zadání nepřenesly
-   ceny toho předchozího; limit spreadu se vrátí na hodnotu z konfigurace
-   a zruší se výběr řádku.
+   Běží-li na zadaném tickeru obchod, **Načíst** naplní formulář jeho
+   parametry — i přes ručně zadané hodnoty — stejně, jako když na obchod
+   kliknete v monitoringu. Přechod na ticker bez obchodu pole naopak vyprázdní,
+   aby se do nového zadání nepřenesly ceny toho předchozího; limit spreadu se
+   vrátí na hodnotu z konfigurace a zruší se výběr řádku. Samotné opuštění pole
+   hodnoty nikdy nepřepisuje, mění je jen změna tickeru.
 
-2. **Nákup** — do TWS se zadá příkaz na opci s cenovou podmínkou na podkladu.
+2. **Nákup** — příkaz se do trhu zadá jen tehdy, pokud cena podkladu vstupní
+   úroveň ještě nepřekonala: u CALL musí být pod vstupem, u PUT nad ním.
+   Jinak obchod ujel a aplikace jej ukončí ve stavu *Vstup propásnut*, aniž by
+   cokoliv zadala — platí to i pro opětovné zadání po zablokování spreadem.
+
+   Do TWS se zadá příkaz na opci s cenovou podmínkou na podkladu.
    Dokud se nevyplní, aplikace průběžně upravuje jeho limitní cenu podle
    aktuálního ASK (resp. MID) a hlídá spread.
 3. **Spread** — překročí-li nastavené procento, nevyplněný příkaz se odstraní
@@ -150,6 +156,7 @@ zadá i bez kotací.
 | Nakoupeno – výstup aktivní | pozice je zajištěna příkazem pro PT i SL |
 | Uzavírá se | pozice se na pokyn obchodníka uzavírá tržním příkazem |
 | Uzavřeno | pozice uzavřena na PT nebo SL |
+| Vstup propásnut | cena překonala vstupní úroveň, příkaz se nezadal |
 | Zrušeno | obchod ukončen uživatelem |
 | Chyba | zásah zvenčí, například ruční zrušení příkazu v TWS |
 

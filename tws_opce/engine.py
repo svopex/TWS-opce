@@ -359,6 +359,20 @@ class FlowEngine:
                 symbol, request.entry_price, request.profit_target, request.stop_loss
             )
 
+            # Propásnutý vstup se hlásí dřív než ostatní kontroly, jinak by
+            # uživatel dostal matoucí hlášku o poloze PT vůči vstupu.
+            # Zamýšlený směr obchodu prozrazuje poloha PT: je-li nad vstupem,
+            # čeká se průraz nahoru (CALL), pod vstupem průraz dolů (PUT).
+            # Liší-li se od typu opce odvozeného z aktuální ceny, cena už
+            # vstupní úroveň překonala a obchod ujel.
+            zamer = "C" if request.profit_target > request.entry_price else "P"
+            if preview.current_price is not None and zamer != preview.right:
+                smer = "nad" if zamer == "C" else "pod"
+                raise ValueError(
+                    f"Cena podkladu {preview.current_price:g} je již {smer} vstupem "
+                    f"{request.entry_price:g} - vstup je propásnutý a obchod nelze zadat."
+                )
+
             stop_loss = request.stop_loss if request.stop_loss is not None else preview.stop_loss
             self._validate(preview.right, request.entry_price, request.profit_target, stop_loss)
 
@@ -424,6 +438,26 @@ class FlowEngine:
         Zadá nákupní příkaz s cenovou podmínkou na dosažení vstupní ceny podkladu.
         Vrací False, pokud příkaz zatím zadat nelze - o zadání se pokusí další průchod smyčkou.
         """
+        # Obchod má smysl jen dokud cena podkladu vstupní úroveň nepřekonala
+        cena = self.ib.underlying_price(flow.underlying_contract)
+        if cena is None:
+            flow.set_state(
+                FlowState.NO_QUOTES,
+                "Cena podkladu není k dispozici, příkaz zatím nelze zadat.",
+            )
+            return False
+
+        if not calc.entry_still_valid(flow.right, cena, flow.entry_price):
+            smer = "nad" if flow.right == "C" else "pod"
+            flow.set_state(
+                FlowState.MISSED,
+                f"Cena podkladu {cena:g} je {smer} vstupem {flow.entry_price:g} - "
+                f"vstup propásnut, obchod ukončen bez zadání příkazu.",
+            )
+            self._release(flow)
+            self.log_event(f"{flow.id}: {flow.message}")
+            return False
+
         limit = self._entry_limit(flow)
 
         # Bez kotací opce nelze určit limitní cenu. Tržní příkaz by se v takové

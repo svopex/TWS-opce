@@ -22,6 +22,7 @@ class FlowState(str, Enum):
     EXIT_ARMED = "EXIT_ARMED"
     CLOSING = "CLOSING"
     CLOSED = "CLOSED"
+    MISSED = "MISSED"
     CANCELLED = "CANCELLED"
     ERROR = "ERROR"
 
@@ -37,6 +38,7 @@ class FlowState(str, Enum):
             FlowState.EXIT_ARMED: "Nakoupeno – výstup aktivní",
             FlowState.CLOSING: "Uzavírá se",
             FlowState.CLOSED: "Uzavřeno",
+            FlowState.MISSED: "Vstup propásnut",
             FlowState.CANCELLED: "Zrušeno",
             FlowState.ERROR: "Chyba",
         }[self]
