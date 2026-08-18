@@ -130,6 +130,10 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    zbytek a zajistí skutečně nakoupené množství — TWS totiž nepovolí mít
    na jednom opčním kontraktu současně nákupní i prodejní příkaz.
 5. **Monitoring** — tabulka ukazuje všechny obchody, jejich ceny a stav.
+   Tepající zelený puntík v prvním sloupci znamená, že obchod je pod dohledem
+   aplikace. Objeví se jen u rozpracovaných obchodů a jen tehdy, když hlídání
+   skutečně běží — vyžaduje spuštěnou monitorovací smyčku, navázané spojení
+   s TWS a čerstvý průchod. Zhasne tedy i v případě, že se smyčka zasekne.
    Kliknutím na řádek se obchod načte zpět do formuláře a řádek zůstane
    zvýrazněný — je tak vidět, kterého obchodu se týkají tlačítka
    *Zrušit vybraný* a *Odstranit z přehledu*.

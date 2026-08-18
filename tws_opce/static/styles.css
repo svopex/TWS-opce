@@ -238,6 +238,36 @@
   margin-top: 8px;
 }
 
+/* --- Indikátor hlídání obchodu --- */
+.puntik-hlidani {
+  animation: tep 1.4s ease-in-out infinite;
+  background-color: #16a34a;
+  border-radius: 50%;
+  display: inline-block;
+  height: 9px;
+  width: 9px;
+}
+
+@keyframes tep {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.3;
+    transform: scale(0.65);
+  }
+}
+
+/* Pohyb se vypíná, pokud si to uživatel přeje v nastavení systému */
+@media (prefers-reduced-motion: reduce) {
+  .puntik-hlidani {
+    animation: none;
+  }
+}
+
 /* --- Odznaky stavu flow --- */
 .odznak {
   border-radius: 9px;

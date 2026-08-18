@@ -35,6 +35,7 @@ STATE_CLASSES = {
 
 # Definice sloupců monitorovací tabulky
 TABLE_COLUMNS = [
+    {"name": "live", "label": "", "field": "live", "align": "center"},
     {"name": "symbol", "label": "Ticker", "field": "symbol", "align": "left", "sortable": True},
     {"name": "contract", "label": "Kontrakt", "field": "contract", "align": "left"},
     {"name": "qty", "label": "Ks", "field": "qty", "align": "right"},
@@ -54,6 +55,16 @@ TABLE_COLUMNS = [
 CELL_SLOT = """
 <q-td :props="props" :class="props.row.vybrany ? 'bunka-vybrana' : ''">
   {{ props.value }}
+</q-td>
+"""
+
+# Šablona buňky s indikátorem hlídání - tepe jen u obchodů, které aplikace
+# skutečně sleduje; u ukončených i při nefunkčním monitoringu zůstane prázdná
+LIVE_SLOT = """
+<q-td :props="props" :class="props.row.vybrany ? 'bunka-vybrana' : ''">
+  <span v-if="props.row.live" class="puntik-hlidani">
+    <q-tooltip>Aplikace obchod hlídá</q-tooltip>
+  </span>
 </q-td>
 """
 
@@ -247,6 +258,7 @@ class TradingUI:
                 .props('dense flat no-data-label="Zatím nebyl zadán žádný obchod."')
             )
             self.table.add_slot("body-cell", CELL_SLOT)
+            self.table.add_slot("body-cell-live", LIVE_SLOT)
             self.table.add_slot("body-cell-state", STATE_SLOT)
             self.table.add_slot("body-cell-pnl", PNL_SLOT)
             # Klik na řádek přepne formulář na daný obchod
@@ -618,6 +630,7 @@ class TradingUI:
         pnl = flow.unrealized_pnl
         return {
             "id": flow.id,
+            "live": flow.state.is_active and self.engine.is_monitoring,
             "symbol": flow.symbol,
             "contract": f"{flow.right_label} {flow.expiration} @ {flow.strike:g}",
             "qty": flow.quantity,

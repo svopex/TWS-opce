@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import asyncio
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -698,6 +699,60 @@ class TestVicenasobneFlow(ZakladTestu):
         )
         poradi = [f.symbol for f in self.engine.sorted_flows()]
         self.assertEqual(poradi[0], "MSFT")
+
+
+class TestIndikatoruHlidani(ZakladTestu):
+    """Příznak, že aplikace obchody skutečně hlídá."""
+
+    async def test_bez_spustene_smycky_nehlida(self):
+        # Smyčka neběží, i když je spojení navázané
+        self.assertFalse(self.engine.is_monitoring)
+
+    async def test_po_spusteni_smycky_hlida(self):
+        self.engine.start()
+        try:
+            # Počká se na dokončení prvního průchodu
+            for _ in range(20):
+                await asyncio.sleep(0.05)
+                if self.engine.is_monitoring:
+                    break
+            self.assertTrue(self.engine.is_monitoring)
+        finally:
+            await self.engine.stop()
+
+    async def test_zastavena_smycka_nehlida(self):
+        self.engine.start()
+        for _ in range(20):
+            await asyncio.sleep(0.05)
+            if self.engine.is_monitoring:
+                break
+        await self.engine.stop()
+        self.assertFalse(self.engine.is_monitoring)
+
+    async def test_bez_spojeni_nehlida(self):
+        self.engine.start()
+        try:
+            for _ in range(20):
+                await asyncio.sleep(0.05)
+                if self.engine.is_monitoring:
+                    break
+            self.ib.connected_flag = False
+            self.assertFalse(self.engine.is_monitoring)
+        finally:
+            await self.engine.stop()
+
+    async def test_zaseknuta_smycka_nehlida(self):
+        # Smyčka běží, ale poslední průchod je dávno - hlídání fakticky nefunguje
+        self.engine.start()
+        try:
+            for _ in range(20):
+                await asyncio.sleep(0.05)
+                if self.engine.is_monitoring:
+                    break
+            self.engine._last_tick -= 3600
+            self.assertFalse(self.engine.is_monitoring)
+        finally:
+            await self.engine.stop()
 
 
 class TestVelikostUctu(ZakladTestu):

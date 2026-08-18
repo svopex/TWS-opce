@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -96,6 +97,9 @@ class FlowEngine:
         self.unmanaged: dict[int, PositionInfo] = {}
         self._unmanaged_checked: float = 0.0
         self._account_checked: float = 0.0
+        # Čas posledního dokončeného průchodu smyčkou - podle něj se pozná,
+        # že monitoring opravdu běží a nikde neuvázl
+        self._last_tick: float = 0.0
 
     # ------------------------------------------------------------------
     # Pomocné
@@ -142,6 +146,26 @@ class FlowEngine:
     def risk_amount(self) -> float:
         """Částka v USD riskovaná na jednom obchodu."""
         return self.account_size * self.cfg.account.risk_pct / 100.0
+
+    @property
+    def is_monitoring(self) -> bool:
+        """
+        True, pokud aplikace obchody skutečně hlídá.
+
+        Nestačí, že je aplikace spuštěná: smyčka musí běžet, spojení s TWS
+        být navázané a poslední průchod proběhnout nedávno. Zasekne-li se
+        smyčka nebo spadne spojení, hlídání fakticky neprobíhá.
+        """
+        if self._task is None or self._task.done():
+            return False
+        if not self.ib.connected:
+            return False
+        if not self._last_tick:
+            return False
+
+        # Tolerance několika period; delší prodleva znamená, že smyčka vázne
+        limit = max(3 * self.cfg.engine.poll_interval_sec, 5.0)
+        return (time.monotonic() - self._last_tick) < limit
 
     def active_flow_for(self, symbol: str) -> Flow | None:
         """Najde aktivní flow daného tickeru (na jeden ticker je povoleno jedno)."""
@@ -621,6 +645,7 @@ class FlowEngine:
         while True:
             try:
                 await self._tick()
+                self._last_tick = time.monotonic()
             except asyncio.CancelledError:
                 raise
             except Exception:
