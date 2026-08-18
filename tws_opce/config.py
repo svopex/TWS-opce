@@ -83,6 +83,10 @@ class TradingConfig:
     rearm_spread_margin_pct: float = 10.0
     # Nejkratší prodleva mezi odstraněním příkazu z trhu a jeho novým zadáním
     rearm_delay_sec: float = 5.0
+    # Počet kontraktů runneru - části pozice, která se po aktivaci runneru
+    # prodává samostatným příkazem s vlastním (vzdálenějším) cílem.
+    # Runner lze zapnout jen u obchodu s větším množstvím, než je tato hodnota.
+    runner_quantity: int = 1
     # Chování při změně PT u obchodu, který ještě nenakoupil:
     #   keep        = ponechat původní strike, mění se jen cílová úroveň
     #   recalculate = přepočítat strike podle nového PT a příkaz přezadat
@@ -239,6 +243,8 @@ def validate_config(cfg: AppConfig) -> None:
             f"trading.exit_order_type musí být jedna z {EXIT_ORDER_TYPES}, "
             f"nalezeno '{cfg.trading.exit_order_type}'"
         )
+    if cfg.trading.runner_quantity < 1:
+        problems.append("trading.runner_quantity musí být alespoň 1")
     if cfg.trading.pt_change_strike not in PT_STRIKE_MODES:
         problems.append(
             f"trading.pt_change_strike musí být jedna z {PT_STRIKE_MODES}, "

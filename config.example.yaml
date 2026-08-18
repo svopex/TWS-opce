@@ -188,6 +188,13 @@ trading:
   # a jeho novým zadáním.
   rearm_delay_sec: 5.0
 
+  # Počet kontraktů runneru. Runner je část pozice, která se po zapnutí
+  # (tlačítky Runner v monitoringu) prodává samostatným příkazem s vlastním,
+  # zpravidla vzdálenějším cílem; SL sdílí se zbytkem pozice. Tlačítka runneru
+  # se zobrazují jen u obchodů s větším množstvím, než je tato hodnota -
+  # po oddělení runneru musí v hlavní části zbýt alespoň jeden kontrakt.
+  runner_quantity: 1
+
   # Co se má stát se strikem, když v monitoringu posunete cíl obchodu
   # tlačítky s násobky (1×, 1,5×, 2× …):
   #   keep        = ponechat původní strike, mění se jen cílová úroveň (výchozí)

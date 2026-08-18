@@ -509,7 +509,19 @@ class FlowEngine:
             return
 
         mnozstvi = flow.filled_quantity or flow.quantity
-        flow.expected_profit = (cena_pt - nakupni) * mnozstvi * 100
+
+        # S runnerem se zisk skládá z hlavní části na PT a runneru na jeho cíli;
+        # ztráta se nemění - na SL se prodává všechno
+        runner_q = 0
+        cena_runner = None
+        if flow.runner_active and mnozstvi > flow.runner_quantity:
+            cena_runner = cena_pri(flow.runner_profit_target)
+            if cena_runner is not None:
+                runner_q = flow.runner_quantity
+
+        flow.expected_profit = (cena_pt - nakupni) * (mnozstvi - runner_q) * 100
+        if runner_q:
+            flow.expected_profit += (cena_runner - nakupni) * runner_q * 100
         flow.expected_loss = (cena_sl - nakupni) * mnozstvi * 100
 
     def _place_entry(self, flow: Flow) -> bool:
@@ -579,9 +591,23 @@ class FlowEngine:
 
     def _place_exit(self, flow: Flow, quantity: int) -> None:
         """
-        Zadá jediný prodejní příkaz pokrývající PT i SL.
-        Obě cenové podmínky na podklad jsou spojeny logickým OR.
+        Zadá zajišťovací prodejní příkazy s podmínkami PT i SL spojenými OR.
+
+        Bez runneru vznikne jediný příkaz na celou pozici. S aktivním runnerem
+        se pozice dělí: hlavní část prodává na PT obchodu, runner samostatným
+        příkazem na vlastním cíli; SL mají oba společný.
         """
+        # Runner se uplatní, jen když na něj po odečtení zbude aspoň 1 kontrakt
+        runner_q = 0
+        if flow.runner_active and quantity > flow.runner_quantity:
+            runner_q = flow.runner_quantity
+        elif flow.runner_active:
+            self.log_event(
+                f"{flow.id}: nakoupené množství {quantity} ks na runner nestačí, "
+                f"prodává se jedním příkazem."
+            )
+        hlavni_q = quantity - runner_q
+
         _, pt_more, sl_more = calc.condition_directions(flow.right)
         conditions = [
             self.ib.price_condition(flow.underlying_conid, pt_more, flow.profit_target),
@@ -595,16 +621,27 @@ class FlowEngine:
             limit = calc.round_to_tick(price, flow.min_tick) if price is not None else None
 
         order = self.ib.build_exit_order(
-            quantity, limit, conditions, order_ref(flow.id, "exit")
+            hlavni_q, limit, conditions, order_ref(flow.id, "exit")
         )
         flow.exit_trade = self.ib.place(flow.option_contract, order)
         flow.exit_order_id = flow.exit_trade.order.orderId
 
+        popis_runneru = ""
+        if runner_q:
+            runner_order = self.ib.build_exit_order(
+                runner_q, None, self._runner_conditions(flow), order_ref(flow.id, "runner")
+            )
+            flow.runner_trade = self.ib.place(flow.option_contract, runner_order)
+            flow.runner_order_id = flow.runner_trade.order.orderId
+            popis_runneru = (
+                f" Runner {runner_q} ks s cílem {flow.runner_profit_target:g}."
+            )
+
         limit_text = f"LMT {limit:g}" if limit is not None else "MKT"
         flow.set_state(
             FlowState.EXIT_ARMED,
-            f"Prodejní příkaz ({limit_text}) na {quantity} ks, "
-            f"PT {flow.profit_target:g} / SL {flow.stop_loss:g}.",
+            f"Prodejní příkaz ({limit_text}) na {hlavni_q} ks, "
+            f"PT {flow.profit_target:g} / SL {flow.stop_loss:g}.{popis_runneru}",
         )
         self.log_event(f"{flow.id}: {flow.message}")
 
@@ -719,6 +756,153 @@ class FlowEngine:
         flow.exit_trade = self.ib.place(flow.option_contract, order)
         flow.touch(f"Zajišťovací příkaz upraven na PT {flow.profit_target:g} / SL {flow.stop_loss:g}.")
 
+    async def set_runner(self, flow_id: str, multiple: float) -> Flow:
+        """
+        Zapne runner, nebo změní jeho cíl.
+
+        Runner je část pozice (počet kusů podle trading.runner_quantity),
+        která se prodává samostatným příkazem s vlastním cílem; SL sdílí
+        se zbytkem pozice. Cíl runneru se zadává jako násobek původní
+        vzdálenosti PT od vstupu.
+
+        Před nákupem se volba jen zapamatuje a zajišťovací příkazy se po
+        nákupu založí rozdělené. Za běhu se stávající prodejní příkaz zmenší
+        a přidá se příkaz runneru; při změně cíle už běžícího runneru se
+        pouze upraví jeho podmínky.
+        """
+        flow = self.flows.get(flow_id)
+        if flow is None:
+            raise ValueError(f"Flow '{flow_id}' neexistuje.")
+        if not flow.state.is_active or flow.state == FlowState.CLOSING:
+            raise ValueError("Runner lze měnit jen u běžícího obchodu.")
+        if flow.runner_fill_price is not None:
+            raise ValueError("Runner už byl prodán, jeho cíl nelze měnit.")
+
+        runner_q = flow.runner_quantity if flow.runner_active else self.cfg.trading.runner_quantity
+        total = flow.filled_quantity or flow.quantity
+        if total <= runner_q:
+            raise ValueError(
+                f"Runner ({runner_q} ks) vyžaduje obchod s větším množstvím než {runner_q} kontrakt(y)."
+            )
+
+        if not flow.original_profit_target:
+            flow.original_profit_target = flow.profit_target
+        zaklad = flow.original_profit_target
+        novy_pt = round(flow.entry_price + (zaklad - flow.entry_price) * multiple, 2)
+
+        # Cíl runneru musí ležet na stejné straně vstupu jako hlavní cíl
+        if flow.right == "C" and novy_pt <= flow.entry_price:
+            raise ValueError("U CALL opce musí cíl runneru zůstat nad vstupní cenou podkladu.")
+        if flow.right == "P" and novy_pt >= flow.entry_price:
+            raise ValueError("U PUT opce musí cíl runneru zůstat pod vstupní cenou podkladu.")
+
+        async with self._lock:
+            byl_aktivni = flow.runner_active
+            flow.runner_profit_target = novy_pt
+            flow.runner_quantity = runner_q
+
+            if flow.state == FlowState.EXIT_ARMED:
+                if byl_aktivni and flow.runner_trade is not None:
+                    self._update_runner_conditions(flow)
+                else:
+                    self._split_exit_for_runner(flow)
+
+            self.log_event(
+                f"{flow.id}: runner {runner_q} ks s cílem {novy_pt:,.2f} "
+                f"({multiple:g}× původní cíl).".replace(",", " ")
+            )
+            self._notify()
+            return flow
+
+    async def cancel_runner(self, flow_id: str) -> Flow:
+        """
+        Vypne runner - jeho prodejní příkaz se zruší a hlavní příkaz se
+        rozšíří zpět na celou pozici, takže platí jeden PT a SL pro všechno.
+        """
+        flow = self.flows.get(flow_id)
+        if flow is None:
+            raise ValueError(f"Flow '{flow_id}' neexistuje.")
+        if not flow.runner_active:
+            raise ValueError("Obchod nemá aktivní runner.")
+        if flow.runner_fill_price is not None:
+            raise ValueError("Runner už byl prodán, není co rušit.")
+
+        async with self._lock:
+            # Nejprve se ruší příkaz runneru, teprve pak se navyšuje hlavní -
+            # obráceně by na okamžik bylo v trhu více kusů, než pozice drží
+            self.ib.cancel(flow.runner_trade)
+            flow.runner_trade = None
+            flow.runner_order_id = None
+            flow.runner_profit_target = None
+            flow.runner_quantity = 0
+
+            if flow.state == FlowState.EXIT_ARMED and flow.exit_trade is not None:
+                trade = flow.exit_trade
+                total = flow.filled_quantity or flow.quantity
+                if trade.orderStatus.status in MODIFIABLE_ORDER_STATES:
+                    order = trade.order
+                    order.totalQuantity = total
+                    flow.exit_trade = self.ib.place(flow.option_contract, order)
+                    flow.touch(f"Runner zrušen, prodejní příkaz rozšířen na {total} ks.")
+                else:
+                    flow.touch(
+                        "Runner zrušen, ale hlavní příkaz nelze upravit - "
+                        "množství se dorovná, jakmile to TWS dovolí."
+                    )
+
+            self.log_event(f"{flow.id}: runner zrušen, platí jeden PT a SL pro celou pozici.")
+            self._notify()
+            return flow
+
+    def _runner_conditions(self, flow: Flow) -> list:
+        """Cenové podmínky prodeje runneru - vlastní cíl, společný SL."""
+        _, pt_more, sl_more = calc.condition_directions(flow.right)
+        return [
+            self.ib.price_condition(flow.underlying_conid, pt_more, flow.runner_profit_target),
+            self.ib.price_condition(flow.underlying_conid, sl_more, flow.stop_loss),
+        ]
+
+    def _split_exit_for_runner(self, flow: Flow) -> None:
+        """
+        Rozdělí běžící zajišťovací příkaz na hlavní část a runner.
+        Hlavní příkaz se nejprve zmenší, teprve pak se zadá příkaz runneru -
+        jinak by v trhu na okamžik bylo více kusů, než pozice drží.
+        """
+        trade = flow.exit_trade
+        if trade is None or trade.orderStatus.status not in MODIFIABLE_ORDER_STATES:
+            raise ValueError(
+                "Zajišťovací příkaz nelze upravit "
+                f"({trade.orderStatus.status if trade else 'chybí'}) - runner teď nelze zapnout."
+            )
+
+        total = flow.filled_quantity or flow.quantity
+        order = trade.order
+        order.totalQuantity = total - flow.runner_quantity
+        flow.exit_trade = self.ib.place(flow.option_contract, order)
+
+        runner_order = self.ib.build_exit_order(
+            flow.runner_quantity, None, self._runner_conditions(flow), order_ref(flow.id, "runner")
+        )
+        flow.runner_trade = self.ib.place(flow.option_contract, runner_order)
+        flow.runner_order_id = flow.runner_trade.order.orderId
+
+    def _update_runner_conditions(self, flow: Flow) -> None:
+        """Promítne nový cíl runneru do podmínek jeho běžícího příkazu."""
+        trade = flow.runner_trade
+        if trade is None or trade.orderStatus.status not in MODIFIABLE_ORDER_STATES:
+            raise ValueError(
+                "Příkaz runneru nelze upravit "
+                f"({trade.orderStatus.status if trade else 'chybí'})."
+            )
+
+        podminky = self._runner_conditions(flow)
+        posledni = len(podminky) - 1
+        for index, podminka in enumerate(podminky):
+            podminka.conjunction = "a" if index == posledni else "o"
+        order = trade.order
+        order.conditions = podminky
+        flow.runner_trade = self.ib.place(flow.option_contract, order)
+
     async def cancel_flow(self, flow_id: str, close_position: bool = False) -> None:
         """
         Zruší flow podle identifikátoru včetně jeho příkazů v TWS.
@@ -747,6 +931,7 @@ class FlowEngine:
         async with self._lock:
             self.ib.cancel(flow.entry_trade)
             self.ib.cancel(flow.exit_trade)
+            self.ib.cancel(flow.runner_trade)
 
             v_pozici = flow.fill_price is not None
 
@@ -1069,6 +1254,7 @@ class FlowEngine:
 
         flow.entry_trade = prikazy.get(order_ref(flow.id, "entry"))
         flow.exit_trade = prikazy.get(order_ref(flow.id, "exit"))
+        flow.runner_trade = prikazy.get(order_ref(flow.id, "runner"))
         info = pozice.get(option.conId)
         drzeno = int(info.quantity) if info else 0
 
@@ -1097,7 +1283,15 @@ class FlowEngine:
                     f"Obnoveno: drženo {drzeno} ks, prodejní příkaz je v TWS.",
                 )
             else:
-                # Pozice bez zajištění - smyčka prodejní příkaz zadá v dalším průchodu
+                # Pozice bez zajištění - smyčka prodejní příkazy zadá v dalším
+                # průchodu; případný přeživší příkaz runneru se ruší, aby se
+                # při novém založení nezdvojil
+                if (
+                    flow.runner_trade is not None
+                    and flow.runner_trade.orderStatus.status in MODIFIABLE_ORDER_STATES
+                ):
+                    self.ib.cancel(flow.runner_trade)
+                    flow.runner_trade = None
                 flow.set_state(
                     FlowState.FILLED,
                     f"Obnoveno: drženo {drzeno} ks bez prodejního příkazu, zajištění se doplní.",
@@ -1425,51 +1619,94 @@ class FlowEngine:
 
     def _handle_exit(self, flow: Flow) -> bool:
         """
-        Stav po zadání výstupního příkazu.
-        Hlídá doplnění částečně vyplněného nákupu a uzavření pozice.
+        Stav po zadání výstupních příkazů.
+
+        Hlídá doplnění částečně vyplněného nákupu, prodej hlavní části
+        i runneru a uzavření obchodu, jakmile jsou prodány obě části.
         """
         changed = False
+        runner_q = flow.runner_quantity if flow.runner_active else 0
 
-        # Nákup se mohl doplnit až po zadání výstupu - množství se dorovná
+        # Nákup se mohl doplnit až po zadání výstupu - hlavní příkaz se dorovná
+        # (runner má pevné množství, dorovnává se vždy hlavní část)
         if (
             flow.entry_trade is not None
             and flow.exit_trade is not None
             and flow.exit_trade.orderStatus.status in MODIFIABLE_ORDER_STATES
         ):
             filled = int(flow.entry_trade.orderStatus.filled)
+            cilove = max(filled - runner_q, 0)
             exit_qty = int(flow.exit_trade.order.totalQuantity)
-            if filled > exit_qty:
-                order = flow.exit_trade.order
-                order.totalQuantity = filled
-                flow.exit_trade = self.ib.place(flow.option_contract, order)
-                flow.filled_quantity = filled
-                self.log_event(
-                    f"{flow.id}: množství prodejního příkazu upraveno na {filled} ks "
-                    f"(nákup byl doplněn)."
-                )
+            if filled > flow.filled_quantity or cilove > exit_qty:
+                if cilove > exit_qty:
+                    order = flow.exit_trade.order
+                    order.totalQuantity = cilove
+                    flow.exit_trade = self.ib.place(flow.option_contract, order)
+                    self.log_event(
+                        f"{flow.id}: množství prodejního příkazu upraveno na {cilove} ks "
+                        f"(nákup byl doplněn)."
+                    )
+                flow.filled_quantity = max(filled, flow.filled_quantity)
                 changed = True
 
+        # --- runner ---
+        runner = flow.runner_trade
+        if flow.runner_active and runner is not None:
+            if runner.orderStatus.status == "Filled" and flow.runner_fill_price is None:
+                flow.runner_fill_price = valid_price(runner.orderStatus.avgFillPrice)
+                cena = f"{flow.runner_fill_price:g}" if flow.runner_fill_price else "?"
+                self.log_event(
+                    f"{flow.id}: runner ({flow.runner_quantity} ks) prodán za {cena}."
+                )
+                changed = True
+            elif (
+                runner.orderStatus.status in DEAD_ORDER_STATES
+                and flow.runner_fill_price is None
+            ):
+                # Příkaz runneru zmizel mimo aplikaci - jeho kusy se vrací
+                # pod hlavní příkaz, aby pozice nezůstala částečně nezajištěná
+                if (
+                    flow.exit_trade is not None
+                    and flow.exit_fill_price is None
+                    and flow.exit_trade.orderStatus.status in MODIFIABLE_ORDER_STATES
+                ):
+                    flow.runner_trade = None
+                    flow.runner_order_id = None
+                    flow.runner_profit_target = None
+                    flow.runner_quantity = 0
+                    order = flow.exit_trade.order
+                    order.totalQuantity = flow.filled_quantity or flow.quantity
+                    flow.exit_trade = self.ib.place(flow.option_contract, order)
+                    self.log_event(
+                        f"{flow.id}: příkaz runneru byl zrušen v TWS - jeho kusy "
+                        f"převzal hlavní prodejní příkaz."
+                    )
+                else:
+                    flow.set_state(
+                        FlowState.ERROR,
+                        "Příkaz runneru byl zrušen v TWS a nelze jej nahradit - "
+                        "část pozice je bez zajištění.",
+                    )
+                    self.log_event(f"{flow.id}: {flow.message}")
+                return True
+
+        # --- hlavní část ---
         trade = flow.exit_trade
         if trade is None:
             return changed
 
-        # Uzavření pozice
-        if trade.orderStatus.status == "Filled":
+        if trade.orderStatus.status == "Filled" and flow.exit_fill_price is None:
             flow.exit_fill_price = valid_price(trade.orderStatus.avgFillPrice)
             flow.exit_reason = self._exit_reason(flow)
-            pnl = flow.unrealized_pnl
-            pnl_text = f", výsledek {pnl:+.2f} USD" if pnl is not None else ""
-            price_text = f"{flow.exit_fill_price:g}" if flow.exit_fill_price is not None else "?"
-            flow.set_state(
-                FlowState.CLOSED,
-                f"Pozice uzavřena ({flow.exit_reason}) za {price_text}{pnl_text}.",
+            cena = f"{flow.exit_fill_price:g}" if flow.exit_fill_price else "?"
+            self.log_event(
+                f"{flow.id}: hlavní část ({flow.main_quantity} ks) prodána "
+                f"({flow.exit_reason}) za {cena}."
             )
-            self._release(flow)
-            self.log_event(f"{flow.id}: {flow.message}")
-            return True
+            changed = True
 
         # Prodejní příkaz zrušený mimo aplikaci
-        if trade.orderStatus.status in DEAD_ORDER_STATES:
+        if trade.orderStatus.status in DEAD_ORDER_STATES and flow.exit_fill_price is None:
             flow.set_state(
                 FlowState.ERROR,
                 f"Prodejní příkaz byl zrušen v TWS ({trade.orderStatus.status}) - "
@@ -1478,6 +1715,32 @@ class FlowEngine:
             self.log_event(f"{flow.id}: {flow.message}")
             return True
 
+        # --- uzavření: obě části pozice jsou prodané ---
+        hlavni_hotova = flow.exit_fill_price is not None
+        runner_hotov = not flow.runner_active or flow.runner_fill_price is not None
+        if hlavni_hotova and runner_hotov:
+            pnl = flow.unrealized_pnl
+            pnl_text = f", výsledek {pnl:+.2f} USD" if pnl is not None else ""
+            cena = f"{flow.exit_fill_price:g}" if flow.exit_fill_price else "?"
+            dovetek = ""
+            if flow.runner_active and flow.runner_fill_price is not None:
+                dovetek = f", runner za {flow.runner_fill_price:g}"
+            flow.set_state(
+                FlowState.CLOSED,
+                f"Pozice uzavřena ({flow.exit_reason}) za {cena}{dovetek}{pnl_text}.",
+            )
+            self._release(flow)
+            self.log_event(f"{flow.id}: {flow.message}")
+            return True
+
+        # Hlavní část je prodaná, ale runner běží dál
+        if hlavni_hotova and not runner_hotov and "runner běží dál" not in flow.message:
+            flow.touch(
+                f"Hlavní část prodána ({flow.exit_reason}), runner "
+                f"{flow.runner_quantity} ks běží dál s cílem {flow.runner_profit_target:g}."
+            )
+            changed = True
+
         return changed
 
     def _handle_closing(self, flow: Flow) -> bool:
@@ -1485,8 +1748,9 @@ class FlowEngine:
         Uzavírá pozici na pokyn obchodníka.
         Čeká na zrušení dřívějších příkazů a poté zadá prodej trhem.
         """
-        # Dokud je nákupní příkaz aktivní, prodejní by TWS odmítla
-        for trade in (flow.entry_trade, flow.exit_trade):
+        # Dokud je jakýkoliv dřívější příkaz aktivní, tržní prodej by se s ním
+        # sčítal a prodalo by se více kusů, než pozice drží
+        for trade in (flow.entry_trade, flow.exit_trade, flow.runner_trade):
             if trade is not None and trade.orderStatus.status in MODIFIABLE_ORDER_STATES:
                 return False
 

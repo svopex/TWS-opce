@@ -133,6 +133,13 @@ class Flow:
     exit_fill_price: float | None = None
     exit_reason: str = ""
 
+    # Runner - část pozice prodávaná samostatným příkazem s vlastním cílem.
+    # None v runner_profit_target znamená, že runner není aktivní.
+    runner_profit_target: float | None = None
+    runner_quantity: int = 0
+    runner_order_id: int | None = None
+    runner_fill_price: float | None = None
+
     # Očekávaný výsledek obchodu v USD, pokud podklad dosáhne PT resp. SL.
     # Přepočítává se průběžně podle aktuální ceny opce a podkladu, takže
     # odráží měnící se podmínky na trhu.
@@ -144,6 +151,7 @@ class Flow:
     underlying_contract: Any = field(default=None, repr=False, compare=False)
     entry_trade: Any = field(default=None, repr=False, compare=False)
     exit_trade: Any = field(default=None, repr=False, compare=False)
+    runner_trade: Any = field(default=None, repr=False, compare=False)
 
     @property
     def right_label(self) -> str:
@@ -159,15 +167,25 @@ class Flow:
         """
         if self.fill_price is None:
             return None
-        # Počítá se s nakoupeným množstvím, aby částečné plnění výsledek nenadhodnotilo
-        quantity = self.filled_quantity or self.quantity
-        if self.exit_fill_price is not None:
-            # Uzavřená pozice - realizovaný výsledek
-            return (self.exit_fill_price - self.fill_price) * quantity * 100
-        if self.option_bid is None or self.option_ask is None:
-            return None
-        mid = (self.option_bid + self.option_ask) / 2.0
-        return (mid - self.fill_price) * quantity * 100
+
+        # Pozice se může skládat ze dvou částí - hlavní a runneru; každá se
+        # oceňuje zvlášť: prodaná část realizovanou cenou, běžící středem trhu
+        mid = None
+        if self.option_bid is not None and self.option_ask is not None:
+            mid = (self.option_bid + self.option_ask) / 2.0
+
+        casti: list[tuple[float | None, int]] = [(self.exit_fill_price, self.main_quantity)]
+        if self.runner_active and self.runner_quantity < (self.filled_quantity or self.quantity):
+            casti.append((self.runner_fill_price, self.runner_quantity))
+
+        vysledek = 0.0
+        for cena, mnozstvi in casti:
+            if cena is None:
+                cena = mid
+            if cena is None:
+                return None
+            vysledek += (cena - self.fill_price) * mnozstvi * 100
+        return vysledek
 
     @property
     def risk_reward(self) -> float | None:
@@ -195,6 +213,30 @@ class Flow:
         """Změní stav flow a zaznamená čas změny."""
         self.state = state
         self.touch(message)
+
+    @property
+    def runner_active(self) -> bool:
+        """True, pokud má obchod aktivní runner s vlastním cílem."""
+        return self.runner_profit_target is not None and self.runner_quantity > 0
+
+    @property
+    def main_quantity(self) -> int:
+        """Počet kontraktů hlavní části pozice (bez runneru)."""
+        total = self.filled_quantity or self.quantity
+        if self.runner_active and self.runner_quantity < total:
+            return total - self.runner_quantity
+        return total
+
+    @property
+    def runner_multiple(self) -> float | None:
+        """Kolikanásobek původní vzdálenosti cíle od vstupu je cíl runneru."""
+        if not self.runner_active:
+            return None
+        zaklad = self.original_profit_target or self.profit_target
+        puvodni_vzdalenost = abs(zaklad - self.entry_price)
+        if puvodni_vzdalenost <= 0:
+            return None
+        return abs(self.runner_profit_target - self.entry_price) / puvodni_vzdalenost
 
     @property
     def pt_multiple(self) -> float | None:

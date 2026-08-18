@@ -522,6 +522,48 @@ class TestZakladuCile(ZakladObnovy):
         self.assertAlmostEqual(flow.profit_target, 235.0)
 
 
+class TestObnovyRunneru(ZakladObnovy):
+    """Runner musí přežít restart aplikace."""
+
+    async def priprav_runner(self):
+        """Založí nakoupený obchod se zapnutým runnerem."""
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0, quantity=3)
+        )
+        self.ib.fill(flow.entry_trade, 3, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        await self.engine.set_runner(flow.id, 2.0)
+        self.ib.held_positions[OPTION_CONID] = 3
+        return flow
+
+    async def test_runner_se_uklada_a_obnovi(self):
+        flow = await self.priprav_runner()
+
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        obnoveny = novy.flows[flow.id]
+
+        self.assertTrue(obnoveny.runner_active)
+        self.assertAlmostEqual(obnoveny.runner_profit_target, 238.0)
+        self.assertEqual(obnoveny.runner_quantity, 1)
+        # Oba příkazy se dohledaly podle značek
+        self.assertIsNotNone(obnoveny.exit_trade)
+        self.assertIsNotNone(obnoveny.runner_trade)
+        self.assertEqual(obnoveny.state, FlowState.EXIT_ARMED)
+
+    async def test_obnoveny_runner_lze_zrusit(self):
+        flow = await self.priprav_runner()
+
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        await novy.cancel_runner(flow.id)
+
+        obnoveny = novy.flows[flow.id]
+        self.assertFalse(obnoveny.runner_active)
+        self.assertEqual(int(obnoveny.exit_trade.order.totalQuantity), 3)
+
+
 class TestObnovaStavu(ZakladObnovy):
     """Odvození stavu obchodu ze skutečnosti v TWS."""
 

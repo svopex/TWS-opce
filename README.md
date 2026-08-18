@@ -2,7 +2,8 @@
 
 Formulářová aplikace pro obchodování opcí přes Interactive Brokers TWS API.
 Zadaný obchod čeká na dosažení cenové úrovně podkladu, nakoupí opci
-a po nákupu zajistí pozici jediným prodejním příkazem pro PT i SL.
+a po nákupu zajistí pozici prodejním příkazem pro PT i SL; část pozice může
+běžet jako runner s vlastním, vzdálenějším cílem.
 
 Běží na Windows, macOS i Linuxu — Python + `ib_async` + webové rozhraní NiceGUI.
 
@@ -124,14 +125,16 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    příkaz při kolísání kolem limitu nezadával a nerušil stále dokola, musí
    spread klesnout s rezervou pod limit a od odstranění musí uplynout
    nastavená prodleva (`rearm_spread_margin_pct`, `rearm_delay_sec`).
-4. **Zajištění** — po nákupu se zadá jediný prodejní příkaz se dvěma cenovými
+4. **Zajištění** — po nákupu se zadá prodejní příkaz se dvěma cenovými
    podmínkami na podklad spojenými logickým OR: dosažení PT nebo SL.
+   S aktivním runnerem vzniknou příkazy dva — hlavní část a runner, každý
+   s vlastním cílem a společným SL.
    Vyplnil-li se nákup jen částečně, aplikace nejprve zruší jeho nevyplněný
    zbytek a zajistí skutečně nakoupené množství — TWS totiž nepovolí mít
    na jednom opčním kontraktu současně nákupní i prodejní příkaz.
 5. **Monitoring** — tabulka ukazuje všechny obchody, jejich ceny a stav.
-   Pod každým rozpracovaným obchodem je řada tlačítek **1× 1,5× 2× 2,5× 3×**
-   zarovnaná doprava; posunou cíl na násobek jeho původní vzdálenosti od
+   Pod každým rozpracovaným obchodem je řada tlačítek **1× 1,5× 2× 2,5× 3×**;
+   posunou cíl na násobek jeho původní vzdálenosti od
    vstupu — u vstupu 232 a cíle 235 (tedy 3 body) znamená 2× cíl 238. Počítá
    se vždy z původního zadání, takže opakované klikání násobky neřetězí,
    a tlačítko odpovídající aktuálnímu cíli je barevně zvýrazněné. U nakoupené
@@ -139,6 +142,16 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    nákupem záleží na `trading.pt_change_strike` — buď zůstane původní strike,
    nebo se podle nového cíle vybere jiný a příkaz se přezadá. Ve formuláři se
    zadává vždy základní cíl 1:1.
+
+   U obchodů s více kontrakty, než kolik jich má runner
+   (`trading.runner_quantity`, výchozí 1), je vedle tlačítek cíle i sekce
+   **Runner**. Runner je část pozice prodávaná samostatným příkazem
+   s vlastním cílem — kliknutím na násobek se zapne (nebo se mu cíl změní),
+   *Zrušit runner* ho vypne a prodej se sloučí zpět do jednoho příkazu.
+   SL sdílí runner se zbytkem pozice, takže na stopu se prodává všechno.
+   Když hlavní část dosáhne PT, obchod zůstává otevřený, dokud runner
+   nedoběhne; výsledek se pak skládá z obou částí. Runner jde zapnout
+   před nákupem i za běhu a přežije restart aplikace.
 
    Sloupce *Zisk na PT* a *Ztráta na SL* říkají, jak obchod dopadne, když
    podklad dosáhne cílové, resp. stop úrovně. Opce se přecení z implikované
@@ -232,11 +245,9 @@ poměr SL:PT a výběr expirace.
 python -m unittest discover -s . -p "test_*.py"
 ```
 
-(85 testů: výpočty, čtení tržních dat a celý průběh obchodu.)
-
-Testy běží proti náhradě TWS (`tests/fake_ib.py`) — pokrývají výpočty
-i celý průběh obchodu včetně příkazů a jejich podmínek. Spojení s TWS
-není potřeba.
+Testy běží proti náhradě TWS (`tests/fake_ib.py`) — pokrývají výpočty,
+čtení tržních dat i celý průběh obchodu včetně příkazů, jejich podmínek,
+runneru a obnovy po restartu. Spojení s TWS není potřeba.
 
 ## Struktura
 
@@ -273,7 +284,8 @@ v souboru:
 | nakoupený obchod bez pozice i příkazu | označí jako chybu k ruční kontrole |
 
 Aby aplikace své příkazy poznala, značkuje je v poli `orderRef` zápisem
-`TWSOPCE:<obchod>:entry`, resp. `:exit`. Cizích příkazů na účtu si nevšímá,
+`TWSOPCE:<obchod>:entry`, `:exit`, resp. `:runner`. Cizích příkazů na účtu
+si nevšímá,
 takže vedle ní můžete obchodovat i ručně.
 
 Ztratí-li se soubor se stavem, aplikace podle těchto značek dohledá alespoň

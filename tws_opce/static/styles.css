@@ -206,6 +206,11 @@
   min-width: 42px;
 }
 
+/* Sekce runneru je oddělená od tlačítek cíle */
+.popisek-runner {
+  margin-left: 24px;
+}
+
 /* --- Náhled připraveného obchodu --- */
 .nahled {
   background-color: #f1f5f9;

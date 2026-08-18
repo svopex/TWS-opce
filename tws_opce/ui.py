@@ -88,6 +88,19 @@ BODY_SLOT = """
              :color="props.row.aktivni_nasobek === n ? 'primary' : 'grey-7'"
              :label="String(n).replace('.', ',') + '×'"
              @click.stop="() => $parent.$emit('nasobek', {id: props.row.id, nasobek: n})" />
+      <template v-if="props.row.runner_mozny">
+        <span class="popisek-nasobky popisek-runner">Runner:</span>
+        <q-btn v-for="n in props.row.nasobky" :key="'r' + n" dense size="sm"
+               class="q-ml-xs tlacitko-nasobek"
+               :outline="props.row.aktivni_runner_nasobek !== n"
+               :color="props.row.aktivni_runner_nasobek === n ? 'orange-8' : 'grey-7'"
+               :label="String(n).replace('.', ',') + '×'"
+               @click.stop="() => $parent.$emit('runnerNasobek', {id: props.row.id, nasobek: n})" />
+        <q-btn v-if="props.row.runner_aktivni" dense size="sm" outline color="red-8"
+               class="q-ml-sm tlacitko-nasobek"
+               label="Zrušit runner"
+               @click.stop="() => $parent.$emit('runnerZrusit', {id: props.row.id})" />
+      </template>
     </q-td>
   </q-tr>
 """
@@ -272,6 +285,9 @@ class TradingUI:
             self.table.on("radekKlik", self._on_row_click)
             # Tlačítko v řádku posune cíl obchodu na zvolený násobek
             self.table.on("nasobek", self._on_pt_multiple)
+            # Tlačítka runneru - vlastní cíl pro část pozice
+            self.table.on("runnerNasobek", self._on_runner_multiple)
+            self.table.on("runnerZrusit", self._on_runner_cancel)
 
             self.detail_label = ui.label("Kliknutím na řádek přepnete na daný obchod.").classes(
                 "detail-radku"
@@ -471,6 +487,43 @@ class TradingUI:
         # Formulář ukazuje vybraný obchod, hodnotu je třeba srovnat
         if self.selected_id == flow.id:
             self.pt_input.set_value(novy_pt)
+        self._refresh()
+
+    async def _on_runner_multiple(self, event: Any) -> None:
+        """Zapne runner, nebo změní jeho cíl na zvolený násobek."""
+        data = event.args or {}
+        flow = self.engine.flows.get(data.get("id", ""))
+        nasobek = data.get("nasobek")
+        if flow is None or nasobek is None:
+            return
+
+        try:
+            await self.engine.set_runner(flow.id, float(nasobek))
+        except Exception as exc:
+            ui.notify(str(exc), type="negative")
+            return
+
+        ui.notify(
+            f"{flow.id}: runner {flow.runner_quantity} ks s cílem "
+            f"{fmt(flow.runner_profit_target)} ({nasobek:g}×).",
+            type="positive",
+        )
+        self._refresh()
+
+    async def _on_runner_cancel(self, event: Any) -> None:
+        """Vypne runner - zbude jeden PT a SL pro celou pozici."""
+        data = event.args or {}
+        flow = self.engine.flows.get(data.get("id", ""))
+        if flow is None:
+            return
+
+        try:
+            await self.engine.cancel_runner(flow.id)
+        except Exception as exc:
+            ui.notify(str(exc), type="negative")
+            return
+
+        ui.notify(f"{flow.id}: runner zrušen.", type="warning")
         self._refresh()
 
     async def _submit(self) -> None:
@@ -675,11 +728,31 @@ class TradingUI:
                 if abs(aktualni - nabidnuty) < 0.01:
                     aktivni_nasobek = nabidnuty
                     break
+
+        # Totéž pro runner; jeho sekce se zobrazuje jen tehdy, když je pozice
+        # větší než velikost runneru - jinak není co dělit
+        runner_nasobek = None
+        runner_aktualni = flow.runner_multiple
+        if runner_aktualni is not None:
+            for nabidnuty in PT_MULTIPLES:
+                if abs(runner_aktualni - nabidnuty) < 0.01:
+                    runner_nasobek = nabidnuty
+                    break
+        runner_velikost = (
+            flow.runner_quantity if flow.runner_active else self.cfg.trading.runner_quantity
+        )
+        runner_mozny = (
+            flow.state.is_active
+            and (flow.filled_quantity or flow.quantity) > runner_velikost
+        )
         return {
             "id": flow.id,
             "live": flow.state.is_active and self.engine.is_monitoring,
             # Podklady pro řádek s tlačítky posunu cíle
             "lze_menit": flow.state.is_active,
+            "runner_mozny": runner_mozny,
+            "runner_aktivni": flow.runner_active,
+            "aktivni_runner_nasobek": runner_nasobek,
             "nasobky": list(PT_MULTIPLES),
             "aktivni_nasobek": aktivni_nasobek,
             "symbol": flow.symbol,
@@ -687,7 +760,9 @@ class TradingUI:
             "qty": flow.quantity,
             "entry": fmt(flow.entry_price),
             "fill": fmt(flow.fill_price),
-            "pt": fmt(flow.profit_target),
+            # S runnerem se vedle hlavního cíle ukazuje i cíl runneru
+            "pt": fmt(flow.profit_target)
+            + (f" · R {fmt(flow.runner_profit_target)}" if flow.runner_active else ""),
             "sl": fmt(flow.stop_loss),
             "underlying": fmt(flow.underlying_price),
             "quote": f"{fmt(flow.option_bid)} / {fmt(flow.option_ask)}",

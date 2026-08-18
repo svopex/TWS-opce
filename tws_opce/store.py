@@ -48,6 +48,10 @@ SAVED_FIELDS = (
     "filled_quantity",
     "exit_fill_price",
     "exit_reason",
+    "runner_profit_target",
+    "runner_quantity",
+    "runner_order_id",
+    "runner_fill_price",
     "entry_cancel_requested",
 )
 
