@@ -129,6 +129,12 @@ class Flow:
     exit_fill_price: float | None = None
     exit_reason: str = ""
 
+    # Očekávaný výsledek obchodu v USD, pokud podklad dosáhne PT resp. SL.
+    # Přepočítává se průběžně podle aktuální ceny opce a podkladu, takže
+    # odráží měnící se podmínky na trhu.
+    expected_profit: float | None = None
+    expected_loss: float | None = None
+
     # Runtime objekty z ib_async - nezobrazují se a neserializují
     option_contract: Any = field(default=None, repr=False, compare=False)
     underlying_contract: Any = field(default=None, repr=False, compare=False)
@@ -158,6 +164,15 @@ class Flow:
             return None
         mid = (self.option_bid + self.option_ask) / 2.0
         return (mid - self.fill_price) * quantity * 100
+
+    @property
+    def risk_reward(self) -> float | None:
+        """Poměr očekávaného zisku k očekávané ztrátě."""
+        if not self.expected_profit or not self.expected_loss:
+            return None
+        if self.expected_loss == 0:
+            return None
+        return abs(self.expected_profit / self.expected_loss)
 
     @property
     def spread_ok(self) -> bool:

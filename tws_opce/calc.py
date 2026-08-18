@@ -312,3 +312,34 @@ def estimate_delta(
         return None
 
     return black_scholes_delta(spot, strike, years, rate, sigma, right)
+
+
+def project_option_price(
+    option_price: float,
+    spot: float,
+    target_spot: float,
+    strike: float,
+    expiration: str,
+    rate_pct: float,
+    right: str,
+    today: date | None = None,
+) -> float | None:
+    """
+    Odhadne cenu opce, až podklad dosáhne cílové úrovně.
+
+    Z aktuální ceny opce se odvodí implikovaná volatilita a s ní se opce
+    přecení pro cílovou cenu podkladu. Předpokládá se, že pohyb nastane
+    brzy a volatilita zůstane stejná - dojde-li k němu později, bude cena
+    opce nižší o časový rozpad.
+    """
+    if option_price is None or spot is None or option_price <= 0 or spot <= 0:
+        return None
+
+    years = years_to_expiry(expiration, today)
+    rate = rate_pct / 100.0
+
+    sigma = implied_volatility(option_price, spot, strike, years, rate, right)
+    if sigma is None:
+        return None
+
+    return black_scholes_price(target_spot, strike, years, rate, sigma, right)

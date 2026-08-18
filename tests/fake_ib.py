@@ -6,6 +6,8 @@ ib_async; nahrazují se pouze metody, které komunikují se sítí.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from ib_async import Contract, ContractDetails, Option, OptionChain, OrderStatus, Stock, Trade
 
 from tws_opce.config import AppConfig
@@ -76,9 +78,20 @@ class FakeIBService(IBService):
             underlyingConId=UNDERLYING_CONID,
             tradingClass=underlying.symbol,
             multiplier="100",
-            expirations=["20991218", "20991224"],
-            strikes=[225.0, 230.0, 232.5, 235.0, 240.0],
+            # Expirace se odvozují od dnešního dne, aby výpočty pracovaly
+            # s reálným časovým horizontem a testy přitom nezastaraly
+            expirations=[
+                (date.today() + timedelta(days=dnu)).strftime("%Y%m%d") for dnu in (1, 7)
+            ],
+            # Strike ceny se odvozují od aktuální ceny podkladu, aby scénáře
+            # s libovolnou cenovou hladinou dostaly smysluplný kontrakt
+            strikes=self._strikes(),
         )
+
+    def _strikes(self) -> list[float]:
+        """Nabídka strike cen po 2,5 bodu kolem aktuální ceny podkladu."""
+        stred = round((self.price_underlying or 230.0) / 2.5) * 2.5
+        return [round(stred + krok * 2.5, 2) for krok in range(-8, 9)]
 
     async def qualify_option(
         self, symbol: str, expiration: str, strike: float, right: str, trading_class: str = ""

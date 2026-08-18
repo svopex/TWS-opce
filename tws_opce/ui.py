@@ -44,6 +44,8 @@ TABLE_COLUMNS = [
     {"name": "fill", "label": "Nákup za", "field": "fill", "align": "right"},
     {"name": "pt", "label": "PT", "field": "pt", "align": "right"},
     {"name": "sl", "label": "SL", "field": "sl", "align": "right"},
+    {"name": "exp_profit", "label": "Zisk na PT", "field": "exp_profit", "align": "right"},
+    {"name": "exp_loss", "label": "Ztráta na SL", "field": "exp_loss", "align": "right"},
     {"name": "quote", "label": "Bid / Ask", "field": "quote", "align": "right"},
     {"name": "spread", "label": "Spread", "field": "spread", "align": "right"},
     {"name": "spread_limit", "label": "Max. spread", "field": "spread_limit", "align": "right"},
@@ -72,6 +74,19 @@ LIVE_SLOT = """
 STATE_SLOT = """
 <q-td :props="props" :class="props.row.vybrany ? 'bunka-vybrana' : ''">
   <span :class="'odznak ' + props.row.state_class">{{ props.value }}</span>
+</q-td>
+"""
+
+# Šablony buněk s očekávaným výsledkem obchodu při dosažení PT a SL
+PROFIT_SLOT = """
+<q-td :props="props" :class="'text-right ' + (props.row.vybrany ? 'bunka-vybrana' : '')">
+  <span class="zisk">{{ props.value }}</span>
+</q-td>
+"""
+
+LOSS_SLOT = """
+<q-td :props="props" :class="'text-right ' + (props.row.vybrany ? 'bunka-vybrana' : '')">
+  <span class="ztrata">{{ props.value }}</span>
 </q-td>
 """
 
@@ -261,6 +276,8 @@ class TradingUI:
             self.table.add_slot("body-cell-live", LIVE_SLOT)
             self.table.add_slot("body-cell-state", STATE_SLOT)
             self.table.add_slot("body-cell-pnl", PNL_SLOT)
+            self.table.add_slot("body-cell-exp_profit", PROFIT_SLOT)
+            self.table.add_slot("body-cell-exp_loss", LOSS_SLOT)
             # Klik na řádek přepne formulář na daný obchod
             self.table.on("rowClick", self._on_row_click)
 
@@ -642,6 +659,8 @@ class TradingUI:
             "quote": f"{fmt(flow.option_bid)} / {fmt(flow.option_ask)}",
             "spread": fmt(flow.option_spread_pct, 2, " %"),
             "spread_limit": fmt(flow.max_spread_pct, 2, " %"),
+            "exp_profit": fmt(flow.expected_profit),
+            "exp_loss": fmt(flow.expected_loss),
             "pnl": fmt(pnl) if pnl is not None else "-",
             "state": flow.state.label,
             "state_class": STATE_CLASSES.get(flow.state, ""),

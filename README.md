@@ -130,6 +130,14 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    zbytek a zajistí skutečně nakoupené množství — TWS totiž nepovolí mít
    na jednom opčním kontraktu současně nákupní i prodejní příkaz.
 5. **Monitoring** — tabulka ukazuje všechny obchody, jejich ceny a stav.
+   Sloupce *Zisk na PT* a *Ztráta na SL* říkají, jak obchod dopadne, když
+   podklad dosáhne cílové, resp. stop úrovně. Opce se přecení z implikované
+   volatility odvozené z její aktuální ceny. Po nákupu se počítá ze skutečně
+   dosažené ceny, před nákupem z ceny, na kterou opce vyjde **až podklad
+   dosáhne vstupní úrovně** — tam se totiž bude kupovat.
+   Hodnoty se přepočítávají s pohybem trhu. Předpokládá se, že podklad
+   úrovně dosáhne brzy a volatilita zůstane stejná — při pozdějším pohybu
+   bude výsledek nižší o časový rozpad.
    Tepající zelený puntík v prvním sloupci znamená, že obchod je pod dohledem
    aplikace. Objeví se jen u rozpracovaných obchodů a jen tehdy, když hlídání
    skutečně běží — vyžaduje spuštěnou monitorovací smyčku, navázané spojení

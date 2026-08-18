@@ -202,5 +202,46 @@ class TestOdhadDelty(unittest.TestCase):
         self.assertTrue(0.0 <= delta <= 1.0)
 
 
+class TestPreceneniOpce(unittest.TestCase):
+    """Odhad ceny opce při dosažení cílové úrovně podkladu."""
+
+    DNES = date(2026, 8, 18)
+
+    def test_call_pri_rustu_podkladu_zdrazi(self):
+        # CALL za 1,01 při podkladu 310, strike 312,5
+        na_pt = calc.project_option_price(1.01, 310.0, 313.0, 312.5, "20260819", 4.0, "C", self.DNES)
+        self.assertIsNotNone(na_pt)
+        self.assertGreater(na_pt, 1.01)
+
+    def test_call_pri_poklesu_podkladu_zlevni(self):
+        na_sl = calc.project_option_price(1.01, 310.0, 309.0, 312.5, "20260819", 4.0, "C", self.DNES)
+        self.assertIsNotNone(na_sl)
+        self.assertLess(na_sl, 1.01)
+        self.assertGreaterEqual(na_sl, 0.0)
+
+    def test_put_se_chova_zrcadlove(self):
+        pri_poklesu = calc.project_option_price(
+            2.50, 545.0, 540.0, 542.5, "20260819", 4.0, "P", self.DNES
+        )
+        pri_rustu = calc.project_option_price(
+            2.50, 545.0, 550.0, 542.5, "20260819", 4.0, "P", self.DNES
+        )
+        self.assertGreater(pri_poklesu, 2.50)
+        self.assertLess(pri_rustu, 2.50)
+
+    def test_cil_na_aktualni_cene_vraci_stejnou_cenu(self):
+        # Bez pohybu podkladu musí přecenění vrátit původní cenu
+        cena = calc.project_option_price(1.01, 310.0, 310.0, 312.5, "20260819", 4.0, "C", self.DNES)
+        self.assertAlmostEqual(cena, 1.01, places=2)
+
+    def test_bez_pouzitelne_ceny_vraci_none(self):
+        self.assertIsNone(
+            calc.project_option_price(0.0, 310.0, 313.0, 312.5, "20260819", 4.0, "C", self.DNES)
+        )
+        self.assertIsNone(
+            calc.project_option_price(1.01, None, 313.0, 312.5, "20260819", 4.0, "C", self.DNES)
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

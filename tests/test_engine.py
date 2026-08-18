@@ -701,6 +701,108 @@ class TestVicenasobneFlow(ZakladTestu):
         self.assertEqual(poradi[0], "MSFT")
 
 
+class TestOcekavanehoVysledku(ZakladTestu):
+    """Očekávaný zisk na PT a ztráta na SL."""
+
+    async def test_hodnoty_se_spocitaji_pri_zadani(self):
+        flow = await self.zaloz_call(quantity=2)
+        await self.engine._tick()
+
+        self.assertIsNotNone(flow.expected_profit)
+        self.assertIsNotNone(flow.expected_loss)
+        # Na PT se vydělá, na SL prodělá
+        self.assertGreater(flow.expected_profit, 0)
+        self.assertLess(flow.expected_loss, 0)
+
+    async def test_hodnoty_rostou_s_mnozstvim(self):
+        jeden = await self.zaloz_call(quantity=1)
+        await self.engine._tick()
+        zisk_jeden = jeden.expected_profit
+
+        self.ib.price_underlying = 230.0
+        vice = await self.engine.start_flow(
+            FlowRequest(symbol="MSFT", entry_price=232.0, profit_target=235.0, quantity=3)
+        )
+        await self.engine._tick()
+
+        self.assertAlmostEqual(vice.expected_profit, zisk_jeden * 3, places=4)
+
+    async def test_prepocet_reaguje_na_zmenu_trhu(self):
+        flow = await self.zaloz_call()
+        await self.engine._tick()
+        puvodni = flow.expected_profit
+
+        # Opce zdraží, očekávaný zisk se změní
+        self.ib.price_bid, self.ib.price_ask = 4.00, 4.10
+        await self.engine._tick()
+
+        self.assertNotAlmostEqual(flow.expected_profit, puvodni, places=2)
+
+    async def test_po_nakupu_se_pocita_ze_skutecne_ceny(self):
+        flow = await self.zaloz_call(quantity=1)
+        self.ib.fill(flow.entry_trade, 1, 2.00)
+        await self.engine._tick()
+        await self.engine._tick()
+
+        # Levnější nákup než trh znamená vyšší očekávaný zisk
+        self.assertIsNotNone(flow.expected_profit)
+        self.assertGreater(flow.expected_profit, 0)
+
+    async def test_pomer_zisku_a_ztraty(self):
+        flow = await self.zaloz_call()
+        await self.engine._tick()
+        self.assertIsNotNone(flow.risk_reward)
+        self.assertGreater(flow.risk_reward, 0)
+
+    async def test_ztrata_na_sl_je_vzdy_zaporna_u_call(self):
+        # SL leží pod aktuální cenou podkladu, přesto musí jít o ztrátu
+        self.ib.price_underlying = 309.87
+        self.ib.price_bid, self.ib.price_ask = 0.66, 0.69
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=311.5, profit_target=313.5, stop_loss=309.5)
+        )
+        await self.engine._tick()
+
+        self.assertLess(flow.expected_loss, 0)
+        self.assertGreater(flow.expected_profit, 0)
+
+    async def test_ztrata_na_sl_je_vzdy_zaporna_u_put(self):
+        # U PUT čekajícího na pokles leží SL blíž k dnešní ceně než vstup.
+        # Počítat z dnešní ceny opce by udělalo ze ztráty zisk.
+        self.ib.price_underlying = 548.25
+        self.ib.price_bid, self.ib.price_ask = 2.34, 2.46
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="META", entry_price=545.0, profit_target=543.0, stop_loss=547.0)
+        )
+        self.assertEqual(flow.right, "P")
+        await self.engine._tick()
+
+        self.assertLess(flow.expected_loss, 0)
+        self.assertGreater(flow.expected_profit, 0)
+
+    async def test_nakupni_cena_vychazi_ze_vstupni_urovne(self):
+        # Před nákupem se opce přeceňuje na vstup, ne na dnešní cenu podkladu
+        self.ib.price_underlying = 548.25
+        self.ib.price_bid, self.ib.price_ask = 2.34, 2.46
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="META", entry_price=545.0, profit_target=543.0, stop_loss=547.0)
+        )
+        await self.engine._tick()
+
+        # Nákup na 545 je pro PUT dražší než dnešních 2,40, takže zisk na PT
+        # musí být nižší, než kdyby se počítal z dnešní ceny
+        self.assertIsNotNone(flow.expected_profit)
+        self.assertLess(flow.expected_profit, 190.0)
+
+    async def test_bez_kotaci_zustavaji_hodnoty_prazdne(self):
+        self.ib.price_bid, self.ib.price_ask = None, None
+        flow = await self.zaloz_call()
+        await self.engine._tick()
+
+        self.assertIsNone(flow.expected_profit)
+        self.assertIsNone(flow.expected_loss)
+
+
 class TestIndikatoruHlidani(ZakladTestu):
     """Příznak, že aplikace obchody skutečně hlídá."""
 

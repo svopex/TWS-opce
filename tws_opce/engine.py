@@ -457,6 +457,60 @@ class FlowEngine:
             self._notify()
             return flow
 
+    def _compute_expected_pnl(self, flow: Flow) -> None:
+        """
+        Spočítá očekávaný výsledek obchodu při dosažení PT a SL.
+
+        Opce se přecení z aktuální implikované volatility pro cenu podkladu
+        na úrovni PT, resp. SL, a rozdíl proti nákupní ceně se přepočte
+        na peníze.
+
+        Nákupní cenou je po nákupu skutečně dosažená cena. Před nákupem se
+        opce přecení na vstupní úroveň, protože právě tam se bude kupovat -
+        použít místo toho její dnešní cenu by výsledek zkreslilo. U obchodu
+        čekajícího na pokles podkladu by dokonce vycházela ztráta na SL jako
+        zisk, protože SL leží blíž k dnešní ceně než vstup.
+
+        Předpokládá se, že podklad úrovní dosáhne brzy a volatilita zůstane
+        stejná; při pozdějším pohybu bude výsledek nižší o časový rozpad.
+        """
+        bid, ask, _ = self.ib.option_quotes(flow.option_contract)
+        aktualni = (bid + ask) / 2.0 if bid and ask else (ask or bid)
+        podklad = flow.underlying_price
+
+        if not aktualni or not podklad:
+            flow.expected_profit = None
+            flow.expected_loss = None
+            return
+
+        sazba = self.cfg.trading.risk_free_rate_pct
+
+        def cena_pri(uroven: float) -> float | None:
+            """Odhad ceny opce, až podklad dosáhne dané úrovně."""
+            return calc.project_option_price(
+                aktualni, podklad, uroven, flow.strike, flow.expiration, sazba, flow.right
+            )
+
+        if flow.fill_price:
+            nakupni = flow.fill_price
+        else:
+            nakupni = cena_pri(flow.entry_price)
+            # Model dává střed trhu, nakupuje se ale na ASK - přičte se půl spreadu
+            if nakupni is not None and bid and ask:
+                nakupni += (ask - bid) / 2.0
+
+        cena_pt = cena_pri(flow.profit_target)
+        cena_sl = cena_pri(flow.stop_loss)
+
+        if nakupni is None or cena_pt is None or cena_sl is None:
+            flow.expected_profit = None
+            flow.expected_loss = None
+            return
+
+        mnozstvi = flow.filled_quantity or flow.quantity
+        flow.expected_profit = (cena_pt - nakupni) * mnozstvi * 100
+        flow.expected_loss = (cena_sl - nakupni) * mnozstvi * 100
+
     def _place_entry(self, flow: Flow) -> bool:
         """
         Zadá nákupní příkaz s cenovou podmínkou na dosažení vstupní ceny podkladu.
@@ -1079,6 +1133,9 @@ class FlowEngine:
         flow.option_spread_pct = calc.spread_pct(bid, ask)
         if delta is not None:
             flow.delta = delta
+
+        # Očekávaný výsledek se přepočítává s každou změnou cen na trhu
+        self._compute_expected_pnl(flow)
         return True
 
     def _handle_before_entry(self, flow: Flow) -> bool:
