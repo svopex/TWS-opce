@@ -614,15 +614,54 @@ class TestVicenasobneFlow(ZakladTestu):
 class TestVelikostUctu(ZakladTestu):
     """Zdroj velikosti účtu pro výpočet rizika."""
 
-    async def test_vychozi_velikost_z_konfigurace(self):
+    async def test_kladna_hodnota_z_konfigurace(self):
         self.assertAlmostEqual(self.engine.account_size, 5000.0)
         self.assertAlmostEqual(self.engine.risk_amount, 50.0)
 
-    async def test_velikost_z_tws(self):
-        self.cfg.account.use_live_account_size = True
+    async def test_nula_prebira_velikost_z_tws(self):
+        # account.size = 0 znamená převzetí hodnoty z platformy
+        self.cfg.account.size = 0
         await self.engine._tick()
         self.assertAlmostEqual(self.engine.account_size, 12345.0)
         self.assertAlmostEqual(self.engine.risk_amount, 123.45)
+
+    async def test_kladna_hodnota_ma_prednost_pred_tws(self):
+        # Při vyplněné velikosti se z TWS nic nepřebírá
+        await self.engine._tick()
+        self.assertAlmostEqual(self.engine.account_size, 5000.0)
+
+    async def test_bez_hodnoty_z_tws_je_velikost_nulova(self):
+        # Dokud TWS hodnotu nepošle, není z čeho počítat riziko
+        self.cfg.account.size = 0
+        self.assertAlmostEqual(self.engine.account_size, 0.0)
+        self.assertAlmostEqual(self.engine.risk_amount, 0.0)
+
+    async def test_velikost_se_obnovuje(self):
+        self.cfg.account.size = 0
+        await self.engine._tick()
+        self.assertAlmostEqual(self.engine.account_size, 12345.0)
+
+        # Stav účtu se změní; po uplynutí intervalu se převezme nová hodnota
+        self.ib.net_liquidation_value = 20000.0
+        self.engine._account_checked = 0.0
+        await self.engine._tick()
+        self.assertAlmostEqual(self.engine.account_size, 20000.0)
+
+    async def test_mnozstvi_se_pocita_z_velikosti_prevzate_z_tws(self):
+        # Riziko 123,45 USD, pohyb 3 USD, delta 0,35 -> 123,45 / 105 = 1 kontrakt
+        self.cfg.account.size = 0
+        await self.engine._tick()
+        flow = await self.zaloz_call()
+        self.assertEqual(flow.quantity, 1)
+
+        # Při větším účtu vyjde kontraktů více
+        self.ib.net_liquidation_value = 500000.0
+        self.engine._account_checked = 0.0
+        await self.engine._tick()
+        druhy = await self.engine.start_flow(
+            FlowRequest(symbol="MSFT", entry_price=232.0, profit_target=235.0)
+        )
+        self.assertEqual(druhy.quantity, 47)
 
 
 if __name__ == "__main__":

@@ -27,6 +27,8 @@ class FakeIBService(IBService):
         self.price_bid: float | None = 3.00
         self.price_ask: float | None = 3.10
         self.greek_delta: float | None = 0.35
+        # Velikost účtu vracená místo dotazu do TWS
+        self.net_liquidation_value: float | None = 12345.0
         # Záznam odeslaných a zrušených příkazů
         self.placed: list[Trade] = []
         self.cancelled: list[Trade] = []
@@ -42,8 +44,8 @@ class FakeIBService(IBService):
         return True
 
     async def net_liquidation(self) -> float | None:
-        """Pevná velikost účtu pro testy."""
-        return 12345.0
+        """Velikost účtu nastavená testem."""
+        return self.net_liquidation_value
 
     # --- kontrakty ---
 

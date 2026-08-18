@@ -87,7 +87,9 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    - **expiraci** podle konfigurace (výchozí je nejbližší),
    - **SL**, pokud nebyl zadán, v poměru k PT z konfigurace (výchozí 1:1),
    - **množství** z velikosti účtu, povoleného rizika a delty opce:
-     `riskovaná částka / (|vstup − SL| × |delta| × 100)`.
+     `riskovaná částka / (|vstup − SL| × |delta| × 100)`. Riskovaná částka
+     vychází z velikosti účtu — buď z pevné hodnoty v konfiguraci, nebo
+     ze skutečného stavu účtu, je-li `account.size: 0`.
 
    TWS model greeks u opcí neposílá spolehlivě — závisí to na účtu
    a předplatném dat. Chybí-li delta, aplikace ji dopočítá z tržní ceny opce
@@ -172,6 +174,21 @@ v průběhu. Běží-li přitom obchod na stejném tickeru, upozornění výslov
 že se týká **jiného kontraktu** — jinak snadno vznikne dojem, že je pozice
 pod dozorem, přestože obchod míří na jiný strike nebo expiraci. Sama k nim nic nezadává — nezná jejich PT ani SL. Interval kontroly
 je `engine.unmanaged_check_sec` (výchozí 30 s, `0` kontrolu vypne).
+
+## Velikost účtu
+
+Riskovaná částka se počítá z velikosti účtu, kterou lze zadat dvěma způsoby:
+
+| `account.size` | Chování |
+| --- | --- |
+| kladná hodnota (např. `5000.0`) | použije se přesně tato částka |
+| `0` | velikost se převezme z TWS (NetLiquidation) a průběžně obnovuje |
+
+Při `0` odpovídá riziko skutečnému stavu účtu včetně otevřených pozic; hodnota
+se načítá po připojení a dál se obnovuje v intervalu `engine.account_refresh_sec`
+(výchozí 60 s). Dokud ji TWS nepošle, aplikace na to upozorní ve formuláři
+a množství nedoporučí. V panelu *Konfigurace* je vždy vidět, odkud hodnota
+pochází — `(config)`, nebo `(z TWS)`.
 
 ## Konfigurace
 

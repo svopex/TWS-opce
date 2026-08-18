@@ -90,6 +90,7 @@ class FlowEngine:
         # Opční pozice na účtu, které aplikace neřídí
         self.unmanaged: dict[int, PositionInfo] = {}
         self._unmanaged_checked: float = 0.0
+        self._account_checked: float = 0.0
 
     # ------------------------------------------------------------------
     # Pomocné
@@ -124,10 +125,13 @@ class FlowEngine:
 
     @property
     def account_size(self) -> float:
-        """Velikost účtu - podle konfigurace buď pevná, nebo načtená z TWS."""
-        if self.cfg.account.use_live_account_size and self._live_account_size:
-            return self._live_account_size
-        return self.cfg.account.size
+        """
+        Velikost účtu pro výpočet rizika.
+        Kladná hodnota v konfiguraci má přednost; nula znamená převzetí z TWS.
+        """
+        if self.cfg.account.size > 0:
+            return self.cfg.account.size
+        return self._live_account_size or 0.0
 
     @property
     def risk_amount(self) -> float:
@@ -181,6 +185,13 @@ class FlowEngine:
         if preview.current_price is None:
             preview.warnings.append(
                 "Z TWS zatím nedorazila cena podkladu - zkontrolujte odběr tržních dat."
+            )
+
+        # Bez známé velikosti účtu nelze spočítat riskovanou částku ani množství
+        if self.account_size <= 0:
+            preview.warnings.append(
+                "Velikost účtu se přebírá z TWS (account.size = 0), ale zatím nedorazila - "
+                "množství proto nelze doporučit."
             )
 
         # Bez vstupní ceny a PT nelze určit kontrakt, vrací se jen cena podkladu
@@ -585,9 +596,8 @@ class FlowEngine:
                 await self._try_reconnect()
             return
 
-        # Velikost účtu z TWS se načítá jen při odpovídajícím nastavení
-        if self.cfg.account.use_live_account_size and self._live_account_size is None:
-            self._live_account_size = await self.ib.net_liquidation()
+        # Velikost účtu z TWS se obnovuje, jen když ji konfigurace přebírá (size = 0)
+        await self._refresh_account_size()
 
         # Pozice bez dozoru aplikace se kontrolují v delším intervalu
         await self._check_unmanaged()
@@ -850,6 +860,29 @@ class FlowEngine:
             "Obnoveno: obchod byl nakoupen, ale v TWS není pozice ani prodejní příkaz. "
             "Zkontrolujte účet ručně.",
         )
+
+    async def _refresh_account_size(self) -> None:
+        """
+        Obnoví velikost účtu z TWS, je-li v konfiguraci account.size = 0.
+        Hodnota se mění s otevřenými pozicemi, proto se načítá opakovaně.
+        """
+        if self.cfg.account.size > 0:
+            return
+
+        loop = asyncio.get_running_loop()
+        if (
+            self._live_account_size is not None
+            and loop.time() - self._account_checked < self.cfg.engine.account_refresh_sec
+        ):
+            return
+        self._account_checked = loop.time()
+
+        hodnota = await self.ib.net_liquidation()
+        if hodnota is None:
+            return
+        if self._live_account_size is None:
+            self.log_event(f"Velikost účtu převzata z TWS: {hodnota:,.2f} USD.".replace(",", " "))
+        self._live_account_size = hodnota
 
     async def _check_unmanaged(self) -> None:
         """

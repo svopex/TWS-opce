@@ -41,10 +41,9 @@ class ConnectionConfig:
 class AccountConfig:
     """Velikost účtu a risk management."""
 
+    # Velikost účtu v USD. Hodnota 0 znamená, že se převezme z TWS (NetLiquidation).
     size: float = 5000.0
     risk_pct: float = 1.0
-    # Pokud je True, velikost účtu se načte z TWS (NetLiquidation) místo hodnoty výše
-    use_live_account_size: bool = False
 
 
 @dataclass
@@ -108,6 +107,8 @@ class EngineConfig:
     market_data_timeout_sec: float = 6.0
     # Interval kontroly opčních pozic, které aplikace neřídí (0 = vypnuto)
     unmanaged_check_sec: float = 30.0
+    # Jak často se obnovuje velikost účtu z TWS, používá-li se account.size = 0
+    account_refresh_sec: float = 60.0
 
 
 @dataclass
@@ -244,8 +245,8 @@ def validate_config(cfg: AppConfig) -> None:
                 "expiration.fixed_date musí být ve formátu YYYYMMDD při expiration.mode = fixed"
             )
 
-    if cfg.account.size <= 0:
-        problems.append("account.size musí být kladné číslo")
+    if cfg.account.size < 0:
+        problems.append("account.size nesmí být záporná (0 = převzít z TWS)")
     if not 0 < cfg.account.risk_pct <= 100:
         problems.append("account.risk_pct musí být v intervalu (0, 100]")
     if cfg.trading.sl_to_pt_ratio <= 0:
@@ -268,6 +269,8 @@ def validate_config(cfg: AppConfig) -> None:
         problems.append("expiration.min_dte nesmí být záporné")
     if cfg.connection.market_data_type not in (1, 2, 3, 4):
         problems.append("connection.market_data_type musí být 1, 2, 3 nebo 4")
+    if cfg.engine.account_refresh_sec <= 0:
+        problems.append("engine.account_refresh_sec musí být kladné číslo")
     if cfg.engine.unmanaged_check_sec < 0:
         problems.append("engine.unmanaged_check_sec nesmí být záporné")
     if cfg.engine.poll_interval_sec <= 0:

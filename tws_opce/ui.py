@@ -668,8 +668,16 @@ class TradingUI:
         t = self.cfg.trading
         e = self.cfg.expiration
         expiration_text = e.fixed_date if e.mode == "fixed" else f"nejbližší (min. {e.min_dte} dní)"
+        # U velikosti účtu se uvádí, zda pochází z konfigurace, nebo z TWS
+        if self.cfg.account.size > 0:
+            ucet = f"{fmt(self.engine.account_size)} USD (config)"
+        elif self.engine.account_size > 0:
+            ucet = f"{fmt(self.engine.account_size)} USD (z TWS)"
+        else:
+            ucet = "čeká se na hodnotu z TWS"
+
         self.config_label.set_text(
-            f"Účet {fmt(self.engine.account_size)} USD | risk {self.cfg.account.risk_pct:g} % "
+            f"Účet {ucet} | risk {self.cfg.account.risk_pct:g} % "
             f"= {fmt(self.engine.risk_amount)} USD\n"
             f"Nákup: {t.entry_order_type} (tolerance {t.ask_tolerance_pct:g} %) | "
             f"prodej: {t.exit_order_type}\n"
