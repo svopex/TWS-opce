@@ -72,6 +72,10 @@ BODY_SLOT = """
       <span v-else-if="col.name === 'pnl'" :class="props.row.pnl_class">{{ col.value }}</span>
       <span v-else-if="col.name === 'exp_profit'" class="zisk">{{ col.value }}</span>
       <span v-else-if="col.name === 'exp_loss'" class="ztrata">{{ col.value }}</span>
+      <span v-else-if="col.name === 'contract'">
+        {{ col.value }}
+        <span :class="'odznak-smer ' + props.row.smer_class">{{ props.row.smer }}</span>
+      </span>
       <span v-else>{{ col.value }}</span>
     </q-td>
   </q-tr>
@@ -999,6 +1003,9 @@ class TradingUI:
             "aktivni_nasobek": aktivni_nasobek,
             "symbol": flow.symbol,
             "contract": f"{flow.right_label} {flow.expiration} @ {flow.strike:g}",
+            # Směr obchodu: CALL čeká růst podkladu (long), PUT pokles (short)
+            "smer": "LONG" if flow.right == "C" else "SHORT",
+            "smer_class": "smer-long" if flow.right == "C" else "smer-short",
             # Zadané množství / kontrakty právě otevřené v trhu (např. 4/3)
             "qty": f"{flow.quantity}/{flow.open_quantity}",
             "entry": fmt(flow.entry_price),

@@ -334,6 +334,27 @@ body .tabulka tbody td::before {
   }
 }
 
+/* --- Označení směru obchodu (LONG/SHORT) za kontraktem --- */
+.odznak-smer {
+  border-radius: 8px;
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  margin-left: 6px;
+  padding: 1px 6px;
+  vertical-align: middle;
+}
+
+.smer-long {
+  background-color: #dcfce7;
+  color: #166534;
+}
+
+.smer-short {
+  background-color: #fee2e2;
+  color: #991b1b;
+}
+
 /* --- Odznaky stavu flow --- */
 .odznak {
   border-radius: 9px;
