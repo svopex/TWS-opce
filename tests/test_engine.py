@@ -107,11 +107,26 @@ class TestZalozeniFlow(ZakladTestu):
         flow = await self.zaloz_call(stop_loss=230.5)
         self.assertAlmostEqual(flow.stop_loss, 230.5)
 
-    async def test_druhe_flow_na_stejny_ticker_se_odmitne(self):
-        await self.zaloz_call()
+    async def test_flow_pred_nakupem_se_novym_zadanim_nahradi(self):
+        prvni = await self.zaloz_call()
+        druhe = await self.zaloz_call(profit_target=237.5)
+
+        # Původní čekající příkaz je pryč z trhu a obchod zmizel z přehledu
+        self.assertIn(prvni.entry_trade, self.ib.cancelled)
+        self.assertNotIn(prvni.id, self.engine.flows)
+        # Nové zadání běží se svými parametry
+        self.assertIn(druhe.id, self.engine.flows)
+        self.assertAlmostEqual(druhe.profit_target, 237.5)
+
+    async def test_flow_s_pozici_se_novym_zadanim_neprepise(self):
+        flow = await self.zaloz_call()
+        # Nákup se vyplní - obchod už drží pozici a přepsat se nesmí
+        self.ib.fill(flow.entry_trade, 1, 3.10)
+        await self.engine._tick()
+
         with self.assertRaises(ValueError) as ctx:
             await self.zaloz_call()
-        self.assertIn("již běží aktivní flow", str(ctx.exception))
+        self.assertIn("otevřenou pozicí", str(ctx.exception))
 
     async def test_chybne_zadani_pt_se_odmitne(self):
         # U CALL musí PT ležet nad vstupem
@@ -131,6 +146,28 @@ class TestZalozeniFlow(ZakladTestu):
         await self.zaloz_call()
         # Střed trhu 3,05 leží přesně na tiku
         self.assertAlmostEqual(self.ib.placed[0].order.lmtPrice, 3.05)
+
+
+class TestVyberuStrike(ZakladTestu):
+    """Výběr strike, když nejbližší cena z řetězce není v TWS obchodovatelná."""
+
+    async def test_nedostupny_strike_se_nahradi_nejblizsim_obchodovatelnym(self):
+        # Řetězec strike 235 nabízí, ale kontrakt pro něj v TWS neexistuje
+        self.ib.unavailable_strikes = {235.0}
+        preview = await self.engine.prepare("AAPL", 232.0, 235.0)
+
+        # Vybral se další strike v pořadí podle vzdálenosti od PT
+        self.assertEqual(preview.strike, 232.5)
+        # SL se počítá z cen podkladu (vstup a PT), náhradní strike ho nemění
+        self.assertAlmostEqual(preview.stop_loss, 229.0)
+        # Náhrada se obchodníkovi hlásí varováním
+        self.assertTrue(any("235" in varovani for varovani in preview.warnings))
+
+    async def test_bez_obchodovatelneho_strike_priprava_selze(self):
+        # Žádný strike z řetězce není obchodovatelný - příprava musí skončit chybou
+        self.ib.unavailable_strikes = set(self.ib._strikes())
+        with self.assertRaises(ValueError):
+            await self.engine.prepare("AAPL", 232.0, 235.0)
 
 
 class TestSmeruVstupu(ZakladTestu):
@@ -1356,13 +1393,19 @@ class TestVicenasobneFlow(ZakladTestu):
         self.assertEqual(prvni.state, FlowState.FILLED)
         self.assertEqual(druhy.state, FlowState.ARMED)
 
-    async def test_prehled_je_serazen_od_nejnovejsiho(self):
-        await self.zaloz_call()
+    async def test_prehled_je_serazen_abecedne_a_ukoncene_na_konci(self):
+        # Zakládá se v opačném abecedním pořadí, aby se řazení skutečně ověřilo
         await self.engine.start_flow(
             FlowRequest(symbol="MSFT", entry_price=232.0, profit_target=235.0)
         )
+        aapl = await self.zaloz_call()
         poradi = [f.symbol for f in self.engine.sorted_flows()]
-        self.assertEqual(poradi[0], "MSFT")
+        self.assertEqual(poradi, ["AAPL", "MSFT"])
+
+        # Zrušený obchod putuje na konec přehledu bez ohledu na abecedu
+        await self.engine.cancel_flow(aapl.id)
+        poradi = [f.symbol for f in self.engine.sorted_flows()]
+        self.assertEqual(poradi, ["MSFT", "AAPL"])
 
 
 class TestOcekavanehoVysledku(ZakladTestu):

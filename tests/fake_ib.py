@@ -38,6 +38,8 @@ class FakeIBService(IBService):
         self.cancelled: list[Trade] = []
         # Opční pozice na účtu podle conId - test je nastavuje pro scénáře obnovy
         self.held_positions: dict[int, float] = {}
+        # Strike ceny, které řetězec nabízí, ale kontrakt pro ně v TWS neexistuje
+        self.unavailable_strikes: set[float] = set()
         self._next_order_id = 1
 
     # --- spojení ---
@@ -97,6 +99,11 @@ class FakeIBService(IBService):
         self, symbol: str, expiration: str, strike: float, right: str, trading_class: str = ""
     ) -> tuple[Contract, ContractDetails]:
         """Vrátí opční kontrakt s minimálním tikem 0,05."""
+        # Strike označený testem jako nedostupný se chová jako v ostré službě
+        if strike in self.unavailable_strikes:
+            raise ValueError(
+                f"Opční kontrakt {symbol} {expiration} {right} {strike:g} není v TWS dostupný."
+            )
         option = Option(symbol, expiration, strike, right, "SMART", currency="USD")
         option.conId = OPTION_CONID
         option.multiplier = "100"

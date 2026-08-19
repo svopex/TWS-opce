@@ -167,6 +167,13 @@
 }
 
 /* --- Řádek s tlačítky pro posun cíle --- */
+/* Kliknutí na řádek obchodu (datový i s tlačítky) přenáší obchod
+   do formuláře - kurzor to naznačuje */
+.tabulka tbody tr.radek-s-nasobky,
+.tabulka tbody tr.radek-nasobky {
+  cursor: pointer;
+}
+
 /* Datový řádek a tlačítka pod ním tvoří jeden celek, proto mezi nimi
    nesmí být vodorovná linka; odděluje se až následující obchod */
 .tabulka tbody tr.radek-s-nasobky td {

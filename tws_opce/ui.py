@@ -60,7 +60,8 @@ TABLE_COLUMNS = [
 # druhý řádek s tlačítky; Quasar při vlastním vykreslení řádku přestává hlásit
 # události, proto se emitují přímo ze šablony.
 BODY_SLOT = """
-  <q-tr :props="props" class="radek-s-nasobky">
+  <q-tr :props="props" class="radek-s-nasobky"
+        @click="() => $parent.$emit('vybratFlow', {id: props.row.id})">
     <q-td v-for="col in props.cols" :key="col.name" :props="props">
       <span v-if="col.name === 'live'">
         <span v-if="props.row.live" class="puntik-hlidani"></span>
@@ -74,7 +75,8 @@ BODY_SLOT = """
       <span v-else>{{ col.value }}</span>
     </q-td>
   </q-tr>
-  <q-tr :props="props" class="radek-nasobky">
+  <q-tr :props="props" class="radek-nasobky"
+        @click="() => $parent.$emit('vybratFlow', {id: props.row.id})">
     <q-td :colspan="props.cols.length - 1" class="bunka-nasobku">
       <template v-if="props.row.sl_mozny">
         <span class="popisek-nasobky">SL:</span>
@@ -137,11 +139,11 @@ BODY_SLOT = """
       <q-btn v-if="props.row.lze_zrusit" dense size="sm" outline color="red-8"
              class="tlacitko-nasobek"
              label="Zrušit"
-             @click="() => $parent.$emit('zrusitFlow', {id: props.row.id})" />
+             @click.stop="() => $parent.$emit('zrusitFlow', {id: props.row.id})" />
       <q-btn v-if="props.row.lze_odstranit" dense size="sm" outline color="grey-7"
              class="tlacitko-nasobek"
              label="Odstranit z přehledu"
-             @click="() => $parent.$emit('odstranitFlow', {id: props.row.id})" />
+             @click.stop="() => $parent.$emit('odstranitFlow', {id: props.row.id})" />
     </q-td>
   </q-tr>
 """
@@ -323,6 +325,8 @@ class TradingUI:
                 .props('dense flat no-data-label="Zatím nebyl zadán žádný obchod."')
             )
             self.table.add_slot("body", BODY_SLOT)
+            # Kliknutí na datový řádek přenese obchod do formuláře zadání
+            self.table.on("vybratFlow", self._on_select_flow)
             # Tlačítko v řádku posune cíl obchodu na zvolený násobek
             self.table.on("nasobek", self._on_pt_multiple)
             # Tlačítka runneru - vlastní cíl pro část pozice
@@ -513,6 +517,21 @@ class TradingUI:
             )
         self.preview_detail.set_text(" | ".join(detail_parts))
         self.preview_warning.set_text(" ".join(preview.warnings))
+
+    async def _on_select_flow(self, event: Any) -> None:
+        """
+        Kliknutí na řádek monitorovací tabulky přenese všechna data obchodu
+        do formuláře Zadání obchodu, aby se s nimi dalo dál pracovat.
+        """
+        data = event.args or {}
+        flow = self.engine.flows.get(data.get("id", ""))
+        if flow is None:
+            return
+
+        self._fill_from_flow(flow)
+        ui.notify(f"{flow.id}: data obchodu přenesena do formuláře.", type="info")
+        # Obnoví se i informační panel - kotace, delta a doporučené hodnoty
+        await self._load_preview("auto")
 
     async def _on_pt_multiple(self, event: Any) -> None:
         """

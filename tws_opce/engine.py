@@ -29,6 +29,9 @@ DEAD_ORDER_STATES = ("Cancelled", "ApiCancelled", "Inactive")
 # hlášením TWS "Order has been cancelled already, too late to replace".
 MODIFIABLE_ORDER_STATES = ("PreSubmitted", "Submitted")
 
+# Kolik strike cen poblíž cíle se nejvýše zkusí ověřit v TWS, než se to vzdá
+MAX_STRIKE_ATTEMPTS = 8
+
 
 @dataclass
 class Preview:
@@ -176,12 +179,57 @@ class FlowEngine:
         return None
 
     def sorted_flows(self) -> list[Flow]:
-        """Flow seřazená od nejnovějšího pro zobrazení v tabulce."""
-        return sorted(self.flows.values(), key=lambda f: f.created_at, reverse=True)
+        """
+        Flow seřazená pro zobrazení v tabulce: běžící obchody abecedně podle
+        tickeru, zrušené a dokončené až za nimi (rovněž abecedně). Stejný
+        ticker se řadí od nejnovějšího obchodu.
+        """
+        return sorted(
+            self.flows.values(),
+            key=lambda f: (not f.state.is_active, f.symbol, -f.created_at.timestamp()),
+        )
 
     # ------------------------------------------------------------------
     # Příprava zadání
     # ------------------------------------------------------------------
+
+    async def _qualify_nearest_option(
+        self,
+        symbol: str,
+        expiration: str,
+        strikes: list[float],
+        target: float,
+        right: str,
+        trading_class: str = "",
+    ) -> tuple[float, Any, Any]:
+        """
+        Ověří v TWS opční kontrakt se strike nejblíže cílové ceně.
+
+        Opční řetězec vrací strike ceny pro všechny expirace dohromady,
+        takže nejbližší strike nemusí být pro zvolenou expiraci vůbec
+        obchodovatelný (např. půlbodové strike jen u týdenních expirací).
+        Proto se strike zkoušejí v pořadí podle vzdálenosti od cíle,
+        dokud se některý neověří. Vrací trojici (strike, kontrakt, detaily).
+        """
+        kandidati = sorted(strikes, key=lambda s: (abs(s - target), s))[:MAX_STRIKE_ATTEMPTS]
+        if not kandidati:
+            raise ValueError(f"Pro ticker {symbol} nejsou dostupné strike ceny.")
+
+        posledni_chyba: Exception | None = None
+        for strike in kandidati:
+            try:
+                option, details = await self.ib.qualify_option(
+                    symbol, expiration, strike, right, trading_class
+                )
+                return strike, option, details
+            except ValueError as exc:
+                # Kontrakt pro tuto expiraci neexistuje - zkusí se další strike
+                posledni_chyba = exc
+
+        raise ValueError(
+            f"Pro ticker {symbol} {expiration} se poblíž ceny {target:g} nepodařilo "
+            f"najít obchodovatelný strike. Poslední chyba: {posledni_chyba}"
+        )
 
     async def prepare(
         self,
@@ -253,16 +301,20 @@ class FlowEngine:
             )
         preview.expiration = expiration
 
-        strike = calc.nearest_strike(sorted(chain.strikes), profit_target)
-        if strike is None:
-            raise ValueError(f"Pro ticker {symbol} nejsou dostupné strike ceny.")
-        preview.strike = strike
-
-        option, details = await self.ib.qualify_option(
-            symbol, expiration, strike, preview.right, chain.tradingClass
+        strike, option, details = await self._qualify_nearest_option(
+            symbol, expiration, list(chain.strikes), profit_target, preview.right, chain.tradingClass
         )
+        preview.strike = strike
         preview.option = option
         preview.min_tick = details.minTick or 0.01
+
+        # Náhradní strike se hlásí, aby bylo jasné, proč kontrakt neodpovídá PT
+        nejblizsi = calc.nearest_strike(sorted(chain.strikes), profit_target)
+        if nejblizsi is not None and strike != nejblizsi:
+            preview.warnings.append(
+                f"Strike {nejblizsi:g} není pro expiraci {expiration} v TWS dostupný, "
+                f"použit nejbližší obchodovatelný {strike:g}."
+            )
 
         # Tržní data opce kvůli deltě a spreadu
         self.ib.subscribe(option)
@@ -375,9 +427,20 @@ class FlowEngine:
         async with self._lock:
             symbol = request.symbol.upper().strip()
 
-            # Na jeden ticker je povoleno jedno aktivní flow
-            if self.active_flow_for(symbol) is not None:
-                raise ValueError(f"Pro ticker {symbol} již běží aktivní flow. Nejprve jej zrušte.")
+            # Na jeden ticker je povoleno jedno aktivní flow. Obchod, který
+            # ještě nic nenakoupil, se novým zadáním rovnou nahradí; chrání se
+            # jen obchod s otevřenou (či právě uzavíranou) pozicí.
+            bezici = self.active_flow_for(symbol)
+            if bezici is not None:
+                if not bezici.state.is_before_entry:
+                    raise ValueError(
+                        f"Pro ticker {symbol} již běží obchod s otevřenou pozicí. "
+                        f"Nejprve jej zrušte."
+                    )
+                self._cancel_locked(bezici)
+                # Nahrazený obchod z přehledu zmizí - nové zadání jej přepisuje
+                self.flows.pop(bezici.id, None)
+                self.log_event(f"{bezici.id}: nahrazeno novým zadáním obchodu.")
 
             preview = await self.prepare(
                 symbol, request.entry_price, request.profit_target, request.stop_loss
@@ -725,17 +788,26 @@ class FlowEngine:
             return
 
         chain = await self.ib.option_chain(flow.underlying_contract)
-        novy_strike = calc.nearest_strike(sorted(chain.strikes), flow.profit_target)
-        if novy_strike is None or novy_strike == flow.strike:
+        try:
+            novy_strike, option, details = await self._qualify_nearest_option(
+                flow.symbol,
+                flow.expiration,
+                list(chain.strikes),
+                flow.profit_target,
+                flow.right,
+                chain.tradingClass,
+            )
+        except ValueError as exc:
+            # Bez obchodovatelného strike zůstává původní kontrakt v trhu
+            self.log_event(f"{flow.id}: strike nelze přepočítat - {exc}")
+            return
+        if novy_strike == flow.strike:
             return
 
         # Příkaz na původní kontrakt už neplatí, musí z trhu pryč
         self.ib.cancel(flow.entry_trade)
         self.ib.unsubscribe(flow.option_contract)
 
-        option, details = await self.ib.qualify_option(
-            flow.symbol, flow.expiration, novy_strike, flow.right, chain.tradingClass
-        )
         flow.option_contract = option
         flow.option_conid = option.conId
         flow.strike = novy_strike
@@ -1120,31 +1192,35 @@ class FlowEngine:
         tržním příkazem, nebo zůstane otevřená a bez zajištění k ručnímu řízení.
         """
         async with self._lock:
-            self.ib.cancel(flow.entry_trade)
-            self.ib.cancel(flow.exit_trade)
-            self.ib.cancel(flow.runner_trade)
+            self._cancel_locked(flow, close_position)
 
-            v_pozici = flow.fill_price is not None
+    def _cancel_locked(self, flow: Flow, close_position: bool = False) -> None:
+        """Tělo rušení flow - volá se výhradně s již drženým zámkem."""
+        self.ib.cancel(flow.entry_trade)
+        self.ib.cancel(flow.exit_trade)
+        self.ib.cancel(flow.runner_trade)
 
-            if v_pozici and close_position:
-                # Prodejní příkaz se zadá až po zrušení nákupního, protože TWS
-                # nepovolí oba příkazy na jednom kontraktu současně
-                flow.set_state(FlowState.CLOSING, "Zrušeno obchodníkem, pozice se uzavírá trhem.")
-            elif v_pozici:
-                flow.set_state(
-                    FlowState.CANCELLED,
-                    "Flow zrušeno. POZOR: pozice zůstává otevřená v TWS bez zajištění - "
-                    "prodejní příkaz byl zrušen, uzavřete ji ručně.",
-                )
-                self._release(flow)
-            else:
-                flow.set_state(
-                    FlowState.CANCELLED, "Flow zrušeno před nákupem, příkaz odstraněn z trhu."
-                )
-                self._release(flow)
+        v_pozici = flow.fill_price is not None
 
-            self.log_event(f"{flow.id}: {flow.message}")
-            self._notify()
+        if v_pozici and close_position:
+            # Prodejní příkaz se zadá až po zrušení nákupního, protože TWS
+            # nepovolí oba příkazy na jednom kontraktu současně
+            flow.set_state(FlowState.CLOSING, "Zrušeno obchodníkem, pozice se uzavírá trhem.")
+        elif v_pozici:
+            flow.set_state(
+                FlowState.CANCELLED,
+                "Flow zrušeno. POZOR: pozice zůstává otevřená v TWS bez zajištění - "
+                "prodejní příkaz byl zrušen, uzavřete ji ručně.",
+            )
+            self._release(flow)
+        else:
+            flow.set_state(
+                FlowState.CANCELLED, "Flow zrušeno před nákupem, příkaz odstraněn z trhu."
+            )
+            self._release(flow)
+
+        self.log_event(f"{flow.id}: {flow.message}")
+        self._notify()
 
     def _release(self, flow: Flow) -> None:
         """Uvolní odběry tržních dat držené ukončeným flow."""
