@@ -1500,6 +1500,40 @@ class TestDalsihoRunneru(ZakladTestu):
 class TestZruseniFlow(ZakladTestu):
     """Rušení obchodů."""
 
+    async def test_zruseni_s_uzavrenim_proda_zbyly_runner(self):
+        # Hlavní část je prodaná ručně, runner běží dál - zrušení s uzavřením
+        # nesmí staré vyplnění hlavní části vzít za hotové uzavření pozice
+        flow = await self.zaloz_call(quantity=3)
+        self.ib.fill(flow.entry_trade, 3, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        await self.engine.set_runner(flow.id, 2.0)
+
+        await self.engine.close_main(flow.id)
+        await self.engine._tick()
+        self.ib.fill(flow.exit_trade, 2, 3.50)
+        await self.engine._tick()
+        self.assertAlmostEqual(flow.exit_fill_price, 3.50)
+
+        # Zrušení s uzavřením pozice musí prodat zbývající 1 ks runneru
+        await self.engine.cancel_flow(flow.id, close_position=True)
+        await self.engine._tick()
+
+        prodej = flow.exit_trade
+        self.assertIsNotNone(prodej)
+        self.assertEqual(int(prodej.order.totalQuantity), 1)
+
+        self.ib.fill(prodej, 1, 3.20)
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        self.assertEqual(flow.runner_sold_quantity, 1)
+        self.assertAlmostEqual(flow.runner_realized_pnl, 20.0)
+        # Cena dřívějšího prodeje hlavní části zůstává zachovaná
+        self.assertAlmostEqual(flow.exit_fill_price, 3.50)
+        # Celkový výsledek: hlavní 2 ks +100 USD, runner 1 ks +20 USD
+        self.assertAlmostEqual(flow.unrealized_pnl, 120.0)
+
     async def test_zruseni_podle_tickeru_pred_nakupem(self):
         flow = await self.zaloz_call()
         zruseno = await self.engine.cancel_by_symbol("aapl")
@@ -1724,6 +1758,59 @@ class TestOcekavanehoVysledku(ZakladTestu):
 
         self.assertIsNone(flow.expected_profit)
         self.assertIsNone(flow.expected_loss)
+
+    async def test_prodany_runner_do_odhadu_nevstupuje(self):
+        # Sloupce ukazují jen otevřený zbytek - realizovaný zisk runneru
+        # očekávané hodnoty nezvyšuje
+        flow = await self.zaloz_call(quantity=3)
+        self.ib.fill(flow.entry_trade, 3, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+
+        # Odhad pro 3 otevřené kusy se přepočte na hodnotu za jeden kus
+        na_kus = flow.expected_profit / 3
+
+        # Runner se prodá se ziskem; otevřené zůstávají 2 kusy
+        await self.engine.set_runner(flow.id, 2.0)
+        self.ib.fill(flow.runner_trade, 1, 5.50)
+        await self.engine._tick()
+        await self.engine._tick()
+
+        self.assertAlmostEqual(flow.runner_realized_pnl, 250.0)
+        # Očekávaný zisk odpovídá dvěma otevřeným kusům bez realizovaných 250
+        self.assertIsNotNone(flow.expected_profit)
+        self.assertAlmostEqual(flow.expected_profit, na_kus * 2, places=4)
+
+    async def test_uzavreny_obchod_ma_odhady_i_pl_prazdne(self):
+        flow = await self.zaloz_call(quantity=1)
+        self.ib.fill(flow.entry_trade, 1, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        self.ib.fill(flow.exit_trade, 1, 4.00)
+        await self.engine._tick()
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        # Bez otevřených kusů není co ukazovat - celkový výsledek nese hláška
+        self.assertIsNone(flow.expected_profit)
+        self.assertIsNone(flow.expected_loss)
+        self.assertIsNone(flow.open_pnl)
+        self.assertAlmostEqual(flow.unrealized_pnl, 100.0)
+
+    async def test_pl_sloupec_pocita_jen_otevrene_kusy(self):
+        # Po prodeji runneru se ziskem ukazuje open_pnl jen otevřené 2 kusy
+        flow = await self.zaloz_call(quantity=3)
+        self.ib.fill(flow.entry_trade, 3, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        await self.engine.set_runner(flow.id, 2.0)
+        self.ib.fill(flow.runner_trade, 1, 5.50)
+        await self.engine._tick()
+
+        # Střed trhu 3,05: (3,05 - 3,00) * 2 ks * 100
+        self.assertAlmostEqual(flow.open_pnl, 10.0)
+        # Celkový výsledek obchodu realizovaný runner obsahuje
+        self.assertAlmostEqual(flow.unrealized_pnl, 260.0)
 
 
 class TestIndikatoruHlidani(ZakladTestu):

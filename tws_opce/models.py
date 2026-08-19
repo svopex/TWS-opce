@@ -278,6 +278,23 @@ class Flow:
         return max(drzeno, 0)
 
     @property
+    def open_pnl(self) -> float | None:
+        """
+        Zisk/ztráta pouze dosud otevřené části pozice v USD.
+        Otevřené kusy se oceňují středem trhu proti nákupní ceně; realizovaný
+        výsledek už prodaných částí se nezapočítává. Bez otevřených kusů None.
+        """
+        if self.fill_price is None:
+            return None
+        mnozstvi = self.open_quantity
+        if mnozstvi <= 0:
+            return None
+        if self.option_bid is None or self.option_ask is None:
+            return None
+        mid = (self.option_bid + self.option_ask) / 2.0
+        return (mid - self.fill_price) * mnozstvi * 100
+
+    @property
     def runner_multiple(self) -> float | None:
         """Kolikanásobek původní vzdálenosti cíle od vstupu je cíl runneru."""
         if not self.runner_active:

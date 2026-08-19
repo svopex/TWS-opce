@@ -171,8 +171,10 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    místo se uvolní — sekce Runner se znovu objeví a ze zbývající hlavní
    části lze oddělit **další runner**, dokud pozice drží víc kontraktů,
    než runner zabírá. Výsledek uzavřeného obchodu sčítá hlavní část se
-   všemi prodanými runnery (v závěrečné zprávě jako „runnery N ks ±X USD")
-   a stejně tak průběžný P/L i *Zisk na PT*.
+   všemi prodanými runnery (v závěrečné zprávě jako „runnery N ks ±X USD").
+   Sloupce *P/L*, *Zisk na PT* a *Ztráta na SL* naproti tomu ukazují vždy
+   jen **dosud otevřený zbytek pozice** — realizovaný výsledek prodaných
+   částí do nich nevstupuje a po uzavření obchodu zůstává pomlčka.
 
    U nakoupené pozice je na konci sekce Cíl tlačítko **Uzavřít pozici** —
    zruší zajišťovací příkaz a prodá hlavní část trhem (bez runneru celou
@@ -190,8 +192,9 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    Stejná pravidla vynucuje i aplikace sama, takže se změna cíle nemůže
    omylem zapsat do tržního příkazu.
 
-   Sloupce *Zisk na PT* a *Ztráta na SL* říkají, jak obchod dopadne, když
-   podklad dosáhne cílové, resp. stop úrovně. Opce se přecení z implikované
+   Sloupce *Zisk na PT* a *Ztráta na SL* říkají, jak otevřená část pozice
+   dopadne, když podklad dosáhne cílové, resp. stop úrovně (runner se
+   oceňuje na svém vlastním cíli a SL). Opce se přecení z implikované
    volatility odvozené z její aktuální ceny. Po nákupu se počítá ze skutečně
    dosažené ceny, před nákupem z ceny, na kterou opce vyjde **až podklad
    dosáhne vstupní úrovně** — tam se totiž bude kupovat.

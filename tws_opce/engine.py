@@ -628,13 +628,10 @@ class FlowEngine:
             flow.expected_loss = None
             return
 
-        # Počítají se jen dosud otevřené části; prodané runnery (případně
-        # i prodaná hlavní část) vstupují realizovaným výsledkem
-        realizovano = flow.runner_realized_pnl
-        hlavni_q = flow.main_quantity
-        if flow.exit_fill_price is not None:
-            realizovano += (flow.exit_fill_price - nakupni) * hlavni_q * 100
-            hlavni_q = 0
+        # Počítá se výhradně dosud otevřená část obchodu. Realizovaný výsledek
+        # prodaných runnerů ani prodané hlavní části se nezapočítává - sloupce
+        # ukazují jen to, co může otevřený zbytek pozice ještě vydělat či ztratit
+        hlavni_q = flow.main_quantity if flow.exit_fill_price is None else 0
 
         runner_q = 0
         cena_runner = None
@@ -643,10 +640,24 @@ class FlowEngine:
             if cena_runner is not None:
                 runner_q = flow.runner_quantity
 
-        flow.expected_profit = realizovano + (cena_pt - nakupni) * hlavni_q * 100
+        # Bez otevřených kusů není co odhadovat - uzavřený obchod má pomlčku
+        if hlavni_q + runner_q == 0:
+            flow.expected_profit = None
+            flow.expected_loss = None
+            return
+
+        flow.expected_profit = (cena_pt - nakupni) * hlavni_q * 100
         if runner_q:
             flow.expected_profit += (cena_runner - nakupni) * runner_q * 100
-        flow.expected_loss = realizovano + (cena_sl - nakupni) * (hlavni_q + runner_q) * 100
+
+        # Ztráta hlavní části na jejím SL; runner může mít vlastní SL (třeba
+        # break even), proto se jeho část oceňuje na jeho úrovni
+        flow.expected_loss = (cena_sl - nakupni) * hlavni_q * 100
+        if runner_q:
+            cena_runner_sl = cena_pri(flow.runner_sl)
+            if cena_runner_sl is None:
+                cena_runner_sl = cena_sl
+            flow.expected_loss += (cena_runner_sl - nakupni) * runner_q * 100
 
     def _place_entry(self, flow: Flow) -> bool:
         """
@@ -1275,6 +1286,13 @@ class FlowEngine:
         v_pozici = flow.fill_price is not None
 
         if v_pozici and close_position:
+            # Už vyplněný prodej hlavní části nesmí zůstat jako exit_trade -
+            # smyčka by jeho staré vyplnění vzala za dokončené uzavření
+            # a zbylé kusy (runner) by se nikdy neprodaly
+            if flow.exit_fill_price is not None:
+                flow.exit_trade = None
+                flow.exit_order_id = None
+                flow.exit_market_sent = None
             # Prodejní příkaz se zadá až po zrušení nákupního, protože TWS
             # nepovolí oba příkazy na jednom kontraktu současně
             flow.set_state(FlowState.CLOSING, "Zrušeno obchodníkem, pozice se uzavírá trhem.")
@@ -1300,6 +1318,10 @@ class FlowEngine:
         self.ib.unsubscribe(flow.option_contract)
         flow.underlying_contract = None
         flow.option_contract = None
+        # Ukončený obchod nemá otevřené kusy - odhady na PT/SL ztrácejí smysl
+        # a v přehledu by jinak visela poslední spočtená hodnota
+        flow.expected_profit = None
+        flow.expected_loss = None
 
     def remove_flow(self, flow_id: str) -> None:
         """Odstraní ukončené flow z přehledu."""
@@ -2241,10 +2263,21 @@ class FlowEngine:
             if trade is not None and trade.orderStatus.status in MODIFIABLE_ORDER_STATES:
                 return False
 
-        mnozstvi = flow.held_quantity
+        # Prodává se jen skutečně otevřený zbytek - po ručním prodeji hlavní
+        # části to bývá pouze runner
+        mnozstvi = flow.open_quantity
 
         # Prodej se zadává jednou; v dalších průchodech se sleduje jeho vyplnění
         if flow.exit_trade is None or flow.exit_trade.orderStatus.status in DEAD_ORDER_STATES:
+            # Bez otevřených kusů už není co prodávat - obchod se rovnou uzavře
+            if mnozstvi < 1:
+                pnl = flow.unrealized_pnl
+                pnl_text = f", výsledek {pnl:+.2f} USD" if pnl is not None else ""
+                flow.set_state(FlowState.CLOSED, f"Pozice uzavřena obchodníkem{pnl_text}.")
+                self._release(flow)
+                self.log_event(f"{flow.id}: {flow.message}")
+                return True
+
             order = self.ib.market_sell_order(mnozstvi, order_ref(flow.id, "exit"))
             flow.exit_trade = self.ib.place(flow.option_contract, order)
             flow.exit_order_id = flow.exit_trade.order.orderId
@@ -2255,12 +2288,34 @@ class FlowEngine:
             return True
 
         if flow.exit_trade.orderStatus.status == "Filled":
-            flow.exit_fill_price = valid_price(flow.exit_trade.orderStatus.avgFillPrice)
-            flow.exit_reason = "ručně"
+            cena = valid_price(flow.exit_trade.orderStatus.avgFillPrice)
+
+            # Zbylý runner (prodaný samostatně i v rámci celé pozice)
+            # se zúčtuje do realizovaného výsledku
+            if flow.runner_active and flow.runner_quantity <= mnozstvi:
+                if cena is not None and flow.fill_price is not None:
+                    flow.runner_realized_pnl += (
+                        (cena - flow.fill_price) * flow.runner_quantity * 100
+                    )
+                flow.runner_sold_quantity += flow.runner_quantity
+                flow.runner_profit_target = None
+                flow.runner_quantity = 0
+                flow.runner_stop_loss = None
+                flow.runner_trade = None
+                flow.runner_order_id = None
+
+            # Cena prodeje hlavní části se nepřepisuje, pokud už byla prodána
+            # dříve - teď se uzavíral jen zbytek pozice
+            if flow.exit_fill_price is None:
+                flow.exit_fill_price = cena
+                flow.exit_reason = "ručně"
+
             pnl = flow.unrealized_pnl
             pnl_text = f", výsledek {pnl:+.2f} USD" if pnl is not None else ""
-            cena = f"{flow.exit_fill_price:g}" if flow.exit_fill_price is not None else "?"
-            flow.set_state(FlowState.CLOSED, f"Pozice uzavřena obchodníkem za {cena}{pnl_text}.")
+            cena_text = f"{cena:g}" if cena is not None else "?"
+            flow.set_state(
+                FlowState.CLOSED, f"Pozice uzavřena obchodníkem za {cena_text}{pnl_text}."
+            )
             self._release(flow)
             self.log_event(f"{flow.id}: {flow.message}")
             return True

@@ -899,7 +899,9 @@ class TradingUI:
 
     def _row(self, flow: Flow) -> dict[str, Any]:
         """Převede flow na řádek monitorovací tabulky."""
-        pnl = flow.unrealized_pnl
+        # Sloupec P/L ukazuje jen dosud otevřenou část pozice; celkový
+        # výsledek obchodu zůstává v závěrečné hlášce po uzavření
+        pnl = flow.open_pnl
 
         # Zvýrazní se tlačítko odpovídající aktuálnímu násobku cíle
         aktualni = flow.pt_multiple
