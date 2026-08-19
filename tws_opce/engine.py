@@ -595,6 +595,9 @@ class FlowEngine:
 
         Předpokládá se, že podklad úrovní dosáhne brzy a volatilita zůstane
         stejná; při pozdějším pohybu bude výsledek nižší o časový rozpad.
+        Prodejní ceny počítají s vyplněním u BIDu (tržní příkaz), nákupní
+        s vyplněním u ASKu - od/k modelovému středu se odečítá/přičítá
+        půl aktuálního spreadu.
         """
         bid, ask, _ = self.ib.option_quotes(flow.option_contract)
         aktualni = (bid + ask) / 2.0 if bid and ask else (ask or bid)
@@ -613,16 +616,28 @@ class FlowEngine:
                 aktualni, podklad, uroven, flow.strike, flow.expiration, sazba, flow.right
             )
 
+        # Model přeceňuje na střed trhu, prodává se ale tržním příkazem u BIDu -
+        # od modelové prodejní ceny se proto odečítá půl aktuálního spreadu
+        pul_spreadu = (ask - bid) / 2.0 if bid and ask else 0.0
+
+        def prodejni_cena_pri(uroven: float) -> float | None:
+            """Odhad prodejní ceny (u BIDu), až podklad dosáhne dané úrovně."""
+            cena = cena_pri(uroven)
+            if cena is None:
+                return None
+            # Cena opce nemůže být záporná ani po odečtení půl spreadu
+            return max(cena - pul_spreadu, 0.0)
+
         if flow.fill_price:
             nakupni = flow.fill_price
         else:
             nakupni = cena_pri(flow.entry_price)
             # Model dává střed trhu, nakupuje se ale na ASK - přičte se půl spreadu
             if nakupni is not None and bid and ask:
-                nakupni += (ask - bid) / 2.0
+                nakupni += pul_spreadu
 
-        cena_pt = cena_pri(flow.profit_target)
-        cena_sl = cena_pri(flow.stop_loss)
+        cena_pt = prodejni_cena_pri(flow.profit_target)
+        cena_sl = prodejni_cena_pri(flow.stop_loss)
 
         if nakupni is None or cena_pt is None or cena_sl is None:
             flow.expected_profit = None
@@ -637,7 +652,7 @@ class FlowEngine:
         runner_q = 0
         cena_runner = None
         if flow.runner_active and flow.runner_quantity <= flow.held_quantity:
-            cena_runner = cena_pri(flow.runner_profit_target)
+            cena_runner = prodejni_cena_pri(flow.runner_profit_target)
             if cena_runner is not None:
                 runner_q = flow.runner_quantity
 
@@ -655,7 +670,7 @@ class FlowEngine:
         # break even), proto se jeho část oceňuje na jeho úrovni
         flow.expected_loss = (cena_sl - nakupni) * hlavni_q * 100
         if runner_q:
-            cena_runner_sl = cena_pri(flow.runner_sl)
+            cena_runner_sl = prodejni_cena_pri(flow.runner_sl)
             if cena_runner_sl is None:
                 cena_runner_sl = cena_sl
             flow.expected_loss += (cena_runner_sl - nakupni) * runner_q * 100

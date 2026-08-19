@@ -1809,12 +1809,29 @@ class TestOcekavanehoVysledku(ZakladTestu):
         await self.engine._tick()
         await self.engine.set_runner(flow.id, 2.0)
         self.ib.fill(flow.runner_trade, 1, 5.50)
+        # Trh se posune: BID 3,20 / ASK 3,30
+        self.ib.price_bid, self.ib.price_ask = 3.20, 3.30
         await self.engine._tick()
 
-        # Střed trhu 3,05: (3,05 - 3,00) * 2 ks * 100
-        self.assertAlmostEqual(flow.open_pnl, 10.0)
-        # Celkový výsledek obchodu realizovaný runner obsahuje
-        self.assertAlmostEqual(flow.unrealized_pnl, 260.0)
+        # Otevřené kusy se oceňují BIDem: (3,20 - 3,00) * 2 ks * 100
+        self.assertAlmostEqual(flow.open_pnl, 40.0)
+        # Celkový výsledek obchodu realizovaný runner obsahuje (střed trhu 3,25)
+        self.assertAlmostEqual(flow.unrealized_pnl, 300.0)
+
+    async def test_odhady_pocitaji_prodej_u_bidu(self):
+        # Stejný střed trhu, ale širší spread -> nižší odhadovaný zisk,
+        # protože tržní prodej se vyplní u BIDu, ne na středu
+        flow = await self.zaloz_call(quantity=1)
+        self.ib.fill(flow.entry_trade, 1, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        uzky_spread = flow.expected_profit
+
+        self.ib.price_bid, self.ib.price_ask = 2.85, 3.25
+        await self.engine._tick()
+
+        self.assertIsNotNone(uzky_spread)
+        self.assertLess(flow.expected_profit, uzky_spread)
 
 
 class TestAutomatickehoUzavreni(ZakladTestu):

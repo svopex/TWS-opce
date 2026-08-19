@@ -175,6 +175,8 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    Sloupce *P/L*, *Zisk na PT* a *Ztráta na SL* naproti tomu ukazují vždy
    jen **dosud otevřený zbytek pozice** — realizovaný výsledek prodaných
    částí do nich nevstupuje a po uzavření obchodu zůstává pomlčka.
+   P/L oceňuje otevřené kusy BIDem: prodává se tržním příkazem, takže BID
+   odpovídá ceně, za kterou lze pozici právě teď skutečně prodat.
 
    U nakoupené pozice je na konci sekce Cíl tlačítko **Uzavřít pozici** —
    zruší zajišťovací příkaz a prodá hlavní část trhem (bez runneru celou
@@ -194,7 +196,9 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
 
    Sloupce *Zisk na PT* a *Ztráta na SL* říkají, jak otevřená část pozice
    dopadne, když podklad dosáhne cílové, resp. stop úrovně (runner se
-   oceňuje na svém vlastním cíli a SL). Opce se přecení z implikované
+   oceňuje na svém vlastním cíli a SL). Prodejní ceny počítají s vyplněním
+   u BIDu — od modelového středu trhu se odečítá půl aktuálního spreadu,
+   stejně jako se u nákupu půl spreadu přičítá. Opce se přecení z implikované
    volatility odvozené z její aktuální ceny. Po nákupu se počítá ze skutečně
    dosažené ceny, před nákupem z ceny, na kterou opce vyjde **až podklad
    dosáhne vstupní úrovně** — tam se totiž bude kupovat.
