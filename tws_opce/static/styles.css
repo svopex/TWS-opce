@@ -216,6 +216,19 @@
   margin-left: 24px;
 }
 
+/* Nenásilná indikace načítání dat z TWS - text jemně pulzuje */
+.indikace-nacitani {
+  animation: pulzovani 1.2s ease-in-out infinite;
+  color: #2563eb;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+@keyframes pulzovani {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 /* --- Náhled připraveného obchodu --- */
 .nahled {
   background-color: #f1f5f9;

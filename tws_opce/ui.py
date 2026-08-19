@@ -286,6 +286,11 @@ class TradingUI:
 
             # Přehled vypočtených parametrů obchodu
             with ui.column().classes("nahled"):
+                # Nenásilná indikace probíhajícího načítání dat z TWS
+                self.loading_label = ui.label("Načítám data z TWS…").classes(
+                    "indikace-nacitani"
+                )
+                self.loading_label.set_visibility(False)
                 self.preview_label = ui.label(
                     "Zadejte ticker a ceny pro přípravu obchodu."
                 ).classes("nahled-hlavni")
@@ -359,6 +364,12 @@ class TradingUI:
                 ui.notify("Spojení s TWS navázáno.", type="positive")
         except Exception as exc:
             ui.notify(f"Spojení se nezdařilo: {exc}", type="negative")
+
+    def _set_loading(self, active: bool, text: str = "Načítám data z TWS…") -> None:
+        """Zobrazí, nebo skryje pulzující indikaci probíhajícího načítání."""
+        if active:
+            self.loading_label.set_text(text)
+        self.loading_label.set_visibility(active)
 
     def _form_values(self) -> tuple[str, float | None, float | None, float | None]:
         """Přečte hodnoty z formuláře a převede je na čísla."""
@@ -435,14 +446,17 @@ class TradingUI:
         # mohou běžet dvě přípravy najednou. Zapisuje se jen výsledek té poslední.
         self.preview_seq += 1
         pozadavek = self.preview_seq
+        self._set_loading(True)
 
         try:
             preview = await self.engine.prepare(
                 symbol, entry, pt, None if rezim == "prepocitat" else sl
             )
         except Exception as exc:
+            # Indikaci zhasíná až poslední rozběhnutý požadavek
             if pozadavek != self.preview_seq:
                 return
+            self._set_loading(False)
             self.preview = None
             self.preview_label.set_text(f"Chyba přípravy zadání: {exc}")
             self.preview_detail.set_text("")
@@ -452,6 +466,7 @@ class TradingUI:
         if pozadavek != self.preview_seq:
             return
 
+        self._set_loading(False)
         self.preview = preview
         self._apply_preview(preview, rezim)
 
@@ -670,11 +685,15 @@ class TradingUI:
             max_spread_pct=max_spread,
         )
 
+        # Založení obchodu si znovu načítá data z TWS, indikace platí i zde
+        self._set_loading(True, "Zadávám obchod do trhu…")
         try:
             flow = await self.engine.start_flow(request)
         except Exception as exc:
             ui.notify(f"Zadání se nezdařilo: {exc}", type="negative")
             return
+        finally:
+            self._set_loading(False)
 
         self.form_flow_id = flow.id
         ui.notify(f"Flow {flow.id} založeno – {flow.state.label}.", type="positive")

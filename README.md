@@ -103,7 +103,8 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    **Přepočítat** navíc přepíše SL i množství vypočtenými hodnotami; zadaný SL
    se přitom zahodí a spočítá znovu podle poměru z konfigurace. Ručně zadané
    hodnoty tedy zmizí pouze na výslovné kliknutí, ne samovolně při psaní.
-   V náhledu je vždy vidět, co by výpočet doporučil.
+   V náhledu je vždy vidět, co by výpočet doporučil. Dokud načítání dat
+   z TWS běží, ukazuje formulář pulzující text „Načítám data z TWS…".
 
    Běží-li na zadaném tickeru obchod, **Načíst** naplní formulář jeho
    parametry — i přes ručně zadané hodnoty. Přechod na ticker bez obchodu
