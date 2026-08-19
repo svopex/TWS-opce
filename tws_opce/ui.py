@@ -57,13 +57,10 @@ TABLE_COLUMNS = [
 ]
 
 # Šablona řádku tabulky. Vykresluje se ručně, protože pod každý obchod patří
-# druhý řádek s tlačítky pro posun cíle; Quasar při vlastním vykreslení řádku
-# přestává hlásit kliknutí, proto se událost emituje přímo ze šablony.
+# druhý řádek s tlačítky; Quasar při vlastním vykreslení řádku přestává hlásit
+# události, proto se emitují přímo ze šablony.
 BODY_SLOT = """
-  <q-tr :props="props"
-        :class="[props.row.vybrany ? 'radek-vybrany' : '',
-                 props.row.lze_menit ? 'radek-s-nasobky' : '']"
-        @click="() => $parent.$emit('radekKlik', props.row)">
+  <q-tr :props="props" class="radek-s-nasobky">
     <q-td v-for="col in props.cols" :key="col.name" :props="props">
       <span v-if="col.name === 'live'">
         <span v-if="props.row.live" class="puntik-hlidani"></span>
@@ -77,10 +74,8 @@ BODY_SLOT = """
       <span v-else>{{ col.value }}</span>
     </q-td>
   </q-tr>
-  <q-tr v-if="props.row.lze_menit" :props="props"
-        :class="['radek-nasobky', props.row.vybrany ? 'radek-vybrany' : '']"
-        @click="() => $parent.$emit('radekKlik', props.row)">
-    <q-td :colspan="props.cols.length" class="bunka-nasobku">
+  <q-tr :props="props" class="radek-nasobky">
+    <q-td :colspan="props.cols.length - 1" class="bunka-nasobku">
       <template v-if="props.row.sl_mozny">
         <span class="popisek-nasobky">SL:</span>
         <q-btn dense size="sm" class="q-ml-xs tlacitko-nasobek"
@@ -138,6 +133,16 @@ BODY_SLOT = """
                @click.stop="() => $parent.$emit('uzavritRunner', {id: props.row.id})" />
       </template>
     </q-td>
+    <q-td class="bunka-akce">
+      <q-btn v-if="props.row.lze_zrusit" dense size="sm" outline color="red-8"
+             class="tlacitko-nasobek"
+             label="Zrušit"
+             @click="() => $parent.$emit('zrusitFlow', {id: props.row.id})" />
+      <q-btn v-if="props.row.lze_odstranit" dense size="sm" outline color="grey-7"
+             class="tlacitko-nasobek"
+             label="Odstranit z přehledu"
+             @click="() => $parent.$emit('odstranitFlow', {id: props.row.id})" />
+    </q-td>
   </q-tr>
 """
 
@@ -175,8 +180,9 @@ class TradingUI:
         """Vykreslí celou stránku - hlavičku, formulář, přehled a log."""
         ui.add_head_html(f'<link rel="stylesheet" href="{staticky_soubor("styles.css")}">')
 
-        # Vybrané flow v monitorovací tabulce (drží se zvlášť pro každého klienta)
-        self.selected_id: str | None = None
+        # Obchod aktuálně načtený ve formuláři - jeho změny z tabulky
+        # (posun cíle, SL) se promítají zpět do polí formuláře
+        self.form_flow_id: str | None = None
         self.preview: Preview | None = None
         # Čas poslední vypsané události - log se překresluje jen při změně
         self.last_log_stamp: datetime | None = None
@@ -305,11 +311,6 @@ class TradingUI:
         with ui.card().classes("karta karta-tabulka"):
             with ui.row().classes("radek radek-nadpis"):
                 ui.label("Monitoring obchodů").classes("nadpis-sekce")
-                ui.space()
-                ui.button("Zrušit vybraný", on_click=self._cancel_selected).props("outline dense")
-                ui.button("Odstranit z přehledu", on_click=self._remove_selected).props(
-                    "outline dense"
-                )
 
             self.table = (
                 ui.table(columns=TABLE_COLUMNS, rows=[], row_key="id")
@@ -317,8 +318,6 @@ class TradingUI:
                 .props('dense flat no-data-label="Zatím nebyl zadán žádný obchod."')
             )
             self.table.add_slot("body", BODY_SLOT)
-            # Klik na řádek přepne formulář na daný obchod
-            self.table.on("radekKlik", self._on_row_click)
             # Tlačítko v řádku posune cíl obchodu na zvolený násobek
             self.table.on("nasobek", self._on_pt_multiple)
             # Tlačítka runneru - vlastní cíl pro část pozice
@@ -330,10 +329,9 @@ class TradingUI:
             # Okamžité uzavření části pozice tržním příkazem
             self.table.on("uzavritPozici", self._on_close_main)
             self.table.on("uzavritRunner", self._on_close_runner)
-
-            self.detail_label = ui.label("Kliknutím na řádek přepnete na daný obchod.").classes(
-                "detail-radku"
-            )
+            # Akce celého obchodu - zrušení, resp. odstranění z přehledu
+            self.table.on("zrusitFlow", self._on_cancel_flow)
+            self.table.on("odstranitFlow", self._on_remove_flow)
 
     def _build_log(self) -> None:
         """Panel s provozním logem aplikace."""
@@ -373,7 +371,7 @@ class TradingUI:
     def _fill_from_flow(self, flow: Flow) -> None:
         """Naplní formulář parametry existujícího obchodu."""
         self.last_symbol = flow.symbol
-        self.selected_id = flow.id
+        self.form_flow_id = flow.id
         self.symbol_input.set_value(flow.symbol)
         self.entry_input.set_value(round(flow.entry_price, 2))
         self.pt_input.set_value(round(flow.profit_target, 2))
@@ -392,8 +390,8 @@ class TradingUI:
         # Limit spreadu se vrací na hodnotu z konfigurace
         self.spread_input.set_value(self.cfg.trading.max_spread_pct)
 
-        # Výběr v monitoringu se ruší, protože se už netýká rozepsaného zadání
-        self.selected_id = None
+        # Formulář už nedrží žádný načtený obchod
+        self.form_flow_id = None
         self.preview = None
         self.preview_detail.set_text("")
         self.preview_warning.set_text("")
@@ -526,8 +524,8 @@ class TradingUI:
             return
 
         ui.notify(f"{flow.id}: cíl {fmt(novy_pt)} ({nasobek:g}× původní).", type="positive")
-        # Formulář ukazuje vybraný obchod, hodnotu je třeba srovnat
-        if self.selected_id == flow.id:
+        # Formulář může ukazovat tento obchod, hodnotu je třeba srovnat
+        if self.form_flow_id == flow.id:
             self.pt_input.set_value(novy_pt)
         self._refresh()
 
@@ -554,8 +552,8 @@ class TradingUI:
         else:
             popis = "break even" if rezim == "be" else "počáteční"
             ui.notify(f"{flow.id}: SL {fmt(flow.stop_loss)} ({popis}).", type="positive")
-        # Formulář ukazuje vybraný obchod, hodnotu je třeba srovnat
-        if self.selected_id == flow.id:
+        # Formulář může ukazovat tento obchod, hodnotu je třeba srovnat
+        if self.form_flow_id == flow.id:
             self.sl_input.set_value(round(flow.stop_loss, 2))
         self._refresh()
 
@@ -678,7 +676,7 @@ class TradingUI:
             ui.notify(f"Zadání se nezdařilo: {exc}", type="negative")
             return
 
-        self.selected_id = flow.id
+        self.form_flow_id = flow.id
         ui.notify(f"Flow {flow.id} založeno – {flow.state.label}.", type="positive")
         self._refresh()
 
@@ -747,14 +745,11 @@ class TradingUI:
         ui.notify(f"Flow {flow.id}: {flow.state.label}.", type="warning")
         self._refresh()
 
-    async def _cancel_selected(self) -> None:
-        """Zruší flow vybrané v monitorovací tabulce."""
-        if not self.selected_id:
-            ui.notify("Nejprve vyberte řádek v tabulce.", type="negative")
-            return
-        flow = self.engine.flows.get(self.selected_id)
+    async def _on_cancel_flow(self, event: Any) -> None:
+        """Zruší obchod tlačítkem přímo v jeho řádku tabulky."""
+        data = event.args or {}
+        flow = self.engine.flows.get(data.get("id", ""))
         if flow is None:
-            ui.notify("Vybraný obchod již neexistuje.", type="negative")
             return
         try:
             if not await self._zrus(flow):
@@ -765,34 +760,20 @@ class TradingUI:
         ui.notify(f"Flow {flow.id}: {flow.state.label}.", type="warning")
         self._refresh()
 
-    def _remove_selected(self) -> None:
-        """Odstraní ukončené flow z přehledu."""
-        if not self.selected_id:
-            ui.notify("Nejprve vyberte řádek v tabulce.", type="negative")
+    def _on_remove_flow(self, event: Any) -> None:
+        """Odstraní ukončený obchod z přehledu tlačítkem v jeho řádku."""
+        data = event.args or {}
+        flow = self.engine.flows.get(data.get("id", ""))
+        if flow is None:
             return
         try:
-            self.engine.remove_flow(self.selected_id)
+            self.engine.remove_flow(flow.id)
         except Exception as exc:
             ui.notify(str(exc), type="negative")
             return
-        self.selected_id = None
-        self._refresh()
-
-    def _on_row_click(self, event: Any) -> None:
-        """
-        Přepnutí na obchod klikem v tabulce.
-        Quasar posílá v argumentech událost, data řádku a jeho pořadí.
-        """
-        row = event.args
-        if not isinstance(row, dict):
-            return
-
-        flow = self.engine.flows.get(row.get("id", ""))
-        if flow is None:
-            return
-
-        # Parametry vybraného obchodu se načtou zpět do formuláře
-        self._fill_from_flow(flow)
+        # Formulář už nemá na co odkazovat, pokud ukazoval právě tento obchod
+        if self.form_flow_id == flow.id:
+            self.form_flow_id = None
         self._refresh()
 
     # ------------------------------------------------------------------
@@ -800,11 +781,10 @@ class TradingUI:
     # ------------------------------------------------------------------
 
     def _refresh(self) -> None:
-        """Aktualizuje stav spojení, tabulku obchodů, detail a log."""
+        """Aktualizuje stav spojení, tabulku obchodů a log."""
         self._refresh_warning()
         self._refresh_status()
         self._refresh_table()
-        self._refresh_detail()
         self._refresh_log()
         self._refresh_config()
 
@@ -912,8 +892,9 @@ class TradingUI:
         return {
             "id": flow.id,
             "live": flow.state.is_active and self.engine.is_monitoring,
-            # Podklady pro řádek s tlačítky posunu cíle
-            "lze_menit": cil_mozny or runner_mozny or lze_uzavrit or lze_uzavrit_runner,
+            # Akce celého obchodu vpravo: běžící lze zrušit, ukončený odstranit
+            "lze_zrusit": flow.state.is_active,
+            "lze_odstranit": not flow.state.is_active,
             "cil_mozny": cil_mozny,
             "runner_mozny": runner_mozny,
             "runner_aktivni": flow.runner_active,
@@ -969,25 +950,12 @@ class TradingUI:
             "state_class": STATE_CLASSES.get(flow.state, ""),
             # Třída pro barevné odlišení zisku a ztráty
             "pnl_class": "zisk" if (pnl or 0) > 0 else ("ztrata" if (pnl or 0) < 0 else ""),
-            # Vybraný obchod se v tabulce zvýrazňuje, aby bylo zřejmé, čeho se týkají akce
-            "vybrany": flow.id == self.selected_id,
         }
 
     def _refresh_table(self) -> None:
         """Překreslí monitorovací tabulku podle aktuálních dat enginu."""
         self.table.rows = [self._row(flow) for flow in self.engine.sorted_flows()]
         self.table.update()
-
-    def _refresh_detail(self) -> None:
-        """Zobrazí popis stavu vybraného obchodu pod tabulkou."""
-        if not self.selected_id:
-            self.detail_label.set_text("Kliknutím na řádek přepnete na daný obchod.")
-            return
-        flow = self.engine.flows.get(self.selected_id)
-        if flow is None:
-            self.detail_label.set_text("Vybraný obchod již neexistuje.")
-            return
-        self.detail_label.set_text(f"{flow.id} | {flow.option_label()} | {flow.message}")
 
     def _refresh_log(self) -> None:
         """

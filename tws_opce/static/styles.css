@@ -258,16 +258,12 @@
   background-color: #f8fafc;
 }
 
-.tabulka tbody tr {
-  cursor: pointer;
-}
-
 /* Obchod tvoří dvojici řádků - datový a řádek s tlačítky. Prohlížeč je bere
    jako samostatné řádky, proto se při najetí myší obarvuje vždy i druhý řádek
    dvojice: partner pod kurzorem přes sousedící selektor, partner nad kurzorem
    přes :has(). Prefix body zajišťuje přednost před šedým hoverem Quasaru,
-   který by jinak obarvil jen řádek pod kurzorem. Barva je stejná jako
-   u vybraného obchodu. */
+   který by jinak obarvil jen řádek pod kurzorem. Zvýraznění pomáhá vidět,
+   ke kterému obchodu patří řádek s tlačítky. */
 body .tabulka tbody tr:hover > td,
 body .tabulka tbody tr.radek-s-nasobky:hover + tr.radek-nasobky > td,
 body .tabulka tbody tr.radek-s-nasobky:has(+ tr.radek-nasobky:hover) > td {
@@ -281,26 +277,11 @@ body .tabulka tbody td::before {
   display: none !important;
 }
 
-/* Vybraný obchod - zvýrazní se celý řádek včetně řádku s tlačítky */
-body .tabulka tbody tr.radek-vybrany > td {
-  background-color: #dbeafe !important;
-  font-weight: 500;
-}
-
-/* Levý pruh označuje začátek vybraného řádku */
-.tabulka tbody tr.radek-vybrany td:first-child {
-  box-shadow: inset 3px 0 0 0 #1d4ed8;
-}
-
-/* Kurzor napovídá, že kliknout lze kdekoliv v bloku obchodu */
-.tabulka tbody tr.radek-nasobky {
-  cursor: pointer;
-}
-
-.detail-radku {
-  color: #475569;
-  font-size: 0.8rem;
-  margin-top: 8px;
+/* Akce celého obchodu (Zrušit / Odstranit z přehledu) má vlastní buňku
+   pod sloupcem Stav, takže je zarovnaná pod odznakem stavu obchodu */
+.tabulka tbody td.bunka-akce {
+  text-align: left;
+  white-space: nowrap;
 }
 
 /* --- Indikátor hlídání obchodu --- */

@@ -106,11 +106,10 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    V náhledu je vždy vidět, co by výpočet doporučil.
 
    Běží-li na zadaném tickeru obchod, **Načíst** naplní formulář jeho
-   parametry — i přes ručně zadané hodnoty — stejně, jako když na obchod
-   kliknete v monitoringu. Přechod na ticker bez obchodu pole naopak vyprázdní,
-   aby se do nového zadání nepřenesly ceny toho předchozího; limit spreadu se
-   vrátí na hodnotu z konfigurace a zruší se výběr řádku. Samotné opuštění pole
-   hodnoty nikdy nepřepisuje, mění je jen změna tickeru.
+   parametry — i přes ručně zadané hodnoty. Přechod na ticker bez obchodu
+   pole naopak vyprázdní, aby se do nového zadání nepřenesly ceny toho
+   předchozího; limit spreadu se vrátí na hodnotu z konfigurace. Samotné
+   opuštění pole hodnoty nikdy nepřepisuje, mění je jen změna tickeru.
 
 2. **Nákup** — příkaz se do trhu zadá jen tehdy, pokud cena podkladu vstupní
    úroveň ještě nepřekonala: u CALL musí být pod vstupem, u PUT nad ním.
@@ -180,7 +179,7 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    runner** na konci sekce Runner prodá trhem jen runner a hlavní část
    nechá být. Tržní prodej se v obou případech zadává až po potvrzení
    zrušení podmíněného příkazu, aby se neprodalo víc kusů, než pozice
-   drží. Prodej všeho najednou zůstává v dialogu *Zrušit vybraný*.
+   drží. Prodej všeho najednou zůstává v dialogu tlačítka *Zrušit*.
 
    Tlačítka se zobrazují jen tehdy, když má jejich akce smysl, a mizí
    s částí pozice, které se týkají: po prodeji hlavní části zmizí sekce
@@ -202,9 +201,9 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    aplikace. Objeví se jen u rozpracovaných obchodů a jen tehdy, když hlídání
    skutečně běží — vyžaduje spuštěnou monitorovací smyčku, navázané spojení
    s TWS a čerstvý průchod. Zhasne tedy i v případě, že se smyčka zasekne.
-   Kliknutím na řádek se obchod načte zpět do formuláře a řádek zůstane
-   zvýrazněný — je tak vidět, kterého obchodu se týkají tlačítka
-   *Zrušit vybraný* a *Odstranit z přehledu*.
+   Každý řádek má ve sloupci *Stav*, pod odznakem stavu, akci celého
+   obchodu: běžící obchod tlačítko **Zrušit** (drží-li pozici, aplikace se
+   nejprve zeptá, co s ní), ukončený obchod **Odstranit z přehledu**.
 
 Aplikace zvládá více obchodů současně; na jeden ticker běží vždy jeden.
 
