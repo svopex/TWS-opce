@@ -45,6 +45,14 @@ class ZakladTestu(unittest.IsolatedAsyncioTestCase):
             setattr(pozadavek, klic, hodnota)
         return await self.engine.start_flow(pozadavek)
 
+    async def zaloz_put(self, **zmeny):
+        """Založí vzorové PUT flow: podklad 230, vstup 229, PT 226."""
+        self.ib.price_underlying = 230.0
+        pozadavek = FlowRequest(symbol="AAPL", entry_price=229.0, profit_target=226.0)
+        for klic, hodnota in zmeny.items():
+            setattr(pozadavek, klic, hodnota)
+        return await self.engine.start_flow(pozadavek)
+
 
 class TestZalozeniFlow(ZakladTestu):
     """Založení obchodu a podoba nákupního příkazu."""
@@ -118,6 +126,28 @@ class TestZalozeniFlow(ZakladTestu):
         self.assertIn(druhe.id, self.engine.flows)
         self.assertAlmostEqual(druhe.profit_target, 237.5)
 
+    async def test_runner_se_prenese_pri_nahrazeni_flow(self):
+        # Runner zapnutý na čekajícím obchodu nesmí nahrazením tiše zaniknout
+        prvni = await self.zaloz_call(quantity=3)
+        await self.engine.set_runner(prvni.id, 2.0)
+
+        druhe = await self.zaloz_call(quantity=3, profit_target=236.0)
+
+        # Nové flow převzalo runner: stejný násobek (2×) na nových úrovních
+        self.assertTrue(druhe.runner_active)
+        self.assertEqual(druhe.runner_quantity, 1)
+        self.assertAlmostEqual(druhe.runner_profit_target, 240.0)
+        self.assertAlmostEqual(druhe.runner_stop_loss, druhe.stop_loss)
+
+    async def test_runner_se_pri_nahrazeni_neprevezme_bez_dostatku_kusu(self):
+        prvni = await self.zaloz_call(quantity=3)
+        await self.engine.set_runner(prvni.id, 2.0)
+
+        # Nové zadání má jen 1 kontrakt - runner na něm nemá co dělit
+        druhe = await self.zaloz_call(quantity=1)
+
+        self.assertFalse(druhe.runner_active)
+
     async def test_flow_s_pozici_se_novym_zadanim_neprepise(self):
         flow = await self.zaloz_call()
         # Nákup se vyplní - obchod už drží pozici a přepsat se nesmí
@@ -146,6 +176,71 @@ class TestZalozeniFlow(ZakladTestu):
         await self.zaloz_call()
         # Střed trhu 3,05 leží přesně na tiku
         self.assertAlmostEqual(self.ib.placed[0].order.lmtPrice, 3.05)
+
+
+class TestLongShortSoucasne(ZakladTestu):
+    """Souběh long (CALL) a short (PUT) obchodu na jednom tickeru."""
+
+    async def test_long_a_short_bezi_soucasne(self):
+        long = await self.zaloz_call()
+        short = await self.zaloz_put()
+
+        # Oba obchody běží vedle sebe, žádný nebyl zrušen
+        self.assertIn(long.id, self.engine.flows)
+        self.assertIn(short.id, self.engine.flows)
+        self.assertNotIn(long.entry_trade, self.ib.cancelled)
+        self.assertEqual({long.right, short.right}, {"C", "P"})
+
+    async def test_nove_zadani_nahradi_jen_stejny_smer(self):
+        long = await self.zaloz_call()
+        short = await self.zaloz_put()
+
+        novy_long = await self.zaloz_call(profit_target=236.0)
+
+        # Nahradil se pouze původní long; short běží dál beze změny
+        self.assertNotIn(long.id, self.engine.flows)
+        self.assertIn(long.entry_trade, self.ib.cancelled)
+        self.assertIn(short.id, self.engine.flows)
+        self.assertNotIn(short.entry_trade, self.ib.cancelled)
+        self.assertIn(novy_long.id, self.engine.flows)
+
+    async def test_short_s_pozici_neblokuje_novy_long(self):
+        short = await self.zaloz_put()
+        self.ib.fill(short.entry_trade, 1, 3.10)
+        await self.engine._tick()
+
+        # Long na stejném tickeru jde založit i vedle nakoupeného shortu
+        long = await self.zaloz_call()
+        self.assertIn(long.id, self.engine.flows)
+
+        # Nový short se ale odmítne - short s pozicí se chrání
+        with self.assertRaises(ValueError) as ctx:
+            await self.zaloz_put(profit_target=225.0)
+        self.assertIn("short (PUT)", str(ctx.exception))
+
+    async def test_selhane_zadani_nenahradi_cekajici_obchod(self):
+        long = await self.zaloz_call()
+
+        # Zadání stejného směru s chybným SL selže na validaci
+        with self.assertRaises(ValueError):
+            await self.zaloz_call(stop_loss=236.0)
+
+        # Původní obchod přežil - nezrušil se a zůstal v přehledu
+        self.assertIn(long.id, self.engine.flows)
+        self.assertNotIn(long.entry_trade, self.ib.cancelled)
+
+    async def test_zruseni_podle_tickeru_vyzaduje_jednoznacny_smer(self):
+        await self.zaloz_call()
+        short = await self.zaloz_put()
+
+        # Bez určení směru je výběr nejednoznačný
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.cancel_by_symbol("AAPL")
+        self.assertIn("long i short", str(ctx.exception))
+
+        # S určeným směrem se zruší jen odpovídající obchod
+        zruseny = await self.engine.cancel_by_symbol("AAPL", right="P")
+        self.assertIs(zruseny, short)
 
 
 class TestVyberuStrike(ZakladTestu):
@@ -603,6 +698,21 @@ class TestNakupAVystup(ZakladTestu):
         self.assertEqual(flow.exit_reason, "SL")
         self.assertAlmostEqual(flow.unrealized_pnl, -120.0)
 
+    async def test_duvod_vystupu_urci_blizsi_uroven(self):
+        # Podmínka PT (>= 235) se splnila, ale podklad do zápisu prodeje couvl
+        # těsně pod cíl - důvodem výstupu je stále PT, ne SL
+        flow = await self.zaloz_call(quantity=1)
+        self.ib.fill(flow.entry_trade, 1, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+
+        self.ib.price_underlying = 234.6
+        self.ib.fill(flow.exit_trade, 1, 3.90)
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        self.assertEqual(flow.exit_reason, "PT")
+
     async def test_zruseni_prodejniho_prikazu_v_tws_hlasi_chybu(self):
         flow = await self.zaloz_call()
         self.ib.fill(flow.entry_trade, 1, 3.00)
@@ -858,6 +968,100 @@ class TestRunner(ZakladTestu):
         # Runner míří na vzdálenější cíl, takže očekávaný zisk musí vzrůst
         self.assertIsNotNone(flow.expected_profit)
         self.assertGreater(flow.expected_profit, bez_runneru)
+
+
+class TestOdlozenehoRunneru(ZakladTestu):
+    """Runner při částečném vyplnění nákupu - odložení, doplnění a úklid."""
+
+    async def priprav_castecny_nakup(self):
+        """Runner před nákupem, vyplní se ale jen 1 ks ze 3 - runner se odloží."""
+        flow = await self.zaloz_call(quantity=3)
+        await self.engine.set_runner(flow.id, 2.0)
+
+        # Částečné vyplnění: příkaz zůstává aktivní, smyčka ruší zbytek nákupu
+        self.ib.fill(flow.entry_trade, 1, 3.00, status="Submitted")
+        await self.engine._tick()  # registrace nákupu
+        await self.engine._tick()  # žádost o zrušení nevyplněného zbytku
+        await self.engine._tick()  # prodej 1 ks jedním příkazem, runner odložen
+        return flow
+
+    async def test_castecny_nakup_prodava_bez_runneru(self):
+        flow = await self.priprav_castecny_nakup()
+
+        self.assertEqual(flow.state, FlowState.EXIT_ARMED)
+        self.assertIsNone(flow.runner_trade)
+        self.assertEqual(int(flow.exit_trade.order.totalQuantity), 1)
+        # Runner zůstává zapamatovaný pro případ doplnění nákupu
+        self.assertTrue(flow.runner_active)
+
+    async def test_odlozeny_runner_se_oddeli_po_doplneni_nakupu(self):
+        flow = await self.priprav_castecny_nakup()
+
+        # Vyplnění předběhlo zrušení - nákup se dodatečně doplnil na 3 ks
+        flow.entry_trade.orderStatus.filled = 3
+        await self.engine._tick()
+
+        # Pozice je celá zajištěná a runner má vlastní příkaz
+        self.assertIsNotNone(flow.runner_trade)
+        self.assertEqual(int(flow.exit_trade.order.totalQuantity), 2)
+        self.assertEqual(int(flow.runner_trade.order.totalQuantity), 1)
+
+    async def test_runner_se_zrusi_kdyz_na_nej_nakup_nestaci(self):
+        flow = await self.priprav_castecny_nakup()
+
+        # Nákup se už nedoplní - odložený runner se ruší, aby nevisel bez příkazu
+        await self.engine._tick()
+
+        self.assertFalse(flow.runner_active)
+        self.assertEqual(int(flow.exit_trade.order.totalQuantity), 1)
+
+
+class TestZaseknutehoProdeje(ZakladTestu):
+    """Tržní prodej, který TWS drží nevyplněný, se po prodlevě zadá znovu."""
+
+    async def test_zaseknuty_trzni_prodej_runneru_se_zada_znovu(self):
+        flow = await self.zaloz_call(quantity=3)
+        self.ib.fill(flow.entry_trade, 3, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        await self.engine.set_runner(flow.id, 2.0)
+
+        await self.engine.close_runner(flow.id)
+        await self.engine._tick()  # po zrušení podmíněného příkazu se zadá MKT
+        prvni = flow.runner_trade
+        self.assertEqual(prvni.order.orderType, "MKT")
+        # Tržní příkaz má platnost DAY - GTC drží TWS bez vyplnění
+        self.assertEqual(prvni.order.tif, "DAY")
+        self.assertEqual(flow.runner_market_attempts, 1)
+
+        # TWS příkaz drží nevyplněný déle, než hlídač dovoluje
+        flow.runner_market_sent = datetime.now() - timedelta(seconds=60)
+        await self.engine._tick()  # hlídač příkaz zruší
+        self.assertIn(prvni, self.ib.cancelled)
+
+        await self.engine._tick()  # smyčka zadá nový tržní prodej
+        self.assertIsNot(flow.runner_trade, prvni)
+        self.assertEqual(flow.runner_market_attempts, 2)
+
+    async def test_po_vycerpani_pokusu_zustava_prikaz_a_varovani(self):
+        flow = await self.zaloz_call(quantity=3)
+        self.ib.fill(flow.entry_trade, 3, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        await self.engine.set_runner(flow.id, 2.0)
+        await self.engine.close_runner(flow.id)
+        await self.engine._tick()
+
+        # Pokusy jsou vyčerpané - hlídač už příkaz neruší a jednou varuje
+        flow.runner_market_attempts = 5
+        flow.runner_market_sent = datetime.now() - timedelta(seconds=60)
+        posledni = flow.runner_trade
+        await self.engine._tick()
+
+        self.assertNotIn(posledni, self.ib.cancelled)
+        self.assertIs(flow.runner_trade, posledni)
+        zpravy = [text for _, text in self.engine.events]
+        self.assertTrue(any("POZOR" in z and "runneru" in z for z in zpravy))
 
 
 class TestUzavreniCastiPozice(ZakladTestu):

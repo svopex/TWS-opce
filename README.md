@@ -206,7 +206,10 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    obchodu: běžící obchod tlačítko **Zrušit** (drží-li pozici, aplikace se
    nejprve zeptá, co s ní), ukončený obchod **Odstranit z přehledu**.
 
-Aplikace zvládá více obchodů současně; na jeden ticker běží vždy jeden.
+Aplikace zvládá více obchodů současně; na jednom tickeru může běžet
+zároveň jeden long (CALL) a jeden short (PUT) obchod. Směr zadání určuje
+poloha PT vůči vstupu a nové zadání nahrazuje jen čekající obchod
+stejného směru.
 
 ### Mimo obchodní hodiny
 

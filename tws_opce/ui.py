@@ -383,6 +383,24 @@ class TradingUI:
         sl = float(self.sl_input.value) if self.sl_input.value not in (None, "") else None
         return symbol, entry, pt, sl
 
+    def _bezici_pro_formular(
+        self, symbol: str, entry: float | None, pt: float | None
+    ) -> Flow | None:
+        """
+        Najde běžící obchod, ke kterému se vztahuje formulář.
+
+        Na tickeru může běžet long i short zároveň; směr určují vyplněné ceny
+        (PT nad vstupem = long/CALL, pod vstupem = short/PUT). Bez cen se
+        vrací jediný běžící obchod tickeru - při dvou je výběr nejednoznačný.
+        """
+        flows = self.engine.active_flows_for(symbol)
+        if entry is not None and pt is not None and entry != pt:
+            zamer = "C" if pt > entry else "P"
+            return next((flow for flow in flows if flow.right == zamer), None)
+        if len(flows) == 1:
+            return flows[0]
+        return None
+
     def _fill_from_flow(self, flow: Flow) -> None:
         """Naplní formulář parametry existujícího obchodu."""
         self.last_symbol = flow.symbol
@@ -428,7 +446,7 @@ class TradingUI:
         if not symbol:
             return
 
-        bezici = self.engine.active_flow_for(symbol)
+        bezici = self._bezici_pro_formular(symbol, entry, pt)
         zmena_tickeru = symbol != self.last_symbol
 
         # Načtení se vyžaduje buď tlačítkem, nebo přechodem na jiný ticker
@@ -437,9 +455,22 @@ class TradingUI:
             entry, pt, sl = bezici.entry_price, bezici.profit_target, bezici.stop_loss
             ui.notify(f"Načten běžící obchod {bezici.id}.", type="info")
         elif bezici is None and zmena_tickeru:
-            # Ticker bez obchodu - hodnoty předchozího se nesmí přenést
+            # Ticker bez jednoznačného obchodu - hodnoty se nesmí přenést
             self._clear_inputs()
             entry = pt = sl = None
+
+        # Běží-li na tickeru long i short a ceny směr neurčují, Načíst samo
+        # nevybere - obchodník musí obchod zvolit kliknutím, nebo vyplnit ceny
+        if (
+            bezici is None
+            and rezim == "nacist"
+            and len(self.engine.active_flows_for(symbol)) > 1
+        ):
+            ui.notify(
+                f"Na tickeru {symbol} běží long i short obchod - vyberte jej "
+                f"kliknutím v přehledu, nebo vyplňte vstup a PT.",
+                type="info",
+            )
         self.last_symbol = symbol
 
         if not self.ib.connected:
@@ -766,13 +797,22 @@ class TradingUI:
 
     async def _cancel_by_symbol(self) -> None:
         """Zruší aktivní flow podle tickeru vyplněného ve formuláři."""
-        symbol, _, _, _ = self._form_values()
+        symbol, entry, pt, _ = self._form_values()
         if not symbol:
             ui.notify("Zadejte ticker, jehož flow se má zrušit.", type="negative")
             return
-        flow = self.engine.active_flow_for(symbol)
-        if flow is None:
+        if not self.engine.active_flows_for(symbol):
             ui.notify(f"Pro ticker {symbol} neběží žádné aktivní flow.", type="negative")
+            return
+        # Směr rušeného obchodu určují ceny ve formuláři; long i short zároveň
+        # bez vyplněných cen je nejednoznačný výběr
+        flow = self._bezici_pro_formular(symbol, entry, pt)
+        if flow is None:
+            ui.notify(
+                f"Na tickeru {symbol} běží long i short obchod - zrušte jej "
+                f"tlačítkem v jeho řádku, nebo vyplňte vstup a PT.",
+                type="negative",
+            )
             return
         try:
             if not await self._zrus(flow):

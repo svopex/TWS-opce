@@ -493,7 +493,10 @@ class IBService:
     def market_sell_order(self, quantity: int, ref: str = "") -> Order:
         """Prodejní příkaz bez podmínek - okamžité uzavření pozice."""
         order = MarketOrder("SELL", quantity)
-        order.tif = self.cfg.trading.tif
+        # Tržní příkaz má projít okamžitě, GTC z konfigurace u něj nemá smysl.
+        # TWS (přinejmenším demo) navíc GTC MKT drží ve stavu PreSubmitted
+        # a nevyplní ho; s platností DAY se provádí ihned.
+        order.tif = "DAY"
         order.outsideRth = self.cfg.trading.outside_rth
         if ref:
             order.orderRef = ref

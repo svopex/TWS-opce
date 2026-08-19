@@ -155,6 +155,13 @@ class Flow:
     main_close_requested: bool = False
     runner_close_requested: bool = False
 
+    # Hlídání tržního prodeje: kdy byl příkaz odeslán a kolik pokusů proběhlo.
+    # TWS občas nechá tržní příkaz nevyplněný; takový se po prodlevě zadá znovu.
+    exit_market_sent: datetime | None = None
+    exit_market_attempts: int = 0
+    runner_market_sent: datetime | None = None
+    runner_market_attempts: int = 0
+
     # Očekávaný výsledek obchodu v USD, pokud podklad dosáhne PT resp. SL.
     # Přepočítává se průběžně podle aktuální ceny opce a podkladu, takže
     # odráží měnící se podmínky na trhu.

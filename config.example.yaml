@@ -109,7 +109,7 @@ trading:
   # Je-li spread vyšší, nákupní příkaz se do trhu nezadá; pokud už zadán byl
   # a dosud se nevyplnil, aplikace jej z trhu odstraní. Hodnotu lze pro každý
   # obchod přepsat přímo ve formuláři.
-  max_spread_pct: 7.0
+  max_spread_pct: 10.0
 
   # Typ nákupního příkazu, který se použije po splnění cenové podmínky
   # na podkladovém aktivu:
