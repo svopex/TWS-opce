@@ -220,7 +220,7 @@ trading:
   auto_close_enabled: true
 
   # Kolik minut před zavřením burzy se obchody automaticky uzavírají
-  auto_close_minutes_before: 30
+  auto_close_minutes_before: 5
 
   # Časová zóna burzy - uzavírání se časuje v ní, takže posuny letního
   # a zimního času vůči místnímu času počítače nehrají roli
