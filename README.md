@@ -223,6 +223,20 @@ dorazí. Aplikace v takové situaci záměrně nezadává tržní příkaz, kter
 vyplnil za neznámou cenu. Při nastavení `entry_order_type: MKT` se příkaz
 zadá i bez kotací.
 
+### Automatické uzavření před koncem obchodování
+
+Patnáct minut před zavřením burzy (volitelné přes
+`trading.auto_close_minutes_before`) aplikace sama ukončí všechny běžící
+obchody: čekající obchody zruší a odstraní jejich nákupní příkazy z trhu,
+otevřené pozice prodá tržním příkazem. Do hlavičky stránky se přes den
+promítá odpočet do začátku uzavírání.
+
+Čas se počítá v časové zóně burzy (`trading.exchange_timezone`, výchozí
+`America/New_York`), takže posuny letního a zimního času vůči místnímu času
+počítače nehrají roli. Čas zavření burzy určuje `trading.exchange_close_time`
+(výchozí 16:00 newyorského času); zkrácené obchodní dny před svátky aplikace
+nezná. Funkci lze vypnout pomocí `trading.auto_close_enabled: false`.
+
 ### Stavy obchodu
 
 | Stav | Význam |

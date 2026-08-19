@@ -7,6 +7,7 @@ import asyncio
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -26,6 +27,9 @@ def vychozi_config() -> AppConfig:
     cfg.trading.ask_tolerance_pct = 2.0
     # Testy stavového automatu nezapisují stav na disk
     cfg.state.enabled = False
+    # Automatické uzavírání se v testech zapíná cíleně s podvrženým časem -
+    # jinak by sada spuštěná těsně před zavřením burzy obchody uzavírala
+    cfg.trading.auto_close_enabled = False
     return cfg
 
 
@@ -1811,6 +1815,74 @@ class TestOcekavanehoVysledku(ZakladTestu):
         self.assertAlmostEqual(flow.open_pnl, 10.0)
         # Celkový výsledek obchodu realizovaný runner obsahuje
         self.assertAlmostEqual(flow.unrealized_pnl, 260.0)
+
+
+class TestAutomatickehoUzavreni(ZakladTestu):
+    """Automatické uzavření obchodů před koncem obchodování burzy."""
+
+    def burza(self, hodina: int, minuta: int, den: int = 19) -> None:
+        """Podvrhne čas burzy - srpen 2026, výchozí den je středa 19. 8."""
+        self.cfg.trading.auto_close_enabled = True
+        self.engine._exchange_now = lambda: datetime(
+            2026, 8, den, hodina, minuta, tzinfo=ZoneInfo("America/New_York")
+        )
+
+    async def test_odpocet_sekund_do_uzavirani(self):
+        # Čtvrt hodiny před oknem zbývá 900 sekund
+        self.burza(15, 30)
+        self.assertAlmostEqual(self.engine.auto_close_seconds(), 900.0)
+
+        # V uzavíracím okně je odpočet nulový
+        self.burza(15, 50)
+        self.assertEqual(self.engine.auto_close_seconds(), 0.0)
+
+        # Po zavření burzy už se dnes neuzavírá
+        self.burza(16, 5)
+        self.assertIsNone(self.engine.auto_close_seconds())
+
+        # Sobota 22. 8. 2026 - burza neobchoduje
+        self.burza(15, 50, den=22)
+        self.assertIsNone(self.engine.auto_close_seconds())
+
+        # Vypnutá funkce odpočet nenabízí
+        self.cfg.trading.auto_close_enabled = False
+        self.assertIsNone(self.engine.auto_close_seconds())
+
+    async def test_obchody_se_pred_zavrenim_uzavrou(self):
+        cekajici = await self.zaloz_call()
+        drzeny = await self.zaloz_put()
+        self.ib.fill(drzeny.entry_trade, 1, 3.10)
+        await self.engine._tick()
+        await self.engine._tick()
+
+        self.burza(15, 50)
+        await self.engine._tick()
+
+        # Čekající obchod je zrušen a jeho příkaz odstraněn z trhu
+        self.assertEqual(cekajici.state, FlowState.CANCELLED)
+        self.assertIn("Automaticky", cekajici.message)
+        self.assertIn(cekajici.entry_trade, self.ib.cancelled)
+
+        # Držený obchod se prodává trhem
+        self.assertEqual(drzeny.state, FlowState.CLOSING)
+        await self.engine._tick()
+        prodej = drzeny.exit_trade
+        self.assertEqual(prodej.order.orderType, "MKT")
+        self.assertEqual(int(prodej.order.totalQuantity), 1)
+
+        self.ib.fill(prodej, 1, 3.40)
+        await self.engine._tick()
+        self.assertEqual(drzeny.state, FlowState.CLOSED)
+
+    async def test_mimo_okno_se_obchody_nechavaji(self):
+        flow = await self.zaloz_call()
+
+        # Pět minut před začátkem okna se ještě nic neděje
+        self.burza(15, 40)
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(self.ib.cancelled, [])
 
 
 class TestIndikatoruHlidani(ZakladTestu):

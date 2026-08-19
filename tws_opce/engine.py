@@ -11,8 +11,9 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from . import calc, store
 from .config import AppConfig
@@ -1267,17 +1268,22 @@ class FlowEngine:
         await self._cancel(flow, close_position)
         return flow
 
-    async def _cancel(self, flow: Flow, close_position: bool = False) -> None:
+    async def _cancel(
+        self, flow: Flow, close_position: bool = False, reason: str | None = None
+    ) -> None:
         """
         Zruší příkazy flow a ukončí jej.
 
         Drží-li obchod pozici, rozhoduje close_position: buď se pozice uzavře
         tržním příkazem, nebo zůstane otevřená a bez zajištění k ručnímu řízení.
+        Volitelný reason nahradí výchozí text zprávy (např. automatické uzavření).
         """
         async with self._lock:
-            self._cancel_locked(flow, close_position)
+            self._cancel_locked(flow, close_position, reason)
 
-    def _cancel_locked(self, flow: Flow, close_position: bool = False) -> None:
+    def _cancel_locked(
+        self, flow: Flow, close_position: bool = False, reason: str | None = None
+    ) -> None:
         """Tělo rušení flow - volá se výhradně s již drženým zámkem."""
         self.ib.cancel(flow.entry_trade)
         self.ib.cancel(flow.exit_trade)
@@ -1295,7 +1301,9 @@ class FlowEngine:
                 flow.exit_market_sent = None
             # Prodejní příkaz se zadá až po zrušení nákupního, protože TWS
             # nepovolí oba příkazy na jednom kontraktu současně
-            flow.set_state(FlowState.CLOSING, "Zrušeno obchodníkem, pozice se uzavírá trhem.")
+            flow.set_state(
+                FlowState.CLOSING, reason or "Zrušeno obchodníkem, pozice se uzavírá trhem."
+            )
         elif v_pozici:
             flow.set_state(
                 FlowState.CANCELLED,
@@ -1305,7 +1313,8 @@ class FlowEngine:
             self._release(flow)
         else:
             flow.set_state(
-                FlowState.CANCELLED, "Flow zrušeno před nákupem, příkaz odstraněn z trhu."
+                FlowState.CANCELLED,
+                reason or "Flow zrušeno před nákupem, příkaz odstraněn z trhu.",
             )
             self._release(flow)
 
@@ -1364,6 +1373,77 @@ class FlowEngine:
                 log.exception("Chyba v monitorovací smyčce.")
             await asyncio.sleep(self.cfg.engine.poll_interval_sec)
 
+    def _exchange_now(self) -> datetime:
+        """Aktuální čas v časové zóně burzy (řeší letní/zimní čas)."""
+        return datetime.now(ZoneInfo(self.cfg.trading.exchange_timezone))
+
+    def _exchange_close(self, ted: datetime) -> datetime:
+        """Dnešní čas zavření burzy v její časové zóně."""
+        hodina, minuta = (
+            int(cast) for cast in self.cfg.trading.exchange_close_time.split(":")
+        )
+        return ted.replace(hour=hodina, minute=minuta, second=0, microsecond=0)
+
+    def auto_close_seconds(self) -> float | None:
+        """
+        Počet sekund do začátku automatického uzavírání obchodů.
+
+        None znamená, že se dnes už neuzavírá (funkce vypnutá, víkend, nebo
+        burza už zavřela); nula znamená, že uzavírací okno právě běží.
+        """
+        if not self.cfg.trading.auto_close_enabled:
+            return None
+
+        ted = self._exchange_now()
+        # O víkendu se neobchoduje - odpočet nemá co měřit
+        if ted.weekday() >= 5:
+            return None
+
+        zavirani = self._exchange_close(ted)
+        start = zavirani - timedelta(minutes=self.cfg.trading.auto_close_minutes_before)
+        if ted >= zavirani:
+            return None
+        if ted >= start:
+            return 0.0
+        return (start - ted).total_seconds()
+
+    async def _auto_close_flows(self) -> None:
+        """
+        Krátce před zavřením burzy uzavře všechny běžící obchody.
+
+        Čas se počítá v časové zóně burzy, takže posun letního a zimního času
+        vůči místnímu času počítače nehraje roli. Čekající obchody se ruší
+        (nákupní příkaz se odstraní z trhu), obchody s pozicí se prodají trhem.
+        """
+        if self.auto_close_seconds() != 0:
+            return
+
+        minuty = self.cfg.trading.auto_close_minutes_before
+        for flow in list(self.flows.values()):
+            if not flow.state.is_active or flow.state == FlowState.CLOSING:
+                continue
+            if flow.state.is_before_entry:
+                self.log_event(
+                    f"{flow.id}: automatické zrušení čekajícího obchodu "
+                    f"({minuty:g} min před zavřením burzy)."
+                )
+                await self._cancel(
+                    flow,
+                    reason="Automaticky zrušeno před koncem obchodování, "
+                    "příkaz odstraněn z trhu.",
+                )
+            else:
+                self.log_event(
+                    f"{flow.id}: automatické uzavření pozice "
+                    f"({minuty:g} min před zavřením burzy)."
+                )
+                await self._cancel(
+                    flow,
+                    close_position=True,
+                    reason="Automaticky uzavíráno před koncem obchodování, "
+                    "pozice se prodává trhem.",
+                )
+
     async def _tick(self) -> None:
         """Jeden průchod monitoringem všech aktivních flow."""
         # Během obnovy se nemonitoruje - příkazy z minulého spojení nejsou platné
@@ -1383,6 +1463,9 @@ class FlowEngine:
 
         # Pozice bez dozoru aplikace se kontrolují v delším intervalu
         await self._check_unmanaged()
+
+        # Krátce před zavřením burzy se běžící obchody automaticky uzavírají
+        await self._auto_close_flows()
 
         changed = False
         for flow in list(self.flows.values()):

@@ -7,6 +7,7 @@ import shutil
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -95,6 +96,17 @@ class TradingConfig:
     relimit_enabled: bool = True
     # Minimální změna limitní ceny (v procentech), která vyvolá modifikaci příkazu
     relimit_min_change_pct: float = 0.5
+    # Automatické uzavření obchodů krátce před koncem obchodování burzy:
+    # čekající obchody se zruší, otevřené pozice se prodají trhem
+    auto_close_enabled: bool = True
+    # Kolik minut před zavřením burzy se obchody automaticky uzavírají
+    auto_close_minutes_before: float = 15.0
+    # Časová zóna burzy - uzavírání se časuje v ní, takže posuny letního
+    # a zimního času vůči místnímu času počítače nehrají roli
+    exchange_timezone: str = "America/New_York"
+    # Čas zavření burzy ve formátu HH:MM (v časové zóně burzy).
+    # Zkrácené obchodní dny (např. před svátky) aplikace nezná.
+    exchange_close_time: str = "16:00"
 
 
 @dataclass
@@ -237,6 +249,28 @@ def validate_config(cfg: AppConfig) -> None:
         problems.append(
             f"trading.entry_order_type musí být jedna z {ENTRY_ORDER_TYPES}, "
             f"nalezeno '{cfg.trading.entry_order_type}'"
+        )
+
+    if cfg.trading.auto_close_minutes_before < 0:
+        problems.append("trading.auto_close_minutes_before nesmí být záporné")
+
+    # Časová zóna burzy musí existovat v databázi zón
+    try:
+        ZoneInfo(cfg.trading.exchange_timezone)
+    except Exception:
+        problems.append(
+            f"trading.exchange_timezone '{cfg.trading.exchange_timezone}' není platná časová zóna"
+        )
+
+    # Čas zavření burzy musí mít tvar HH:MM
+    try:
+        hodina, minuta = (int(cast) for cast in cfg.trading.exchange_close_time.split(":"))
+        if not (0 <= hodina <= 23 and 0 <= minuta <= 59):
+            raise ValueError
+    except (ValueError, AttributeError):
+        problems.append(
+            f"trading.exchange_close_time '{cfg.trading.exchange_close_time}' "
+            f"musí mít tvar HH:MM"
         )
     if cfg.trading.exit_order_type not in EXIT_ORDER_TYPES:
         problems.append(

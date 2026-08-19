@@ -30,6 +30,19 @@
   color: #fee2e2;
 }
 
+/* Odpočet do automatického uzavření obchodů před koncem burzy */
+.odpocet-uzavreni {
+  color: #cbd5e1;
+  font-size: 0.8rem;
+  margin-right: 12px;
+}
+
+/* Zvýraznění během běžícího uzavíracího okna */
+.odpocet-uzavreni.odpocet-aktivni {
+  color: #fbbf24;
+  font-weight: 600;
+}
+
 /* --- Pruh s upozorněním na pozice bez dozoru --- */
 .pruh-varovani {
   align-items: flex-start;

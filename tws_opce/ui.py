@@ -226,6 +226,9 @@ class TradingUI:
         with ui.header().classes("hlavicka"):
             ui.label("Obchodování opcí – TWS").classes("nazev")
             ui.space()
+            # Odpočet do automatického uzavření obchodů před koncem burzy
+            self.auto_close_label = ui.label().classes("odpocet-uzavreni")
+            self.auto_close_label.set_visibility(False)
             self.dark_button = ui.button(on_click=self._toggle_dark).props("flat round dense")
             with self.dark_button:
                 ui.tooltip("Přepnout světlý/tmavý vzhled")
@@ -886,9 +889,31 @@ class TradingUI:
         """Aktualizuje stav spojení, tabulku obchodů a log."""
         self._refresh_warning()
         self._refresh_status()
+        self._refresh_auto_close()
         self._refresh_table()
         self._refresh_log()
         self._refresh_config()
+
+    def _refresh_auto_close(self) -> None:
+        """Odpočet do automatického uzavření obchodů v hlavičce."""
+        sekundy = self.engine.auto_close_seconds()
+        if sekundy is None:
+            self.auto_close_label.set_visibility(False)
+            return
+
+        self.auto_close_label.set_visibility(True)
+        if sekundy <= 0:
+            self.auto_close_label.set_text("Probíhá automatické uzavírání obchodů")
+            self.auto_close_label.classes(add="odpocet-aktivni")
+            return
+
+        # Zbývající čas ve tvaru H:MM:SS, pod hodinu jen MM:SS
+        celkem = int(sekundy)
+        hodiny, zbytek = divmod(celkem, 3600)
+        minuty, sek = divmod(zbytek, 60)
+        cas = f"{hodiny}:{minuty:02d}:{sek:02d}" if hodiny else f"{minuty:02d}:{sek:02d}"
+        self.auto_close_label.set_text(f"Automatické uzavření za {cas}")
+        self.auto_close_label.classes(remove="odpocet-aktivni")
 
     def _refresh_warning(self) -> None:
         """Zobrazí upozornění na opční pozice, které aplikace neřídí."""

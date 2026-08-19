@@ -31,6 +31,9 @@ class ZakladObnovy(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.cfg = AppConfig()
         self.cfg.state.file = str(Path(self.tmp.name) / "state.json")
+        # Testy si čas burzy řídí samy - jinak by sada spuštěná těsně před
+        # zavřením burzy obchody nečekaně uzavírala
+        self.cfg.trading.auto_close_enabled = False
         self.ib = FakeIBService(self.cfg)
         self.engine = FlowEngine(self.cfg, self.ib)
 
