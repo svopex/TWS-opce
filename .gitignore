@@ -5,3 +5,4 @@ config.yaml
 logs/
 .playwright-mcp/
 state.json
+.nicegui/

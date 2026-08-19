@@ -217,12 +217,32 @@ class TradingUI:
         ui.timer(self.cfg.ui.refresh_interval_sec, self._refresh)
 
     def _build_header(self) -> None:
-        """Hlavička s názvem aplikace a stavem spojení na TWS."""
+        """Hlavička s názvem aplikace, přepínačem vzhledu a stavem spojení na TWS."""
+        # Tmavý režim: výchozí hodnota z konfigurace, poslední volba
+        # obchodníka se pamatuje mezi spuštěními
+        self.dark_mode = ui.dark_mode(
+            bool(app.storage.general.get("dark_mode", self.cfg.ui.dark))
+        )
         with ui.header().classes("hlavicka"):
             ui.label("Obchodování opcí – TWS").classes("nazev")
             ui.space()
+            self.dark_button = ui.button(on_click=self._toggle_dark).props("flat round dense")
+            with self.dark_button:
+                ui.tooltip("Přepnout světlý/tmavý vzhled")
+            self._refresh_dark_button()
             self.status_label = ui.label().classes("stav-spojeni")
             self.connect_button = ui.button("Připojit", on_click=self._toggle_connection).props("flat")
+
+    def _toggle_dark(self) -> None:
+        """Přepne světlý/tmavý vzhled a volbu si zapamatuje."""
+        self.dark_mode.value = not self.dark_mode.value
+        app.storage.general["dark_mode"] = self.dark_mode.value
+        self._refresh_dark_button()
+
+    def _refresh_dark_button(self) -> None:
+        """Ikona přepínače ukazuje režim, do kterého se lze přepnout."""
+        ikona = "light_mode" if self.dark_mode.value else "dark_mode"
+        self.dark_button.props(f"icon={ikona}")
 
     def _build_form(self) -> None:
         """Formulář pro zadání obchodu."""
