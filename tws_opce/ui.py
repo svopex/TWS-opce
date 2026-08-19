@@ -942,11 +942,13 @@ class TradingUI:
             "qty": f"{flow.quantity}/{flow.open_quantity}",
             "entry": fmt(flow.entry_price),
             "fill": fmt(flow.fill_price),
-            # S runnerem se vedle hlavního cíle ukazuje i cíl runneru
+            # Liší-li se cíl runneru od hlavního, ukazují se oba (stejně jako u SL)
             "pt": fmt(flow.profit_target)
             + (
                 f" · R {fmt(flow.runner_profit_target)}"
-                if flow.runner_active and flow.runner_fill_price is None
+                if flow.runner_active
+                and flow.runner_fill_price is None
+                and abs(flow.runner_profit_target - flow.profit_target) >= 0.005
                 else ""
             ),
             # Liší-li se SL runneru od hlavního, ukazují se oba
