@@ -499,6 +499,18 @@ class TestPrubehnaAktualizaceLimitu(ZakladTestu):
 
         self.assertAlmostEqual(flow.entry_limit, puvodni)
 
+    async def test_castecne_vyplneny_prikaz_se_nemodifikuje(self):
+        # Modifikace vyplňovaného příkazu by závodila s TWS a končila
+        # hlášením "too late to replace" - příkaz se nechává být
+        flow = await self.zaloz_call()
+        puvodni = flow.entry_limit
+
+        flow.entry_trade.orderStatus.filled = 1
+        self.ib.price_bid, self.ib.price_ask = 3.55, 3.60
+        self.assertFalse(self.engine._update_entry_limit(flow))
+
+        self.assertAlmostEqual(flow.entry_limit, puvodni)
+
     async def test_ruseny_prikaz_se_nemodifikuje(self):
         # Příkaz čekající na potvrzení zrušení nelze upravit - TWS to odmítne
         # hláškou "Order has been cancelled already, too late to replace"

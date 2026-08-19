@@ -1912,8 +1912,12 @@ class FlowEngine:
         if flow.entry_trade is None or self.cfg.trading.entry_order_type == "MKT":
             return False
 
-        # Příkaz, který TWS už ruší nebo vyplňuje, se upravovat nesmí
+        # Příkaz, který TWS už ruší nebo vyplňuje, se upravovat nesmí.
+        # Částečně vyplněný příkaz se také nechává být - modifikace by se
+        # závodila s dobíhajícím vyplněním a TWS by hlásila "too late to replace"
         if flow.entry_trade.orderStatus.status not in MODIFIABLE_ORDER_STATES:
+            return False
+        if flow.entry_trade.orderStatus.filled > 0:
             return False
 
         new_limit = self._entry_limit(flow)
