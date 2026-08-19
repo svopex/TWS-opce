@@ -99,6 +99,10 @@ class Flow:
     # aby opakovaná změna nevycházela z už posunuté hodnoty
     original_profit_target: float = 0.0
 
+    # SL zadaný při založení obchodu - tlačítko "Počáteční SL" se na něj
+    # vrací poté, co byl stop posunut na break even
+    original_stop_loss: float = 0.0
+
     # Vybraný opční kontrakt
     expiration: str = ""
     strike: float = 0.0
@@ -137,6 +141,9 @@ class Flow:
     # None v runner_profit_target znamená, že runner není aktivní.
     runner_profit_target: float | None = None
     runner_quantity: int = 0
+    # Vlastní SL runneru - při zapnutí přebírá SL obchodu a dál se přepíná
+    # nezávisle na hlavní části (počáteční SL / break even)
+    runner_stop_loss: float | None = None
     runner_order_id: int | None = None
     runner_fill_price: float | None = None
     # Souhrn dříve prodaných runnerů - po prodeji se runner zúčtuje sem
@@ -229,6 +236,13 @@ class Flow:
         return self.runner_profit_target is not None and self.runner_quantity > 0
 
     @property
+    def runner_sl(self) -> float:
+        """SL runneru - vlastní hodnota; bez ní (starší stav) společný SL obchodu."""
+        if self.runner_stop_loss is not None:
+            return self.runner_stop_loss
+        return self.stop_loss
+
+    @property
     def held_quantity(self) -> int:
         """Počet kontraktů, které pozice ještě drží (po prodaných runnerech)."""
         total = (self.filled_quantity or self.quantity) - self.runner_sold_quantity
@@ -241,6 +255,20 @@ class Flow:
         if self.runner_active and self.runner_quantity < drzeno:
             return drzeno - self.runner_quantity
         return drzeno
+
+    @property
+    def open_quantity(self) -> int:
+        """
+        Počet kontraktů právě otevřených v trhu.
+        Před nákupem nula; po nákupu skutečně nakoupené množství snížené
+        o prodané runnery a o prodanou hlavní část.
+        """
+        if self.fill_price is None:
+            return 0
+        drzeno = self.held_quantity
+        if self.exit_fill_price is not None:
+            drzeno -= self.main_quantity
+        return max(drzeno, 0)
 
     @property
     def runner_multiple(self) -> float | None:

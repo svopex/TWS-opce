@@ -998,6 +998,168 @@ class TestUzavreniCastiPozice(ZakladTestu):
         self.assertIn("uzavírání", str(ctx.exception))
 
 
+class TestPrepinaniSL(ZakladTestu):
+    """Tlačítka Počáteční SL a SL BE - přepínání stopu u nakoupené pozice."""
+
+    async def nakup(self, flow, mnozstvi):
+        """Simuluje vyplnění nákupu a zadání zajišťovacích příkazů."""
+        self.ib.fill(flow.entry_trade, mnozstvi, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+
+    async def test_sl_be_upravi_zajistovaci_prikaz(self):
+        flow = await self.zaloz_call(quantity=2)
+        await self.nakup(flow, 2)
+        # Cena je nad vstupem, break even není proražený
+        self.ib.price_underlying = 233.0
+
+        await self.engine.set_stop_loss(flow.id, "be")
+
+        self.assertAlmostEqual(flow.stop_loss, 232.0)
+        podminky = flow.exit_trade.order.conditions
+        # PT zůstává beze změny, SL se posunul na vstup
+        self.assertAlmostEqual(podminky[0].price, 235.0)
+        self.assertAlmostEqual(podminky[1].price, 232.0)
+        self.assertFalse(flow.main_close_requested)
+
+    async def test_navrat_na_pocatecni_sl(self):
+        flow = await self.zaloz_call(quantity=2)
+        await self.nakup(flow, 2)
+        self.ib.price_underlying = 233.0
+        await self.engine.set_stop_loss(flow.id, "be")
+
+        await self.engine.set_stop_loss(flow.id, "puvodni")
+
+        self.assertAlmostEqual(flow.stop_loss, 229.0)
+        self.assertAlmostEqual(flow.exit_trade.order.conditions[1].price, 229.0)
+
+    async def test_prorazeny_sl_proda_hlavni_cast_trhem(self):
+        flow = await self.zaloz_call(quantity=2)
+        await self.nakup(flow, 2)
+        podmineny = flow.exit_trade
+
+        # Cena 230 je pod vstupem 232 - break even je proražený a čekat
+        # na podmínku by nemělo smysl, pozice se rovnou prodává
+        await self.engine.set_stop_loss(flow.id, "be")
+
+        self.assertTrue(flow.main_close_requested)
+        self.assertIn(podmineny, self.ib.cancelled)
+        await self.engine._tick()
+        self.assertEqual(flow.exit_trade.order.orderType, "MKT")
+        self.assertEqual(int(flow.exit_trade.order.totalQuantity), 2)
+
+    async def test_cena_presne_na_sl_take_prodava(self):
+        flow = await self.zaloz_call(quantity=2)
+        await self.nakup(flow, 2)
+
+        # "Pod nebo na SL" - rovnost úrovni stačí k okamžitému prodeji
+        self.ib.price_underlying = 232.0
+        await self.engine.set_stop_loss(flow.id, "be")
+        self.assertTrue(flow.main_close_requested)
+
+    async def test_put_prodava_pri_cene_nad_sl(self):
+        # U PUT chrání stop shora - proražení znamená cenu nad úrovní SL
+        self.ib.price_underlying = 230.0
+        self.ib.greek_delta = -0.35
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=228.0, profit_target=225.0, quantity=2)
+        )
+        await self.nakup(flow, 2)
+
+        # Cena 230 je nad vstupem 228 - break even je proražený
+        await self.engine.set_stop_loss(flow.id, "be")
+        self.assertTrue(flow.main_close_requested)
+
+    async def test_runner_ma_vlastni_sl(self):
+        flow = await self.zaloz_call(quantity=3)
+        await self.nakup(flow, 3)
+        await self.engine.set_runner(flow.id, 2.0)
+        self.ib.price_underlying = 233.0
+
+        await self.engine.set_stop_loss(flow.id, "be")
+
+        # Hlavní část stojí na vstupu, runner zůstává na počátečním SL
+        self.assertAlmostEqual(flow.exit_trade.order.conditions[1].price, 232.0)
+        self.assertAlmostEqual(flow.runner_trade.order.conditions[1].price, 229.0)
+
+        # Runner se přepíná samostatně
+        await self.engine.set_runner_stop_loss(flow.id, "be")
+        self.assertAlmostEqual(flow.runner_trade.order.conditions[1].price, 232.0)
+
+    async def test_prorazeny_sl_runneru_proda_jen_runner(self):
+        flow = await self.zaloz_call(quantity=3)
+        await self.nakup(flow, 3)
+        await self.engine.set_runner(flow.id, 2.0)
+        podmineny = flow.runner_trade
+        hlavni = flow.exit_trade
+
+        # Cena 230 je pod vstupem - break even runneru je proražený
+        await self.engine.set_runner_stop_loss(flow.id, "be")
+
+        self.assertTrue(flow.runner_close_requested)
+        self.assertFalse(flow.main_close_requested)
+        self.assertIn(podmineny, self.ib.cancelled)
+        await self.engine._tick()
+        self.assertEqual(flow.runner_trade.order.orderType, "MKT")
+        self.assertEqual(flow.runner_trade.order.conditions, [])
+        # Hlavní část běží dál se svým podmíněným příkazem
+        self.assertIs(flow.exit_trade, hlavni)
+        self.assertNotIn(hlavni, self.ib.cancelled)
+
+    async def test_novy_runner_prebira_aktualni_sl(self):
+        flow = await self.zaloz_call(quantity=3)
+        await self.nakup(flow, 3)
+        self.ib.price_underlying = 233.0
+        await self.engine.set_stop_loss(flow.id, "be")
+
+        await self.engine.set_runner(flow.id, 2.0)
+
+        # Runner zapnutý po přepnutí na break even startuje také na něm
+        self.assertAlmostEqual(flow.runner_sl, 232.0)
+        self.assertAlmostEqual(flow.runner_trade.order.conditions[1].price, 232.0)
+
+    async def test_sl_nelze_prepinat_pred_nakupem(self):
+        # Před nákupem tlačítka nemají smysl - SL řídí zadání ve formuláři
+        flow = await self.zaloz_call(quantity=2)
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.set_stop_loss(flow.id, "be")
+        self.assertIn("nakoupené pozice", str(ctx.exception))
+
+    async def test_sl_runneru_vyzaduje_bezici_runner(self):
+        flow = await self.zaloz_call(quantity=3)
+        await self.nakup(flow, 3)
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.set_runner_stop_loss(flow.id, "be")
+        self.assertIn("běžící runner", str(ctx.exception))
+
+
+class TestOtevreneMnozstvi(ZakladTestu):
+    """Počet kontraktů právě otevřených v trhu (druhá část sloupce Ks)."""
+
+    async def test_prubeh_od_zadani_po_uzavreni(self):
+        # Zadané 4 kontrakty; před nákupem není v trhu nic (4/0)
+        flow = await self.zaloz_call(quantity=4)
+        self.assertEqual(flow.open_quantity, 0)
+
+        # Nákup se vyplní jen ze tří čtvrtin (4/3)
+        self.ib.fill(flow.entry_trade, 3, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        self.assertEqual(flow.open_quantity, 3)
+
+        # Prodaný runner otevřené množství zmenší (4/2)
+        await self.engine.set_runner(flow.id, 2.0)
+        self.ib.fill(flow.runner_trade, 1, 4.00)
+        await self.engine._tick()
+        self.assertEqual(flow.open_quantity, 2)
+
+        # Prodej zbytku pozice vrátí otevřené množství na nulu (4/0)
+        self.ib.fill(flow.exit_trade, 2, 4.00)
+        await self.engine._tick()
+        self.assertEqual(flow.open_quantity, 0)
+        self.assertEqual(flow.state, FlowState.CLOSED)
+
+
 class TestDalsihoRunneru(ZakladTestu):
     """Po prodeji runneru lze z hlavní části oddělit další."""
 

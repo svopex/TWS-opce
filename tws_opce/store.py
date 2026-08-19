@@ -32,6 +32,7 @@ SAVED_FIELDS = (
     "profit_target",
     "original_profit_target",
     "stop_loss",
+    "original_stop_loss",
     "quantity",
     "max_spread_pct",
     "right",
@@ -50,6 +51,7 @@ SAVED_FIELDS = (
     "exit_reason",
     "runner_profit_target",
     "runner_quantity",
+    "runner_stop_loss",
     "runner_order_id",
     "runner_fill_price",
     "runner_sold_quantity",
@@ -89,6 +91,10 @@ def dict_to_flow(data: dict[str, Any]) -> Flow:
     # z už posunuté hodnoty a při každém kliknutí by se řetězily
     if not flow.original_profit_target:
         flow.original_profit_target = flow.profit_target
+
+    # Totéž pro počáteční SL - tlačítko "Počáteční SL" se bez něj nemá kam vracet
+    if not flow.original_stop_loss:
+        flow.original_stop_loss = flow.stop_loss
 
     for name in TIME_FIELDS:
         hodnota = data.get(name)

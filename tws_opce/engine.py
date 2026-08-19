@@ -417,6 +417,7 @@ class FlowEngine:
                 profit_target=request.profit_target,
                 original_profit_target=request.profit_target,
                 stop_loss=stop_loss,
+                original_stop_loss=stop_loss,
                 quantity=quantity,
                 max_spread_pct=max_spread,
                 right=preview.right,
@@ -752,7 +753,7 @@ class FlowEngine:
         if trade is None or trade.orderStatus.status not in MODIFIABLE_ORDER_STATES:
             self.log_event(
                 f"{flow.id}: zajišťovací příkaz nelze upravit "
-                f"({trade.orderStatus.status if trade else 'chybí'}) - cíl platí jen v přehledu."
+                f"({trade.orderStatus.status if trade else 'chybí'}) - změna platí jen v přehledu."
             )
             return
 
@@ -821,6 +822,10 @@ class FlowEngine:
             byl_aktivni = flow.runner_active
             flow.runner_profit_target = novy_pt
             flow.runner_quantity = runner_q
+            # Nově zapnutý runner přebírá aktuální SL obchodu;
+            # dál se jeho stop přepíná nezávisle na hlavní části
+            if not byl_aktivni:
+                flow.runner_stop_loss = flow.stop_loss
 
             if flow.state == FlowState.EXIT_ARMED:
                 if byl_aktivni and flow.runner_trade is not None:
@@ -863,6 +868,7 @@ class FlowEngine:
             flow.runner_order_id = None
             flow.runner_profit_target = None
             flow.runner_quantity = 0
+            flow.runner_stop_loss = None
 
             if flow.state == FlowState.EXIT_ARMED and flow.exit_trade is not None:
                 trade = flow.exit_trade
@@ -933,12 +939,118 @@ class FlowEngine:
             self._notify()
             return flow
 
+    def _resolve_sl(self, flow: Flow, rezim: str) -> float:
+        """
+        Převede režim tlačítka na úroveň SL.
+        'puvodni' vrací SL ze zadání obchodu, 'be' vstupní cenu (break even).
+        """
+        if rezim == "be":
+            return flow.entry_price
+        if rezim == "puvodni":
+            # Obchod ze starší verze počáteční SL nezná - stane se jím aktuální
+            if not flow.original_stop_loss:
+                flow.original_stop_loss = flow.stop_loss
+            return flow.original_stop_loss
+        raise ValueError(f"Neznámý režim SL '{rezim}'.")
+
+    def _sl_breached(self, flow: Flow, sl: float) -> bool:
+        """True, pokud je cena podkladu už na úrovni SL, nebo za ní."""
+        cena = self.ib.underlying_price(flow.underlying_contract)
+        if cena is None:
+            cena = flow.underlying_price
+        if cena is None:
+            return False
+        # U CALL chrání stop zdola, u PUT shora
+        if flow.right == "C":
+            return cena <= sl
+        return cena >= sl
+
+    async def set_stop_loss(self, flow_id: str, rezim: str) -> Flow:
+        """
+        Přepne SL hlavní části na počáteční hodnotu ('puvodni'),
+        nebo na vstupní cenu podkladu ('be', break even).
+
+        Má smysl až u nakoupené pozice se zadaným zajištěním. Je-li cena
+        podkladu už na zvolené úrovni nebo za ní, podmíněný příkaz se zruší
+        a hlavní část se rovnou prodá trhem - čekat na podmínku by nemělo smysl.
+        """
+        flow = self.flows.get(flow_id)
+        if flow is None:
+            raise ValueError(f"Flow '{flow_id}' neexistuje.")
+        if flow.state != FlowState.EXIT_ARMED or flow.fill_price is None:
+            raise ValueError("SL lze přepínat jen u nakoupené pozice se zadaným zajištěním.")
+        if flow.exit_fill_price is not None or flow.main_close_requested:
+            raise ValueError(
+                "Hlavní část pozice se uzavírá nebo už je prodaná - její SL nelze měnit."
+            )
+
+        novy_sl = self._resolve_sl(flow, rezim)
+
+        async with self._lock:
+            flow.stop_loss = novy_sl
+            if self._sl_breached(flow, novy_sl):
+                # Úroveň je už proražená - stejný postup jako Uzavřít pozici:
+                # tržní prodej zadá smyčka až po potvrzení zrušení příkazu
+                flow.main_close_requested = True
+                self.ib.cancel(flow.exit_trade)
+                flow.touch(
+                    f"SL {novy_sl:g} je již dosažen, hlavní část "
+                    f"({flow.main_quantity} ks) se prodává trhem."
+                )
+                self.log_event(f"{flow.id}: {flow.message}")
+            else:
+                self._update_exit_conditions(flow)
+                popis = "break even" if rezim == "be" else "počáteční hodnota"
+                self.log_event(f"{flow.id}: SL hlavní části nastaven na {novy_sl:g} ({popis}).")
+            self._notify()
+            return flow
+
+    async def set_runner_stop_loss(self, flow_id: str, rezim: str) -> Flow:
+        """
+        Přepne SL runneru na počáteční hodnotu ('puvodni'), nebo na vstupní
+        cenu podkladu ('be'). Chová se stejně jako přepnutí SL hlavní části,
+        jen se týká výhradně příkazu runneru.
+        """
+        flow = self.flows.get(flow_id)
+        if flow is None:
+            raise ValueError(f"Flow '{flow_id}' neexistuje.")
+        if (
+            not flow.runner_active
+            or flow.state != FlowState.EXIT_ARMED
+            or flow.runner_order_id is None
+        ):
+            raise ValueError("Obchod nemá běžící runner, jehož SL by šlo přepínat.")
+        if flow.runner_fill_price is not None:
+            raise ValueError("Runner už je prodaný, jeho SL nelze měnit.")
+        if flow.runner_close_requested:
+            raise ValueError("Runner se právě uzavírá trhem, jeho SL nelze měnit.")
+
+        novy_sl = self._resolve_sl(flow, rezim)
+
+        async with self._lock:
+            flow.runner_stop_loss = novy_sl
+            if self._sl_breached(flow, novy_sl):
+                # Proražená úroveň - runner se prodá trhem, hlavní část běží dál
+                flow.runner_close_requested = True
+                self.ib.cancel(flow.runner_trade)
+                flow.touch(
+                    f"SL runneru {novy_sl:g} je již dosažen, runner "
+                    f"({flow.runner_quantity} ks) se prodává trhem."
+                )
+                self.log_event(f"{flow.id}: {flow.message}")
+            else:
+                self._update_runner_conditions(flow)
+                popis = "break even" if rezim == "be" else "počáteční hodnota"
+                self.log_event(f"{flow.id}: SL runneru nastaven na {novy_sl:g} ({popis}).")
+            self._notify()
+            return flow
+
     def _runner_conditions(self, flow: Flow) -> list:
-        """Cenové podmínky prodeje runneru - vlastní cíl, společný SL."""
+        """Cenové podmínky prodeje runneru - vlastní cíl i vlastní SL."""
         _, pt_more, sl_more = calc.condition_directions(flow.right)
         return [
             self.ib.price_condition(flow.underlying_conid, pt_more, flow.runner_profit_target),
-            self.ib.price_condition(flow.underlying_conid, sl_more, flow.stop_loss),
+            self.ib.price_condition(flow.underlying_conid, sl_more, flow.runner_sl),
         ]
 
     def _split_exit_for_runner(self, flow: Flow) -> None:
@@ -1318,6 +1430,9 @@ class FlowEngine:
 
         if not flow.original_profit_target:
             flow.original_profit_target = flow.profit_target
+        # Starší stav počáteční SL nezná - doplní se z aktuálního
+        if not flow.original_stop_loss:
+            flow.original_stop_loss = flow.stop_loss
 
         # Uložený stav mohl vzniknout ještě s chybným výpočtem cíle; obchod
         # s nesmyslnými úrovněmi se do trhu vracet nesmí
@@ -1341,6 +1456,7 @@ class FlowEngine:
             flow.runner_sold_quantity += flow.runner_quantity
             flow.runner_profit_target = None
             flow.runner_quantity = 0
+            flow.runner_stop_loss = None
             flow.runner_fill_price = None
 
         flow.entry_trade = prikazy.get(order_ref(flow.id, "entry"))
@@ -1785,6 +1901,7 @@ class FlowEngine:
                 )
                 flow.runner_profit_target = None
                 flow.runner_quantity = 0
+                flow.runner_stop_loss = None
                 flow.runner_trade = None
                 flow.runner_order_id = None
                 flow.runner_close_requested = False
@@ -1805,6 +1922,7 @@ class FlowEngine:
                     flow.runner_order_id = None
                     flow.runner_profit_target = None
                     flow.runner_quantity = 0
+                    flow.runner_stop_loss = None
                     order = flow.exit_trade.order
                     order.totalQuantity = flow.held_quantity
                     flow.exit_trade = self.ib.place(flow.option_contract, order)

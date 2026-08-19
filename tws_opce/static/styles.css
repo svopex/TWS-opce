@@ -211,6 +211,11 @@
   margin-left: 24px;
 }
 
+/* Popisek sekce, před kterou stojí jiná skupina tlačítek (např. Cíl za SL) */
+.popisek-oddeleny {
+  margin-left: 24px;
+}
+
 /* --- Náhled připraveného obchodu --- */
 .nahled {
   background-color: #f1f5f9;

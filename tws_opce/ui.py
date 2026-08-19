@@ -44,11 +44,11 @@ TABLE_COLUMNS = [
     {"name": "qty", "label": "Ks", "field": "qty", "align": "right"},
     {"name": "underlying", "label": "Podklad", "field": "underlying", "align": "right"},
     {"name": "entry", "label": "Vstup", "field": "entry", "align": "right"},
-    {"name": "fill", "label": "Nákup za", "field": "fill", "align": "right"},
     {"name": "pt", "label": "PT", "field": "pt", "align": "right"},
     {"name": "sl", "label": "SL", "field": "sl", "align": "right"},
     {"name": "exp_profit", "label": "Zisk na PT", "field": "exp_profit", "align": "right"},
     {"name": "exp_loss", "label": "Ztráta na SL", "field": "exp_loss", "align": "right"},
+    {"name": "fill", "label": "Nákup za", "field": "fill", "align": "right"},
     {"name": "quote", "label": "Bid / Ask", "field": "quote", "align": "right"},
     {"name": "spread", "label": "Spread", "field": "spread", "align": "right"},
     {"name": "spread_limit", "label": "Max. spread", "field": "spread_limit", "align": "right"},
@@ -81,8 +81,21 @@ BODY_SLOT = """
         :class="['radek-nasobky', props.row.vybrany ? 'radek-vybrany' : '']"
         @click="() => $parent.$emit('radekKlik', props.row)">
     <q-td :colspan="props.cols.length" class="bunka-nasobku">
+      <template v-if="props.row.sl_mozny">
+        <span class="popisek-nasobky">SL:</span>
+        <q-btn dense size="sm" class="q-ml-xs tlacitko-nasobek"
+               :outline="props.row.aktivni_sl !== 'puvodni'"
+               :color="props.row.aktivni_sl === 'puvodni' ? 'primary' : 'grey-7'"
+               label="Počáteční SL"
+               @click.stop="() => $parent.$emit('nastavSl', {id: props.row.id, rezim: 'puvodni'})" />
+        <q-btn dense size="sm" class="q-ml-xs tlacitko-nasobek"
+               :outline="props.row.aktivni_sl !== 'be'"
+               :color="props.row.aktivni_sl === 'be' ? 'primary' : 'grey-7'"
+               label="SL BE"
+               @click.stop="() => $parent.$emit('nastavSl', {id: props.row.id, rezim: 'be'})" />
+      </template>
       <template v-if="props.row.cil_mozny">
-        <span class="popisek-nasobky">Cíl:</span>
+        <span class="popisek-nasobky" :class="props.row.sl_mozny ? 'popisek-oddeleny' : ''">Cíl:</span>
         <q-btn v-for="n in props.row.nasobky" :key="n" dense size="sm"
                class="q-ml-xs tlacitko-nasobek"
                :outline="props.row.aktivni_nasobek !== n"
@@ -96,6 +109,19 @@ BODY_SLOT = """
              @click.stop="() => $parent.$emit('uzavritPozici', {id: props.row.id})" />
       <template v-if="props.row.runner_mozny">
         <span class="popisek-nasobky popisek-runner">Runner:</span>
+        <template v-if="props.row.runner_sl_mozny">
+          <q-btn dense size="sm" class="q-ml-xs tlacitko-nasobek"
+                 :outline="props.row.aktivni_runner_sl !== 'puvodni'"
+                 :color="props.row.aktivni_runner_sl === 'puvodni' ? 'orange-8' : 'grey-7'"
+                 label="Počáteční SL"
+                 @click.stop="() => $parent.$emit('nastavRunnerSl', {id: props.row.id, rezim: 'puvodni'})" />
+          <q-btn dense size="sm" class="q-ml-xs tlacitko-nasobek"
+                 :outline="props.row.aktivni_runner_sl !== 'be'"
+                 :color="props.row.aktivni_runner_sl === 'be' ? 'orange-8' : 'grey-7'"
+                 label="SL BE"
+                 @click.stop="() => $parent.$emit('nastavRunnerSl', {id: props.row.id, rezim: 'be'})" />
+          <span class="popisek-nasobky popisek-oddeleny">Cíl:</span>
+        </template>
         <q-btn v-for="n in props.row.nasobky" :key="'r' + n" dense size="sm"
                class="q-ml-xs tlacitko-nasobek"
                :outline="props.row.aktivni_runner_nasobek !== n"
@@ -298,6 +324,9 @@ class TradingUI:
             # Tlačítka runneru - vlastní cíl pro část pozice
             self.table.on("runnerNasobek", self._on_runner_multiple)
             self.table.on("runnerZrusit", self._on_runner_cancel)
+            # Přepínání SL - počáteční hodnota ze zadání, nebo break even
+            self.table.on("nastavSl", self._on_set_sl)
+            self.table.on("nastavRunnerSl", self._on_set_runner_sl)
             # Okamžité uzavření části pozice tržním příkazem
             self.table.on("uzavritPozici", self._on_close_main)
             self.table.on("uzavritRunner", self._on_close_runner)
@@ -500,6 +529,55 @@ class TradingUI:
         # Formulář ukazuje vybraný obchod, hodnotu je třeba srovnat
         if self.selected_id == flow.id:
             self.pt_input.set_value(novy_pt)
+        self._refresh()
+
+    async def _on_set_sl(self, event: Any) -> None:
+        """
+        Přepne SL hlavní části na počáteční hodnotu, nebo na break even.
+        Je-li úroveň už proražená, engine pozici rovnou prodá trhem.
+        """
+        data = event.args or {}
+        flow = self.engine.flows.get(data.get("id", ""))
+        rezim = data.get("rezim")
+        if flow is None or rezim not in ("puvodni", "be"):
+            return
+
+        try:
+            await self.engine.set_stop_loss(flow.id, rezim)
+        except Exception as exc:
+            ui.notify(str(exc), type="negative")
+            return
+
+        # Proražená úroveň znamená okamžitý prodej - hlásí se jako varování
+        if flow.main_close_requested:
+            ui.notify(f"{flow.id}: {flow.message}", type="warning")
+        else:
+            popis = "break even" if rezim == "be" else "počáteční"
+            ui.notify(f"{flow.id}: SL {fmt(flow.stop_loss)} ({popis}).", type="positive")
+        # Formulář ukazuje vybraný obchod, hodnotu je třeba srovnat
+        if self.selected_id == flow.id:
+            self.sl_input.set_value(round(flow.stop_loss, 2))
+        self._refresh()
+
+    async def _on_set_runner_sl(self, event: Any) -> None:
+        """Přepne SL runneru; hlavní části pozice se nedotýká."""
+        data = event.args or {}
+        flow = self.engine.flows.get(data.get("id", ""))
+        rezim = data.get("rezim")
+        if flow is None or rezim not in ("puvodni", "be"):
+            return
+
+        try:
+            await self.engine.set_runner_stop_loss(flow.id, rezim)
+        except Exception as exc:
+            ui.notify(str(exc), type="negative")
+            return
+
+        if flow.runner_close_requested:
+            ui.notify(f"{flow.id}: {flow.message}", type="warning")
+        else:
+            popis = "break even" if rezim == "be" else "počáteční"
+            ui.notify(f"{flow.id}: SL runneru {fmt(flow.runner_sl)} ({popis}).", type="positive")
         self._refresh()
 
     async def _on_runner_multiple(self, event: Any) -> None:
@@ -804,6 +882,20 @@ class TradingUI:
             and flow.runner_fill_price is None
             and not flow.runner_close_requested
         )
+        # Zvýraznění tlačítek SL: 'be' při stopu na vstupu, 'puvodni' při stopu
+        # ze zadání; jiná (ruční) hodnota nezvýrazní žádné
+        zaklad_sl = flow.original_stop_loss or flow.stop_loss
+        aktivni_sl = None
+        if abs(flow.stop_loss - flow.entry_price) < 0.005:
+            aktivni_sl = "be"
+        elif abs(flow.stop_loss - zaklad_sl) < 0.005:
+            aktivni_sl = "puvodni"
+        aktivni_runner_sl = None
+        if flow.runner_active:
+            if abs(flow.runner_sl - flow.entry_price) < 0.005:
+                aktivni_runner_sl = "be"
+            elif abs(flow.runner_sl - zaklad_sl) < 0.005:
+                aktivni_runner_sl = "puvodni"
         runner_velikost = (
             flow.runner_quantity if flow.runner_active else self.cfg.trading.runner_quantity
         )
@@ -829,6 +921,12 @@ class TradingUI:
             # Tlačítka okamžitého uzavření - jen u částí, které skutečně běží
             "lze_uzavrit": lze_uzavrit,
             "lze_uzavrit_runner": lze_uzavrit_runner,
+            # Přepínání SL má smysl až u nakoupené pozice, resp. běžícího runneru -
+            # proto sdílí podmínky s tlačítky okamžitého uzavření
+            "sl_mozny": lze_uzavrit,
+            "runner_sl_mozny": lze_uzavrit_runner,
+            "aktivni_sl": aktivni_sl,
+            "aktivni_runner_sl": aktivni_runner_sl,
             "runner_lze_zrusit": (
                 flow.runner_active
                 and flow.runner_fill_price is None
@@ -840,7 +938,8 @@ class TradingUI:
             "aktivni_nasobek": aktivni_nasobek,
             "symbol": flow.symbol,
             "contract": f"{flow.right_label} {flow.expiration} @ {flow.strike:g}",
-            "qty": flow.quantity,
+            # Zadané množství / kontrakty právě otevřené v trhu (např. 4/3)
+            "qty": f"{flow.quantity}/{flow.open_quantity}",
             "entry": fmt(flow.entry_price),
             "fill": fmt(flow.fill_price),
             # S runnerem se vedle hlavního cíle ukazuje i cíl runneru
@@ -850,7 +949,15 @@ class TradingUI:
                 if flow.runner_active and flow.runner_fill_price is None
                 else ""
             ),
-            "sl": fmt(flow.stop_loss),
+            # Liší-li se SL runneru od hlavního, ukazují se oba
+            "sl": fmt(flow.stop_loss)
+            + (
+                f" · R {fmt(flow.runner_sl)}"
+                if flow.runner_active
+                and flow.runner_fill_price is None
+                and abs(flow.runner_sl - flow.stop_loss) >= 0.005
+                else ""
+            ),
             "underlying": fmt(flow.underlying_price),
             "quote": f"{fmt(flow.option_bid)} / {fmt(flow.option_ask)}",
             "spread": fmt(flow.option_spread_pct, 2, " %"),

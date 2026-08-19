@@ -133,6 +133,9 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    zbytek a zajistí skutečně nakoupené množství — TWS totiž nepovolí mít
    na jednom opčním kontraktu současně nákupní i prodejní příkaz.
 5. **Monitoring** — tabulka ukazuje všechny obchody, jejich ceny a stav.
+   Sloupec *Ks* ukazuje zadané množství a za lomítkem počet kontraktů právě
+   otevřených v trhu: před nákupem `4/0`, po částečném vyplnění tří ze čtyř
+   `4/3`, po prodeji runneru `4/2` a po uzavření celé pozice opět `4/0`.
    Pod každým rozpracovaným obchodem je řada tlačítek **1× 1,5× 2× 2,5× 3×**;
    posunou cíl na násobek jeho původní vzdálenosti od
    vstupu — u vstupu 232 a cíle 235 (tedy 3 body) znamená 2× cíl 238. Počítá
@@ -143,12 +146,22 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    nebo se podle nového cíle vybere jiný a příkaz se přezadá. Ve formuláři se
    zadává vždy základní cíl 1:1.
 
+   U nakoupené pozice jsou před tlačítky cíle ještě tlačítka **Počáteční SL**
+   a **SL BE** — první vrací stop na hodnotu ze zadání, druhé jej posouvá
+   na vstupní cenu (break even). Aktivní volba je zvýrazněná stejně jako
+   násobek cíle. Před nákupem se tlačítka nenabízejí — SL tam řídí zadání
+   ve formuláři. Je-li cena podkladu ve chvíli přepnutí už na zvolené úrovni
+   SL, nebo za ní, nemá smysl čekat na podmínku: aplikace podmíněný příkaz
+   rovnou zruší a příslušnou část pozice prodá trhem.
+
    U obchodů, které drží více kontraktů, než kolik jich zabírá runner
    (`trading.runner_quantity`, výchozí 1), je vedle tlačítek cíle i sekce
    **Runner**. Runner je část pozice prodávaná samostatným příkazem
    s vlastním cílem — kliknutím na násobek se zapne (nebo se mu cíl změní),
    *Zrušit runner* ho vypne a prodej se sloučí zpět do jednoho příkazu.
-   SL sdílí runner se zbytkem pozice, takže na stopu se prodává všechno.
+   SL přebírá runner při zapnutí od zbytku pozice; vlastní dvojicí tlačítek
+   **Počáteční SL** a **SL BE** se pak jeho stop přepíná nezávisle, takže
+   hlavní část může stát na break even a runner dál na původním stopu.
    Když hlavní část dosáhne PT (nebo ji prodáte tlačítkem), obchod zůstává
    otevřený, dokud runner nedoběhne; cíl běžícího runneru jde posouvat
    i poté. Runner jde zapnout před nákupem i za běhu a přežije restart
