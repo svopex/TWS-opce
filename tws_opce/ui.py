@@ -281,7 +281,7 @@ class TradingUI:
 
             with ui.row().classes("radek"):
                 self.sl_input = (
-                    ui.number("SL (nepovinné)", format="%.2f")
+                    ui.number("SL na podkladu (nepovinné)", format="%.2f")
                     .classes("pole")
                     .props("outlined dense step=any")
                 )
