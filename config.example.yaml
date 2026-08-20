@@ -52,7 +52,7 @@ connection:
   # Mimo obchodní hodiny TWS u opcí neposílá BID/ASK při žádném z těchto
   # nastavení; delta bývá dostupná při hodnotách 2 až 4. Obchod pak čeká
   # ve stavu "Čeká na kotace opce", dokud kotace nedorazí.
-  market_data_type: 1
+  market_data_type: 2
 
   # Kolik sekund čekat na navázání spojení, než se pokus vyhodnotí jako neúspěšný.
   connect_timeout: 8.0
