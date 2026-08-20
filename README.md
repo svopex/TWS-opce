@@ -7,6 +7,8 @@ běžet jako runner s vlastním, vzdálenějším cílem.
 
 Běží na Windows, macOS i Linuxu — Python + `ib_async` + webové rozhraní NiceGUI.
 
+![Webové rozhraní aplikace – vlevo zadání obchodu a konfigurace, vpravo monitoring obchodů a průběh](obchodovani-opci-tws.png)
+
 ## Spuštění
 
 Nejjednodušší cesta — skript sám najde interpret, při prvním spuštění založí
