@@ -1381,6 +1381,41 @@ class TestSoubehuPriUzavirani(ZakladRezimu):
         self.assertEqual(flow.state, FlowState.CLOSED)
         self.assertAlmostEqual(flow.exit_fill_price, 3.0)
 
+    async def test_uzavrit_pozici_po_castecne_vyplnenem_prikazu(self):
+        """
+        Limit se stihl vyplnit na část kusů a TWS jej označila za vyplněný.
+        Trhem musí odejít zbytek hlavní části, ne celá.
+        """
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=3)
+        await self.nakup(flow, 3, 3.00)
+        await self.engine.close_main(flow.id)
+        # OCA skupina limit zmenšila na 1 ks a ten se vyplnil
+        self.ib.fill(flow.exit_trade, 1, 3.10)
+
+        await self.engine._tick()
+
+        self.assertEqual(flow.main_sold_quantity, 1)
+        trzni = self.trzni_prodeje()
+        self.assertEqual(len(trzni), 1)
+        self.assertEqual(int(trzni[0].order.totalQuantity), 2)
+
+    async def test_uzavrit_runner_po_castecne_vyplnenem_prikazu(self):
+        """Totéž u runneru - trhem jde jen jeho neprodaný zbytek."""
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=4)
+        await self.nakup(flow, 4, 3.00)
+        self.cfg.trading.runner_quantity = 2
+        await self.engine.set_runner(flow.id, 2.0)
+        await self.engine.close_runner(flow.id)
+        self.ib.fill(flow.runner_trade, 1, 3.30)
+
+        await self.engine._tick()
+
+        self.assertEqual(flow.runner_sold_quantity, 1)
+        self.assertAlmostEqual(flow.runner_realized_pnl, 30.0)
+        trzni = self.trzni_prodeje()
+        self.assertEqual(len(trzni), 1)
+        self.assertEqual(int(trzni[0].order.totalQuantity), 1)
+
     async def test_uzavrit_runner_po_vyplneni_jeho_sl_neproda_znovu(self):
         flow = await self.zaloz(False, False, 10.0, 10.0, quantity=3)
         await self.nakup(flow, 3, 3.00)

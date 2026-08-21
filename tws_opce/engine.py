@@ -3213,7 +3213,7 @@ class FlowEngine:
             flow.runner_active
             and flow.runner_close_requested
             and flow.runner_fill_price is None
-            and self._part_all_dead(flow, "runner")
+            and self._part_out_of_market(flow, "runner")
         ):
             # Kusy prodané těsně před zrušením se zaúčtují, trhem jde jen zbytek
             self._settle_part_fills(flow, "runner")
@@ -3245,8 +3245,10 @@ class FlowEngine:
             and flow.runner_fill_price is None
             and not flow.runner_close_requested
         ):
-            # Příkazy runneru zmizely mimo aplikaci - jeho kusy se vrací
-            # pod hlavní příkaz, aby pozice nezůstala částečně nezajištěná
+            # Příkazy runneru už nemohou prodat (zrušené mimo aplikaci, nebo
+            # vyplněné na menší množství) - jeho zbylé kusy se vrací pod hlavní
+            # příkaz, aby pozice nezůstala částečně nezajištěná
+            zbylo = flow.runner_quantity
             if flow.exit_fill_price is None and self._part_modifiable(flow, "exit"):
                 self._clear_part(flow, "runner")
                 flow.runner_profit_target = None
@@ -3256,14 +3258,14 @@ class FlowEngine:
                     flow, "exit", flow.held_quantity - flow.main_sold_quantity
                 )
                 self.log_event(
-                    f"{flow.id}: příkaz runneru byl zrušen v TWS - jeho kusy "
-                    f"převzal hlavní prodejní příkaz."
+                    f"{flow.id}: příkaz runneru už není v trhu - jeho zbylé kusy "
+                    f"({zbylo} ks) převzal hlavní prodejní příkaz."
                 )
             else:
                 flow.set_state(
                     FlowState.ERROR,
-                    "Příkaz runneru byl zrušen v TWS a nelze jej nahradit - "
-                    "část pozice je bez zajištění.",
+                    f"Příkaz runneru už není v trhu a nelze jej nahradit - "
+                    f"{zbylo} ks pozice je bez zajištění.",
                 )
                 self.log_event(f"{flow.id}: {flow.message}")
             return True
@@ -3275,7 +3277,7 @@ class FlowEngine:
         if (
             flow.main_close_requested
             and flow.exit_fill_price is None
-            and self._part_all_dead(flow, "exit")
+            and self._part_out_of_market(flow, "exit")
         ):
             # Kusy prodané těsně před zrušením se zaúčtují, trhem jde jen zbytek;
             # prodala-li se celá hlavní část, tržní prodej se nezadává vůbec
