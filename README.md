@@ -124,7 +124,10 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    `riskovaná částka / SL v USD`. Ztráta se přitom stropí zaplacenou prémií —
    stop nemůže klesnout pod jeden tik, takže i SL zadaný nad prémii odnese
    nejvýš `(nákupní cena − tik) × 100` USD. Stejným stropem prochází
-   i sloupec *Ztráta na SL*. Přepnutí zaškrtávátka pole vyprázdní,
+   i sloupec *Ztráta na SL*. Takový stop ale pozici prakticky nechrání —
+   spustí se až u téměř bezcenné opce — proto na SL převyšující prémii
+   upozorní náhled formuláře (z odhadované ceny opce při vstupu) a po nákupu
+   znovu průběh (ze skutečné nákupní ceny), včetně skutečného stropu ztráty. Přepnutí zaškrtávátka pole vyprázdní,
    protože hodnota by v novém režimu znamenala něco jiného.
 
    **Která úroveň je prvotní.** Oranžové zaškrtávátko hned za polem *Vstup

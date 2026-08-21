@@ -1226,6 +1226,43 @@ class TestStropuZtratyNaOpci(ZakladRezimu):
         # Bez zastropování by vyšlo 1000 / 200 = 5 kontraktů
         self.assertGreater(nahled.quantity, 5)
 
+    async def test_nahled_varuje_pred_sl_nad_premii(self):
+        # SL 200 USD u opce za ~0,60 (60 USD prémie) - stop by stál na jednom
+        # tiku, náhled na to musí upozornit
+        self.ib.price_underlying = 230.0
+        self.ib.price_bid, self.ib.price_ask = 0.50, 0.60
+
+        nahled = await self.engine.prepare("AAPL", 232.0, 400.0, 200.0, False, False)
+
+        varovani = [v for v in nahled.warnings if "převyšuje" in v]
+        self.assertEqual(len(varovani), 1)
+        self.assertIn("nechrání", varovani[0])
+
+    async def test_nahled_bez_varovani_kdyz_se_sl_do_premie_vejde(self):
+        self.ib.price_underlying = 230.0
+        self.ib.price_bid, self.ib.price_ask = 0.50, 0.60
+
+        nahled = await self.engine.prepare("AAPL", 232.0, 10.0, 10.0, False, False)
+
+        self.assertFalse([v for v in nahled.warnings if "převyšuje" in v])
+
+    async def test_prubeh_varuje_pri_stopu_na_jednom_tiku(self):
+        # Po nákupu za 3,00 se SL 400 USD nevejde do prémie 300 USD
+        flow = await self.zaloz(False, False, 500.0, 400.0)
+        await self.nakup(flow, 1, 3.00)
+
+        varovani = [z for _, z in self.engine.events if "POZOR" in z and "převyšuje" in z]
+        self.assertEqual(len(varovani), 1)
+        self.assertIn(flow.id, varovani[0])
+        # Uvádí skutečný strop ztráty: (3,00 − 0,05) × 100 = 295 USD
+        self.assertIn("295.00 USD", varovani[0])
+
+    async def test_prubeh_nevaruje_kdyz_se_sl_do_premie_vejde(self):
+        flow = await self.zaloz(False, False, 20.0, 50.0)
+        await self.nakup(flow, 1, 3.00)
+
+        self.assertFalse([z for _, z in self.engine.events if "převyšuje" in z])
+
 
 class TestOdberuPriPriprave(ZakladRezimu):
     """Příprava zadání si po sobě uklidí odběry, i když nedoběhne."""

@@ -457,9 +457,20 @@ class FlowEngine:
                     self.cfg.trading.max_quantity,
                 )
             else:
+                # Ztráta na kontrakt se stropuje zaplacenou prémií. SL nad ní
+                # znamená stop na nejnižší možné ceně, který pozici prakticky
+                # nechrání - na to se musí upozornit už v náhledu, sám příkaz
+                # by později vypadal v pořádku
+                ztrata = preview.stop_loss
+                cena = self._expected_fill_price(preview, entry_price)
+                if cena is not None:
+                    varovani = self._premium_cap_text(ztrata, cena, preview.min_tick, odhad=True)
+                    if varovani is not None:
+                        preview.warnings.append(varovani)
+                    ztrata = min(ztrata, calc.max_option_loss(cena, preview.min_tick))
                 preview.quantity = calc.suggest_quantity_for_loss(
                     self.risk_amount,
-                    self._capped_option_loss(preview, entry_price, preview.stop_loss),
+                    ztrata,
                     self.cfg.trading.min_quantity,
                     self.cfg.trading.max_quantity,
                 )
@@ -788,18 +799,18 @@ class FlowEngine:
         )
         return round(uroven, 2)
 
-    def _capped_option_loss(self, preview: Preview, entry_price: float, stop_loss: float) -> float:
+    def _expected_fill_price(self, preview: Preview, entry_price: float) -> float | None:
         """
-        Ztráta na kontrakt omezená zaplacenou prémií.
+        Odhad nákupní ceny opce ve chvíli, kdy podklad dosáhne vstupní úrovně.
 
-        SL zadaný na opci může být větší než celá prémie; stop pak stojí na
-        nejnižší možné ceně a obchod nemůže ztratit víc. Nákupní cena se
-        odhaduje modelem pro chvíli, kdy podklad dosáhne vstupní úrovně -
-        nakupuje se u ASKu, proto se k modelovému středu přičítá půl spreadu.
-        Bez použitelného modelu zůstává zadaná ztráta.
+        Slouží ke stropování ztráty zadané na opci zaplacenou prémií: SL může
+        být větší než celá prémie, stop pak stojí na nejnižší možné ceně
+        a obchod nemůže ztratit víc. Nakupuje se u ASKu, proto se
+        k modelovému středu přičítá půl spreadu. Bez použitelného modelu
+        vrací None.
         """
         if not preview.option_price or preview.current_price is None:
-            return stop_loss
+            return None
         cena = calc.project_option_price(
             preview.option_price,
             preview.current_price,
@@ -810,10 +821,45 @@ class FlowEngine:
             preview.right,
         )
         if cena is None:
-            return stop_loss
+            return None
         if preview.option_bid and preview.option_ask:
             cena += (preview.option_ask - preview.option_bid) / 2.0
-        return min(stop_loss, calc.max_option_loss(cena, preview.min_tick))
+        return cena
+
+    @staticmethod
+    def _premium_cap_text(
+        loss_usd: float, fill_price: float, min_tick: float, odhad: bool
+    ) -> str | None:
+        """
+        Varování pro případ, že ztráta zadaná na opci převyšuje zaplacenou
+        prémii. Stop pak stojí na jednom tiku a pozici prakticky nechrání -
+        spustí se až u téměř bezcenné opce. Vrací None, vejde-li se SL
+        do prémie. odhad=True znamená cenu odhadnutou v náhledu, jinak jde
+        o skutečnou nákupní cenu.
+        """
+        strop = calc.max_option_loss(fill_price, min_tick)
+        if loss_usd <= strop + 0.005:
+            return None
+        tick = min_tick if min_tick and min_tick > 0 else 0.01
+        premie = "odhadovanou prémii" if odhad else "zaplacenou prémii"
+        sloveso = "bude stát" if odhad else "stojí"
+        return (
+            f"SL {loss_usd:g} USD na kontrakt převyšuje {premie} "
+            f"{fill_price * calc.OPTION_MULTIPLIER:.0f} USD (cena opce {fill_price:.2f}) - "
+            f"stop {sloveso} na nejnižší možné ceně {tick:g} a pozici prakticky nechrání, "
+            f"ztratit lze až {strop:.2f} USD na kontrakt."
+        )
+
+    def _option_stop_price(self, flow: Flow, sl_level: float) -> float:
+        """
+        Stop cena prodejního příkazu na opci pro ztrátu v USD na kontrakt.
+        Převyšuje-li ztráta zaplacenou prémii, stop skončí na jednom tiku -
+        do průběhu se zapíše varování, protože samotný příkaz vypadá v pořádku.
+        """
+        varovani = self._premium_cap_text(sl_level, flow.fill_price, flow.min_tick, odhad=False)
+        if varovani is not None:
+            self.log_event(f"{flow.id}: POZOR - {varovani}")
+        return calc.option_loss_stop(flow.fill_price, sl_level, flow.min_tick)
 
     def _estimate_delta(self, preview: Preview) -> float | None:
         """
@@ -1546,7 +1592,7 @@ class FlowEngine:
             podminka = [self.ib.price_condition(conid, sl_more, sl_level)]
             prikazy.append(("sl", self.ib.build_exit_order(quantity, None, podminka, ref_sl, oca)))
         else:
-            stop = calc.option_loss_stop(flow.fill_price, sl_level, flow.min_tick)
+            stop = self._option_stop_price(flow, sl_level)
             prikazy.append(("sl", self.ib.build_stop_sell_order(quantity, stop, ref_sl, oca)))
         return prikazy
 
@@ -1636,7 +1682,7 @@ class FlowEngine:
                     [self.ib.price_condition(conid, sl_more, sl_level)]
                 )
             else:
-                order.auxPrice = calc.option_loss_stop(flow.fill_price, sl_level, flow.min_tick)
+                order.auxPrice = self._option_stop_price(flow, sl_level)
             self._set_leg(flow, part, "sl", self.ib.place(flow.option_contract, order))
         return True
 
