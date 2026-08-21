@@ -497,3 +497,16 @@ def intended_right(
     if sl_on_underlying and stop_loss is not None and stop_loss != entry_price:
         return "C" if stop_loss < entry_price else "P"
     return None
+
+
+def default_profit_target(entry_price: float, stop_loss: float, sl_to_pt_ratio: float) -> float:
+    """
+    Dopočítá PT na podkladu, pokud uživatel zadal jen SL.
+    Obrácený výpočet k default_stop_loss: vzdálenost PT od vstupu =
+    vzdálenost SL od vstupu / poměr, na opačnou stranu než SL.
+    """
+    distance = abs(stop_loss - entry_price) / sl_to_pt_ratio
+    # PT leží vždy na opačné straně vstupu než SL
+    if stop_loss < entry_price:
+        return entry_price + distance
+    return entry_price - distance

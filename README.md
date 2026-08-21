@@ -82,8 +82,8 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
 
 ## Jak aplikace pracuje
 
-1. **Zadání** — vyplní se ticker, cena podkladu pro nákup, PT a volitelně SL.
-   Aplikace načte cenu podkladu a sama určí zbytek:
+1. **Zadání** — vyplní se ticker, cena podkladu pro nákup a PT nebo SL
+   (druhá úroveň se dopočítá). Aplikace načte cenu podkladu a sama určí zbytek:
    - **PUT/CALL** podle toho, zda vstupní cena leží nad nebo pod aktuální cenou
      (vstup nad trhem = průraz nahoru = CALL, vstup pod trhem = PUT),
    - **strike** jako nejbližší dostupný k ceně PT,
@@ -115,6 +115,18 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    `riskovaná částka / SL v USD`. Přepnutí zaškrtávátka pole vyprázdní,
    protože hodnota by v novém režimu znamenala něco jiného.
 
+   **Která úroveň je prvotní.** Oranžové zaškrtávátko hned za polem *Vstup
+   na podkladu* (výchozí stav `trading.primary_level`, standardně `sl`)
+   určuje, která z úrovní se zadává a která se dopočítává podle poměru
+   `sl_to_pt_ratio`. Zadávaná úroveň stojí vždy vedle vstupu, dopočítávaná
+   v dalším řádku – přepnutím si pole PT a SL vymění místo. Zaškrtnuto =
+   povinný je SL a PT se dopočte (na podkladu zrcadlově
+   `vstup ± |SL − vstup| / poměr`, na opci `SL / poměr`, ve smíšeném režimu
+   přes cenu opce jako výše), odškrtnuto = povinný je PT a dopočte se SL.
+   Bez vstupní ceny dopočet neproběhne – úrovně se zrcadlí kolem vstupu.
+   Dopočítanou úroveň lze vždy přepsat ručně; **Přepočítat** ji spočítá
+   znovu. Strike se i při dopočteném PT vybírá k jeho úrovni.
+
    TWS model greeks u opcí neposílá spolehlivě — závisí to na účtu
    a předplatném dat. Chybí-li delta, aplikace ji dopočítá z tržní ceny opce
    (implikovaná volatilita a z ní delta podle Black-Scholes) a ve formuláři
@@ -123,9 +135,11 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    Formulář má k tomu dvě tlačítka:
    **Načíst** obnoví údaje z TWS (cena podkladu, typ opce, expirace, strike,
    kotace, delta) a vyplněná pole nechá být — doplní jen ta prázdná.
-   **Přepočítat** navíc přepíše SL i množství vypočtenými hodnotami; zadaný SL
-   se přitom zahodí a spočítá znovu podle poměru z konfigurace. Ručně zadané
-   hodnoty tedy zmizí pouze na výslovné kliknutí, ne samovolně při psaní.
+   **Přepočítat** navíc přepíše dopočítávanou úroveň (SL, nebo PT podle
+   zaškrtávátka prvotní úrovně) i množství vypočtenými hodnotami; zadaná
+   hodnota se přitom zahodí a spočítá znovu podle poměru z konfigurace.
+   Ručně zadané hodnoty tedy zmizí pouze na výslovné kliknutí, ne samovolně
+   při psaní.
    V náhledu je vždy vidět, co by výpočet doporučil. Dokud načítání dat
    z TWS běží, ukazuje formulář pulzující text „Načítám data z TWS…".
 

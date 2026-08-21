@@ -344,3 +344,11 @@ class TestUrovneNaOpci(unittest.TestCase):
         self.assertFalse(calc.levels_sane(232.0, 0.0, 10.0, pt_on_underlying=False, sl_on_underlying=False))
         # Úroveň na podkladu se kontroluje dál
         self.assertFalse(calc.levels_sane(232.0, 10.0, 9999.0, pt_on_underlying=False, sl_on_underlying=True))
+
+    def test_pt_ze_sl_je_inverzi_sl_z_pt(self):
+        # Dopočet PT ze SL vrací původní PT, ze kterého byl SL spočítán
+        for pomer in (0.5, 1.0, 2.0):
+            sl = calc.default_stop_loss(232.0, 235.0, pomer)
+            self.assertAlmostEqual(calc.default_profit_target(232.0, sl, pomer), 235.0)
+            sl_put = calc.default_stop_loss(228.0, 225.0, pomer)
+            self.assertAlmostEqual(calc.default_profit_target(228.0, sl_put, pomer), 225.0)

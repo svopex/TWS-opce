@@ -74,12 +74,13 @@ class FlowRequest:
 
     PT a SL se zadávají buď jako cena podkladu (výchozí), nebo jako zisk,
     resp. ztráta v USD na jeden opční kontrakt - o tom rozhodují přepínače
-    pt_on_underlying a sl_on_underlying.
+    pt_on_underlying a sl_on_underlying. Stačí zadat jednu z úrovní,
+    chybějící se dopočítá podle poměru SL:PT z konfigurace.
     """
 
     symbol: str
     entry_price: float
-    profit_target: float
+    profit_target: float | None = None
     stop_loss: float | None = None
     quantity: int | None = None
     max_spread_pct: float | None = None

@@ -173,7 +173,16 @@ def fmt(value: float | None, digits: int = 2, suffix: str = "") -> str:
 
 # Popisky polí PT a SL podle režimu zadání (na podkladu / na opci)
 PT_LABELS = {True: "PT na podkladu", False: "PT na opci [USD/ks]"}
-SL_LABELS = {True: "SL na podkladu (nepovinné)", False: "SL na opci [USD/ks]"}
+SL_LABELS = {True: "SL na podkladu", False: "SL na opci [USD/ks]"}
+
+
+def popisek_urovne(druh: str, na_podkladu: bool, dopocitana: bool) -> str:
+    """
+    Popisek pole PT ('pt') nebo SL ('sl') podle režimu. Která z úrovní se
+    dopočítává (a je tedy nepovinná), říká zaškrtávátko prvotní úrovně pod
+    poli - do úzkého pole se zaškrtávátkem by se delší popisek nevešel.
+    """
+    return (PT_LABELS if druh == "pt" else SL_LABELS)[na_podkladu]
 
 
 def uroven_text(flow: Flow, druh: str, hodnota: float | None = None) -> str:
@@ -298,58 +307,34 @@ class TradingUI:
                     "Vyplněná pole formuláře nemění."
                 )
 
-            with ui.row().classes("radek"):
+            # Řádek 1: vstup, přepínač prvotní úrovně a prvotní úroveň (PT, nebo
+            # SL); řádek 2: dopočítávaná úroveň a limit spreadu. Skupiny PT a SL
+            # se mezi řádky přesouvají podle přepínače - zadávaná úroveň stojí
+            # vždy hned vedle vstupu
+            self.radek_prvotni = ui.row().classes("radek")
+            with self.radek_prvotni:
                 self.entry_input = (
                     ui.number("Vstup na podkladu", format="%.2f")
-                    .classes("pole")
+                    .classes("pole pole-vstup")
                     .props("outlined dense step=any")
                 )
-                # Zaškrtávátko před polem přepíná, zda je PT cena podkladu
-                # (zaškrtnuto), nebo zisk v USD na jeden kontrakt realizovaný
-                # limitním příkazem přímo na cenu opce
-                with ui.row().classes("pole pole-prepinac"):
-                    self.pt_on_underlying = (
-                        ui.checkbox(value=self.cfg.trading.pt_on_underlying)
-                        .props("dense")
-                        .classes("prepinac-rezimu")
-                        .tooltip(
-                            "Zaškrtnuto: PT je cena podkladu (podmíněný příkaz). "
-                            "Odškrtnuto: PT je zisk na jedné opci v USD, prodá se "
-                            "limitním příkazem na cenu opce."
-                        )
+                # Která úroveň je prvotní: zaškrtnuto = zadává se SL a PT se
+                # dopočítá z poměru SL:PT, odškrtnuto = zadává se PT a dopočítá
+                # se SL. Oranžová barva jej odlišuje od přepínačů režimu u polí
+                self.sl_primary = (
+                    ui.checkbox(value=self.cfg.trading.primary_level == "sl")
+                    .props("dense color=orange-8")
+                    .classes("prepinac-prvotni")
+                    .tooltip(
+                        "Zaškrtnuto: zadává se SL (pole vedle vstupu) a PT se dopočítá "
+                        "podle poměru SL:PT z konfigurace. Odškrtnuto: zadává se PT "
+                        "a dopočítá se SL. Dopočítanou úroveň lze vždy přepsat ručně."
                     )
-                    self.pt_input = (
-                        ui.number(PT_LABELS[self.cfg.trading.pt_on_underlying], format="%.2f")
-                        .classes("pole-vnitrni")
-                        .props("outlined dense step=any")
-                    )
-                    self.pt_on_underlying.on_value_change(
-                        lambda e: self._on_mode_change("pt", bool(e.value))
-                    )
+                )
+                self.sl_primary.on_value_change(lambda e: self._on_primary_change())
 
-            with ui.row().classes("radek"):
-                # Totéž pro SL: odškrtnuto = ztráta v USD na kontrakt, realizuje
-                # se stop-market příkazem přímo na cenu opce
-                with ui.row().classes("pole pole-prepinac"):
-                    self.sl_on_underlying = (
-                        ui.checkbox(value=self.cfg.trading.sl_on_underlying)
-                        .props("dense")
-                        .classes("prepinac-rezimu")
-                        .tooltip(
-                            "Zaškrtnuto: SL je cena podkladu (podmíněný příkaz). "
-                            "Odškrtnuto: SL je ztráta na jedné opci v USD, prodá se "
-                            "stop-market příkazem na cenu opce. V obou režimech je SL "
-                            "nepovinný - dopočítá se z PT podle poměru v konfiguraci."
-                        )
-                    )
-                    self.sl_input = (
-                        ui.number(SL_LABELS[self.cfg.trading.sl_on_underlying], format="%.2f")
-                        .classes("pole-vnitrni")
-                        .props("outlined dense step=any")
-                    )
-                    self.sl_on_underlying.on_value_change(
-                        lambda e: self._on_mode_change("sl", bool(e.value))
-                    )
+            self.radek_dopoctene = ui.row().classes("radek")
+            with self.radek_dopoctene:
                 self.spread_input = (
                     ui.number(
                         "Max. spread [%]",
@@ -361,6 +346,63 @@ class TradingUI:
                     .props("outlined dense step=any")
                 )
 
+            # Skupina PT: zaškrtávátko před polem přepíná, zda je PT cena
+            # podkladu (zaškrtnuto), nebo zisk v USD na jeden kontrakt
+            # realizovaný limitním příkazem přímo na cenu opce
+            with self.radek_prvotni:
+                self.pt_group = ui.row().classes("pole pole-prepinac")
+                with self.pt_group:
+                    self.pt_on_underlying = (
+                        ui.checkbox(value=self.cfg.trading.pt_on_underlying)
+                        .props("dense")
+                        .classes("prepinac-rezimu")
+                        .tooltip(
+                            "Zaškrtnuto: PT je cena podkladu (podmíněný příkaz). "
+                            "Odškrtnuto: PT je zisk na jedné opci v USD, prodá se "
+                            "limitním příkazem na cenu opce."
+                        )
+                    )
+                    self.pt_input = (
+                        ui.number(
+                            popisek_urovne("pt", self.cfg.trading.pt_on_underlying, False),
+                            format="%.2f",
+                        )
+                        .classes("pole-vnitrni")
+                        .props("outlined dense step=any")
+                    )
+                    self.pt_on_underlying.on_value_change(
+                        lambda e: self._on_mode_change("pt", bool(e.value))
+                    )
+
+                # Skupina SL: odškrtnuto = ztráta v USD na kontrakt, realizuje
+                # se stop-market příkazem přímo na cenu opce
+                self.sl_group = ui.row().classes("pole pole-prepinac")
+                with self.sl_group:
+                    self.sl_on_underlying = (
+                        ui.checkbox(value=self.cfg.trading.sl_on_underlying)
+                        .props("dense")
+                        .classes("prepinac-rezimu")
+                        .tooltip(
+                            "Zaškrtnuto: SL je cena podkladu (podmíněný příkaz). "
+                            "Odškrtnuto: SL je ztráta na jedné opci v USD, prodá se "
+                            "stop-market příkazem na cenu opce."
+                        )
+                    )
+                    self.sl_input = (
+                        ui.number(
+                            popisek_urovne("sl", self.cfg.trading.sl_on_underlying, False),
+                            format="%.2f",
+                        )
+                        .classes("pole-vnitrni")
+                        .props("outlined dense step=any")
+                    )
+                    self.sl_on_underlying.on_value_change(
+                        lambda e: self._on_mode_change("sl", bool(e.value))
+                    )
+
+            # Skupiny se rozmístí podle výchozí prvotní úrovně
+            self._arrange_level_groups()
+
             with ui.row().classes("radek"):
                 self.qty_input = (
                     ui.number("Množství [ks]", value=None, format="%.0f", step=1, min=1)
@@ -370,7 +412,8 @@ class TradingUI:
                 ui.button("Přepočítat", on_click=lambda: self._load_preview("prepocitat")).props(
                     "outline"
                 ).classes("tlacitko-vedle").tooltip(
-                    "Přepíše SL a množství vypočtenými hodnotami. SL podle poměru k PT "
+                    "Přepíše dopočítávanou úroveň (SL, nebo PT podle zaškrtávátka) "
+                    "a množství vypočtenými hodnotami. Úroveň podle poměru SL:PT "
                     "z konfigurace, množství podle rizika a delty opce."
                 )
 
@@ -492,17 +535,50 @@ class TradingUI:
             self._modes_locked = False
         self._refresh_mode_labels()
 
+    def _form_primary(self) -> str:
+        """Prvotní úroveň ze zaškrtávátka: 'sl' (PT se dopočítá), nebo 'pt'."""
+        return "sl" if self.sl_primary.value else "pt"
+
+    def _computed_input(self) -> ui.number:
+        """Pole dopočítávané úrovně - PT při prvotním SL, jinak SL."""
+        return self.pt_input if self._form_primary() == "sl" else self.sl_input
+
+    def _set_primary(self, primary: str) -> None:
+        """Nastaví zaškrtávátko prvotní úrovně bez mazání polí (pod zámkem)."""
+        self._modes_locked = True
+        try:
+            self.sl_primary.set_value(primary == "sl")
+        finally:
+            self._modes_locked = False
+        self._refresh_mode_labels()
+
     def _refresh_mode_labels(self) -> None:
-        """Popisky polí PT a SL odpovídají zvolenému režimu."""
+        """Popisky polí PT a SL odpovídají zvolenému režimu i prvotní úrovni."""
         pt_on, sl_on = self._form_modes()
-        self.pt_input.props(f'label="{PT_LABELS[pt_on]}"')
-        self.sl_input.props(f'label="{SL_LABELS[sl_on]}"')
+        prvotni = self._form_primary()
+        self.pt_input.props(f'label="{popisek_urovne("pt", pt_on, prvotni == "sl")}"')
+        self.sl_input.props(f'label="{popisek_urovne("sl", sl_on, prvotni == "pt")}"')
+        self._arrange_level_groups()
+
+    def _arrange_level_groups(self) -> None:
+        """
+        Rozmístí skupiny PT a SL podle prvotní úrovně: zadávaná úroveň stojí
+        v prvním řádku hned za přepínačem vedle vstupu, dopočítávaná v druhém
+        řádku před limitem spreadu.
+        """
+        if self._form_primary() == "sl":
+            prvotni, dopoctena = self.sl_group, self.pt_group
+        else:
+            prvotni, dopoctena = self.pt_group, self.sl_group
+        # Přesun do stejného místa je neškodný - NiceGUI prvek jen přeřadí
+        prvotni.move(self.radek_prvotni, target_index=2)
+        dopoctena.move(self.radek_dopoctene, target_index=0)
 
     def _on_mode_change(self, druh: str, na_podkladu: bool) -> None:
         """
         Přepnutí režimu PT nebo SL obchodníkem.
         Hodnota v poli má v novém režimu jiný význam (cena podkladu vs. USD),
-        proto se pole vyprázdní; SL se navíc znovu dopočítá podle PT.
+        proto se pole vyprázdní; dopočítávaná úroveň se navíc spočítá znovu.
 
         Obsluha je synchronní záměrně: programové nastavení zaškrtávátek
         (_set_modes) ji volá pod zámkem, a asynchronní obsluha by se spustila
@@ -511,10 +587,23 @@ class TradingUI:
         self._refresh_mode_labels()
         if self._modes_locked:
             return
-        if druh == "pt":
-            self.pt_input.set_value(None)
-        self.sl_input.set_value(None)
+        prepnute = self.pt_input if druh == "pt" else self.sl_input
+        prepnute.set_value(None)
+        self._computed_input().set_value(None)
         background_tasks.create(self._load_preview("auto"), name="nahled po zmene rezimu")
+
+    def _on_primary_change(self) -> None:
+        """
+        Přepnutí prvotní úrovně obchodníkem: dosud dopočítávaná úroveň se
+        stává zadávanou a naopak. Nově dopočítávané pole se vyprázdní a
+        spočítá znovu z toho zadaného. Synchronní ze stejného důvodu jako
+        _on_mode_change.
+        """
+        self._refresh_mode_labels()
+        if self._modes_locked:
+            return
+        self._computed_input().set_value(None)
+        background_tasks.create(self._load_preview("auto"), name="nahled po zmene prvotni urovne")
 
     def _bezici_pro_formular(
         self, symbol: str, entry: float | None, pt: float | None, sl: float | None = None
@@ -557,9 +646,10 @@ class TradingUI:
         """
         for pole in (self.entry_input, self.pt_input, self.sl_input, self.qty_input):
             pole.set_value(None)
-        # Limit spreadu a režimy PT/SL se vrací na hodnoty z konfigurace
+        # Limit spreadu, režimy PT/SL i prvotní úroveň se vrací na konfiguraci
         self.spread_input.set_value(self.cfg.trading.max_spread_pct)
         self._set_modes(self.cfg.trading.pt_on_underlying, self.cfg.trading.sl_on_underlying)
+        self._set_primary(self.cfg.trading.primary_level)
 
         # Formulář už nedrží žádný načtený obchod
         self.form_flow_id = None
@@ -622,10 +712,14 @@ class TradingUI:
         self._set_loading(True)
 
         pt_on, sl_on = self._form_modes()
+        # Přepočet zahazuje dopočítávanou úroveň (podle prvotní), aby se spočítala znovu
+        if rezim == "prepocitat":
+            if self._form_primary() == "sl":
+                pt = None
+            else:
+                sl = None
         try:
-            preview = await self.engine.prepare(
-                symbol, entry, pt, None if rezim == "prepocitat" else sl, pt_on, sl_on
-            )
+            preview = await self.engine.prepare(symbol, entry, pt, sl, pt_on, sl_on)
         except Exception as exc:
             # Indikaci zhasíná až poslední rozběhnutý požadavek
             if pozadavek != self.preview_seq:
@@ -646,25 +740,36 @@ class TradingUI:
 
     def _apply_preview(self, preview: Preview, rezim: str) -> None:
         """Promítne připravený obchod do formuláře a informačního panelu."""
-        # Bez vybraného kontraktu nejsou SL ani množství k dispozici
+        # Bez vybraného kontraktu nejsou dopočtené úrovně ani množství k dispozici
         if preview.expiration:
+            # Dopočítává se úroveň, která není prvotní (PT při prvotním SL, jinak SL)
+            pole = self._computed_input()
+            hodnota = preview.profit_target if pole is self.pt_input else preview.stop_loss
             if rezim == "prepocitat":
                 # Výslovný přepočet přepíše obě pole vypočtenými hodnotami
-                self.sl_input.set_value(round(preview.stop_loss, 2))
+                pole.set_value(round(hodnota, 2))
                 self.qty_input.set_value(preview.quantity)
             else:
                 # Načtení pouze doplní dosud nevyplněná pole, ruční zadání ponechá
-                if self.sl_input.value in (None, "") and preview.stop_loss:
-                    self.sl_input.set_value(round(preview.stop_loss, 2))
+                if pole.value in (None, "") and hodnota:
+                    pole.set_value(round(hodnota, 2))
                 if not self.qty_input.value:
                     self.qty_input.set_value(preview.quantity)
 
         if preview.current_price is None:
             self.preview_label.set_text(f"{preview.symbol}: cena podkladu zatím není k dispozici.")
         elif not preview.expiration:
+            # Vyjmenují se jen pole, která skutečně chybí - bez vstupní ceny
+            # nelze dopočítat ani druhou úroveň, i když je ta prvotní vyplněná
+            _, entry, pt, sl = self._form_values()
+            chybi = []
+            if entry is None:
+                chybi.append("vstupní cenu")
+            if pt is None and sl is None:
+                chybi.append("SL" if self._form_primary() == "sl" else "PT")
             self.preview_label.set_text(
                 f"{preview.symbol}: aktuální cena {fmt(preview.current_price)} – "
-                f"doplňte vstupní cenu a PT."
+                f"doplňte {' a '.join(chybi) or 'zadání'}."
             )
         else:
             self.preview_label.set_text(
@@ -687,12 +792,19 @@ class TradingUI:
                     f"cíl na podkladu ≈ {fmt(preview.target_level)} "
                     f"({preview.target_level_source})"
                 )
+            pt_text = (
+                fmt(preview.profit_target)
+                if preview.pt_on_underlying
+                else f"+{fmt(preview.profit_target)} USD/ks"
+            )
             sl_text = (
                 fmt(preview.stop_loss)
                 if preview.sl_on_underlying
                 else f"-{fmt(preview.stop_loss)} USD/ks"
             )
-            detail_parts.append(f"doporučeno: SL {sl_text}, {preview.quantity} ks")
+            detail_parts.append(
+                f"doporučeno: PT {pt_text}, SL {sl_text}, {preview.quantity} ks"
+            )
             detail_parts.append(
                 f"risk {fmt(preview.risk_amount)} USD z účtu {fmt(preview.account_size)} USD"
             )
@@ -874,8 +986,13 @@ class TradingUI:
         if not symbol:
             ui.notify("Zadejte ticker.", type="negative")
             return
-        if entry is None or pt is None:
-            ui.notify("Zadejte vstupní cenu podkladu a PT.", type="negative")
+        # Povinná je vstupní cena a prvotní úroveň; druhá se dopočítá
+        prvotni = self._form_primary()
+        if entry is None or (pt is None if prvotni == "pt" else sl is None):
+            ui.notify(
+                f"Zadejte vstupní cenu podkladu a {'PT' if prvotni == 'pt' else 'SL'}.",
+                type="negative",
+            )
             return
 
         quantity = int(self.qty_input.value) if self.qty_input.value else None
@@ -1255,9 +1372,10 @@ class TradingUI:
         else:
             ucet = "čeká se na hodnotu z TWS"
 
-        # Výchozí režim PT a SL ze zaškrtávátek formuláře
+        # Výchozí režim PT a SL ze zaškrtávátek formuláře a prvotní úroveň
         rezim_pt = "podklad" if t.pt_on_underlying else "opce (USD/ks)"
         rezim_sl = "podklad" if t.sl_on_underlying else "opce (USD/ks)"
+        prvotni = "SL (PT se dopočítá)" if t.primary_level == "sl" else "PT (SL se dopočítá)"
         self.config_label.set_text(
             f"Účet {ucet} | risk {self.cfg.account.risk_pct:g} % "
             f"= {fmt(self.engine.risk_amount)} USD\n"
@@ -1265,7 +1383,7 @@ class TradingUI:
             f"prodej: {t.exit_order_type}\n"
             f"Max. spread {t.max_spread_pct:g} % | SL:PT {t.sl_to_pt_ratio:g} | "
             f"expirace {expiration_text}\n"
-            f"Výchozí PT: {rezim_pt} | výchozí SL: {rezim_sl}"
+            f"Výchozí PT: {rezim_pt} | výchozí SL: {rezim_sl} | prvotní: {prvotni}"
         )
 
 

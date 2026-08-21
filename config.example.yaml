@@ -121,6 +121,15 @@ trading:
   pt_on_underlying: true
   sl_on_underlying: true
 
+  # Která úroveň se ve formuláři zadává jako prvotní; druhá se dopočítá podle
+  # sl_to_pt_ratio a lze ji ručně přepsat. Určuje výchozí stav zaškrtávátka
+  # (oranžové, hned za polem Vstup na podkladu):
+  #   sl = zadává se SL, PT se dopočte (výchozí)
+  #   pt = zadává se PT, SL se dopočte
+  # Dopočet funguje ve všech režimech; při smíšeném (jedna úroveň na podkladu,
+  # druhá na opci) se převádí přes cenu opce stejně jako u dopočtu SL.
+  primary_level: sl
+
   # Maximální povolený spread opce v procentech, počítaný ze středu trhu:
   #   spread [%] = (ASK − BID) / ((ASK + BID) / 2) * 100
   # Je-li spread vyšší, nákupní příkaz se do trhu nezadá; pokud už zadán byl

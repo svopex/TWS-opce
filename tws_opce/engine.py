@@ -40,6 +40,19 @@ MARKET_SELL_MAX_ATTEMPTS = 5
 
 
 @dataclass
+class _ReferenceOption:
+    """
+    Referenční opce se strike u vstupní ceny - podklad pro převody mezi
+    ziskem/ztrátou v USD na opci a úrovní podkladu při přípravě zadání.
+    """
+
+    strike: float
+    contract: Any
+    price: float | None
+    delta: float | None
+
+
+@dataclass
 class Preview:
     """
     Výsledek přípravy zadání - podklady pro předvyplnění formuláře.
@@ -51,6 +64,8 @@ class Preview:
     right: str = "C"
     expiration: str = ""
     strike: float = 0.0
+    # Výsledné úrovně - zadaná, nebo dopočtená podle poměru SL:PT z konfigurace
+    profit_target: float = 0.0
     stop_loss: float = 0.0
     # Režim zadání PT a SL (cena podkladu, nebo USD na kontrakt)
     pt_on_underlying: bool = True
@@ -269,11 +284,13 @@ class FlowEngine:
     ) -> Preview:
         """
         Připraví zadání obchodu: načte cenu podkladu, určí typ opce, expiraci,
-        strike podle PT, dopočítá SL a doporučené množství kontraktů.
-        Nezadává žádný příkaz do trhu.
+        strike podle PT, dopočítá chybějící úroveň a doporučené množství
+        kontraktů. Nezadává žádný příkaz do trhu.
 
         PT a SL jsou buď ceny podkladu, nebo - při vypnutém přepínači
-        "na podkladu" - zisk, resp. ztráta v USD na jeden kontrakt.
+        "na podkladu" - zisk, resp. ztráta v USD na jeden kontrakt. Stačí
+        zadat jednu z úrovní: chybějící se dopočítá z poměru SL:PT
+        v konfiguraci (SL z PT, nebo PT ze SL).
         """
         if not self.ib.connected:
             raise RuntimeError("Není navázáno spojení s TWS.")
@@ -309,8 +326,9 @@ class FlowEngine:
                 "množství proto nelze doporučit."
             )
 
-        # Bez vstupní ceny a PT nelze určit kontrakt, vrací se jen cena podkladu
-        if entry_price is None or profit_target is None:
+        # Bez vstupní ceny a aspoň jedné úrovně nelze určit kontrakt,
+        # vrací se jen cena podkladu
+        if entry_price is None or (profit_target is None and stop_loss is None):
             self._replace_preview(preview)
             return preview
 
@@ -332,14 +350,27 @@ class FlowEngine:
             )
         preview.expiration = expiration
 
+        # Referenční opce (strike u vstupu) slouží modelu z ceny opce - je
+        # potřeba, kdykoliv se převádí mezi USD na opci a úrovní podkladu:
+        # pro strike při PT na opci a pro dopočet PT ze SL ve smíšeném režimu
+        referencni: _ReferenceOption | None = None
+        if not pt_on_underlying or (profit_target is None and not sl_on_underlying):
+            referencni = await self._reference_option(preview, chain, entry_price)
+
+        # Chybí-li PT, dopočítá se ze SL podle poměru z konfigurace
+        if profit_target is None:
+            profit_target = self._default_profit_target(
+                preview, entry_price, stop_loss, referencni
+            )
+        preview.profit_target = profit_target
+
         # Strike se vybírá k cílové úrovni podkladu: při PT na podkladu přímo
         # k PT, při PT ziskem na opci k úrovni odvozené z ceny opce
-        referencni_opce = None
         if pt_on_underlying:
             cil_strike = profit_target
         else:
-            cil_strike, referencni_opce = await self._target_level_for_option_pt(
-                preview, chain, entry_price, profit_target
+            cil_strike = self._target_level_for_option_pt(
+                preview, entry_price, profit_target, referencni
             )
 
         strike, option, details = await self._qualify_nearest_option(
@@ -361,8 +392,8 @@ class FlowEngine:
         # uvolňuje až po přihlášení té vybrané - bývá to tentýž kontrakt
         # a odběr by se jinak zbytečně rušil a zakládal znovu
         self.ib.subscribe(option)
-        if referencni_opce is not None:
-            self.ib.unsubscribe(referencni_opce)
+        if referencni is not None:
+            self.ib.unsubscribe(referencni.contract)
         await self.ib.wait_for_quotes(option, self.cfg.engine.market_data_timeout_sec)
         bid, ask, delta = self.ib.option_quotes(option)
         preview.option_bid = bid
@@ -466,17 +497,48 @@ class FlowEngine:
             return entry_price + smer * posun_ceny / abs(delta), "z delty"
         return entry_price, "vstupní cena"
 
-    async def _target_level_for_option_pt(
-        self, preview: Preview, chain: Any, entry_price: float, zisk_usd: float
-    ) -> tuple[float, Any]:
+    def _profit_from_underlying_level(
+        self,
+        cena_opce: float | None,
+        podklad: float | None,
+        entry_price: float,
+        uroven: float,
+        strike: float,
+        expiration: str,
+        right: str,
+        delta: float | None,
+    ) -> float:
         """
-        Cílová úroveň podkladu pro výběr strike, když je PT zadané ziskem na opci.
+        Výsledek opce v USD na kontrakt, když podklad dojde ze vstupu na úroveň
+        (kladný zisk, záporná ztráta). Protějšek _level_from_option_profit:
+        model z implikované volatility, bez kotací lineárně přes deltu.
+        """
+        sazba = self.cfg.trading.risk_free_rate_pct
+        if cena_opce and podklad:
+            cena_na_vstupu = calc.project_option_price(
+                cena_opce, podklad, entry_price, strike, expiration, sazba, right
+            )
+            cena_na_urovni = calc.project_option_price(
+                cena_opce, podklad, uroven, strike, expiration, sazba, right
+            )
+            if cena_na_vstupu is not None and cena_na_urovni is not None:
+                return (cena_na_urovni - cena_na_vstupu) * calc.OPTION_MULTIPLIER
 
-        Referenční je opce se strike nejblíže vstupní ceně; z její ceny se
-        odvodí, kam musí podklad dojít, aby opce vydělala požadovaný zisk.
-        Strike se pak vybírá k této úrovni - stejně jako u PT na podkladu
-        tedy leží na cílové úrovni. Vrací dvojici (úroveň, referenční kontrakt),
-        jehož odběr volající uvolní, až si přihlásí vybranou opci.
+        if delta is None and cena_opce and podklad:
+            delta = calc.estimate_delta(cena_opce, podklad, strike, expiration, sazba, right)
+        if delta is None:
+            # Náhradní delta nese znaménko podle typu opce
+            delta = self.cfg.trading.default_delta * (1.0 if right == "C" else -1.0)
+        return (uroven - entry_price) * delta * calc.OPTION_MULTIPLIER
+
+    async def _reference_option(
+        self, preview: Preview, chain: Any, entry_price: float
+    ) -> _ReferenceOption | None:
+        """
+        Referenční opce pro převody mezi USD na opci a úrovní podkladu:
+        kontrakt se strike nejblíže vstupní ceně včetně aktuální ceny a delty.
+        Odběr jejích dat uvolňuje volající, až si přihlásí vybranou opci.
+        Bez obchodovatelného strike vrací None.
         """
         try:
             ref_strike, ref_option, _ = await self._qualify_nearest_option(
@@ -488,28 +550,101 @@ class FlowEngine:
                 chain.tradingClass,
             )
         except ValueError:
-            preview.target_level = entry_price
-            preview.target_level_source = "vstupní cena"
-            return entry_price, None
+            return None
 
         self.ib.subscribe(ref_option)
         await self.ib.wait_for_quotes(ref_option, self.cfg.engine.market_data_timeout_sec)
         bid, ask, delta = self.ib.option_quotes(ref_option)
         cena = (bid + ask) / 2.0 if bid and ask else (ask or bid)
+        return _ReferenceOption(strike=ref_strike, contract=ref_option, price=cena, delta=delta)
+
+    def _target_level_for_option_pt(
+        self,
+        preview: Preview,
+        entry_price: float,
+        zisk_usd: float,
+        referencni: _ReferenceOption | None,
+    ) -> float:
+        """
+        Cílová úroveň podkladu pro výběr strike, když je PT zadané ziskem na opci.
+
+        Z ceny referenční opce (strike u vstupu) se odvodí, kam musí podklad
+        dojít, aby opce vydělala požadovaný zisk. Strike se pak vybírá k této
+        úrovni - stejně jako u PT na podkladu tedy leží na cílové úrovni.
+        Bez referenční opce zůstává vstupní cena.
+        """
+        if referencni is None:
+            preview.target_level = entry_price
+            preview.target_level_source = "vstupní cena"
+            return entry_price
 
         uroven, zdroj = self._level_from_option_profit(
-            cena,
+            referencni.price,
             preview.current_price,
             entry_price,
             zisk_usd,
-            ref_strike,
+            referencni.strike,
+            preview.expiration,
+            preview.right,
+            referencni.delta,
+        )
+        preview.target_level = uroven
+        preview.target_level_source = zdroj
+        return uroven
+
+    def _default_profit_target(
+        self,
+        preview: Preview,
+        entry_price: float,
+        stop_loss: float,
+        referencni: _ReferenceOption | None,
+    ) -> float:
+        """
+        PT podle poměru SL:PT z konfigurace, když obchodník zadal jen SL.
+
+        Ve stejném režimu je to prostý podíl: na podkladu vzdálenost SL od
+        vstupu dělená poměrem (na opačnou stranu), na opci ztráta v USD
+        dělená poměrem. Při smíšeném režimu se převádí přes cenu referenční
+        opce: buď se hledá úroveň podkladu, kde opce vydělá SL/poměr USD,
+        nebo se ztráta na SL podkladu přepočte do USD a vydělí poměrem.
+        """
+        pomer = self.cfg.trading.sl_to_pt_ratio
+        if preview.pt_on_underlying and preview.sl_on_underlying:
+            return calc.default_profit_target(entry_price, stop_loss, pomer)
+        if not preview.pt_on_underlying and not preview.sl_on_underlying:
+            return round(stop_loss / pomer, 2)
+
+        cena = referencni.price if referencni is not None else None
+        strike = referencni.strike if referencni is not None else entry_price
+        delta = referencni.delta if referencni is not None else None
+        zisk_usd = stop_loss / pomer
+
+        if preview.pt_on_underlying:
+            # SL na opci, PT na podkladu: kde opce vydělá SL / poměr
+            uroven, _ = self._level_from_option_profit(
+                cena,
+                preview.current_price,
+                entry_price,
+                zisk_usd,
+                strike,
+                preview.expiration,
+                preview.right,
+                delta,
+            )
+            return round(uroven, 2)
+
+        # SL na podkladu, PT na opci: ztráta na SL v USD dělená poměrem
+        ztrata = self._profit_from_underlying_level(
+            cena,
+            preview.current_price,
+            entry_price,
+            stop_loss,
+            strike,
             preview.expiration,
             preview.right,
             delta,
         )
-        preview.target_level = uroven
-        preview.target_level_source = zdroj
-        return uroven, ref_option
+        return round(max(abs(ztrata) / pomer, 0.01), 2)
 
     def _default_stop_loss(
         self, preview: Preview, entry_price: float, profit_target: float, delta: float
@@ -658,6 +793,10 @@ class FlowEngine:
         async with self._lock:
             symbol = request.symbol.upper().strip()
 
+            # Aspoň jedna úroveň musí být zadaná - druhá se dopočítá z poměru
+            if request.profit_target is None and request.stop_loss is None:
+                raise ValueError("Zadejte PT nebo SL - chybějící úroveň se dopočítá.")
+
             # Zamýšlený směr obchodu prozrazuje poloha PT (případně SL) na
             # podkladu: cíl nad vstupem = průraz nahoru (long/CALL), pod
             # vstupem průraz dolů (short/PUT). Jsou-li obě úrovně zadané
@@ -712,11 +851,17 @@ class FlowEngine:
                     f"{request.entry_price:g} - vstup je propásnutý a obchod nelze zadat."
                 )
 
+            # Zadané úrovně mají přednost, chybějící dodala příprava
+            profit_target = (
+                request.profit_target
+                if request.profit_target is not None
+                else preview.profit_target
+            )
             stop_loss = request.stop_loss if request.stop_loss is not None else preview.stop_loss
             self._validate(
                 preview.right,
                 request.entry_price,
-                request.profit_target,
+                profit_target,
                 stop_loss,
                 request.pt_on_underlying,
                 request.sl_on_underlying,
@@ -749,8 +894,8 @@ class FlowEngine:
                 id=f"{symbol}-{next(self._ids)}",
                 symbol=symbol,
                 entry_price=request.entry_price,
-                profit_target=request.profit_target,
-                original_profit_target=request.profit_target,
+                profit_target=profit_target,
+                original_profit_target=profit_target,
                 stop_loss=stop_loss,
                 original_stop_loss=stop_loss,
                 quantity=quantity,

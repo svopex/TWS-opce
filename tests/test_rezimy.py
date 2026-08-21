@@ -648,5 +648,89 @@ class TestObnovaDvojice(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(prevzaty.stop_loss, 10.0)
 
 
+
+class TestDopoctuPtZeSl(ZakladRezimu):
+    """Prvotní je SL: PT se dopočítá podle poměru SL:PT ve všech režimech."""
+
+    async def zaloz_se_sl(self, pt_on: bool, sl_on: bool, sl: float, **zmeny):
+        """Založí CALL obchod jen se SL, PT se má dopočítat."""
+        self.ib.price_underlying = 230.0
+        pozadavek = FlowRequest(
+            symbol="AAPL",
+            entry_price=232.0,
+            profit_target=None,
+            stop_loss=sl,
+            pt_on_underlying=pt_on,
+            sl_on_underlying=sl_on,
+        )
+        for klic, hodnota in zmeny.items():
+            setattr(pozadavek, klic, hodnota)
+        return await self.engine.start_flow(pozadavek)
+
+    async def test_oba_na_podkladu_pt_zrcadlem(self):
+        # SL 229 = 3 body pod vstupem, poměr 1:1 -> PT 235, strike u PT
+        flow = await self.zaloz_se_sl(True, True, 229.0)
+        self.assertAlmostEqual(flow.profit_target, 235.0)
+        self.assertAlmostEqual(flow.original_profit_target, 235.0)
+        self.assertEqual(flow.strike, 235.0)
+        self.assertEqual(flow.right, "C")
+
+    async def test_pomer_se_uplatni(self):
+        # Poměr 0,5 (SL na poloviční vzdálenosti) -> PT dvakrát dál než SL
+        self.cfg.trading.sl_to_pt_ratio = 0.5
+        flow = await self.zaloz_se_sl(True, True, 230.5)
+        self.assertAlmostEqual(flow.profit_target, 235.0)
+
+    async def test_put_ze_sl_nad_vstupem(self):
+        self.ib.price_underlying = 230.0
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=228.0, stop_loss=231.0)
+        )
+        self.assertEqual(flow.right, "P")
+        self.assertAlmostEqual(flow.profit_target, 225.0)
+
+    async def test_oba_na_opci_pt_podilem(self):
+        self.cfg.trading.sl_to_pt_ratio = 0.5
+        flow = await self.zaloz_se_sl(False, False, 10.0)
+        self.assertAlmostEqual(flow.profit_target, 20.0)
+        self.assertAlmostEqual(flow.stop_loss, 10.0)
+
+    async def test_sl_na_opci_pt_na_podkladu(self):
+        # Kde opce vydělá 10 USD - těsně nad vstupem, strike k této úrovni
+        flow = await self.zaloz_se_sl(True, False, 10.0)
+        self.assertTrue(flow.pt_on_underlying)
+        self.assertGreater(flow.profit_target, 232.0)
+        self.assertLess(flow.profit_target, 233.0)
+        self.assertEqual(flow.strike, 232.5)
+
+    async def test_sl_na_podkladu_pt_na_opci(self):
+        # Ztráta opce při poklesu na 229 přepočtená do USD - kladná částka
+        flow = await self.zaloz_se_sl(False, True, 229.0)
+        self.assertFalse(flow.pt_on_underlying)
+        self.assertGreater(flow.profit_target, 0)
+        self.assertLess(flow.profit_target, 300.0)
+
+    async def test_zadane_pt_ma_prednost_pred_dopoctem(self):
+        flow = await self.zaloz_se_sl(True, True, 229.0, profit_target=236.0)
+        self.assertAlmostEqual(flow.profit_target, 236.0)
+
+    async def test_bez_pt_i_sl_se_odmitne(self):
+        with self.assertRaises(ValueError):
+            await self.engine.start_flow(FlowRequest(symbol="AAPL", entry_price=232.0))
+
+    async def test_nahled_nese_dopoctene_pt(self):
+        self.ib.price_underlying = 230.0
+        nahled = await self.engine.prepare("AAPL", 232.0, None, 229.0)
+        self.assertAlmostEqual(nahled.profit_target, 235.0)
+        self.assertAlmostEqual(nahled.stop_loss, 229.0)
+        self.assertEqual(nahled.strike, 235.0)
+
+    async def test_nahled_bez_urovni_vraci_jen_cenu(self):
+        self.ib.price_underlying = 230.0
+        nahled = await self.engine.prepare("AAPL", 232.0, None, None)
+        self.assertEqual(nahled.expiration, "")
+        self.assertAlmostEqual(nahled.current_price, 230.0)
+
+
 if __name__ == "__main__":
     unittest.main()

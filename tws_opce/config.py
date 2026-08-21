@@ -19,6 +19,8 @@ ENTRY_ORDER_TYPES = ("LMT_ASK", "MKT", "LMT_MID")
 PT_STRIKE_MODES = ("keep", "recalculate")
 # Povolené typy výstupního příkazu (jeden příkaz s podmínkami pro PT i SL)
 EXIT_ORDER_TYPES = ("MKT", "LMT")
+# Která úroveň se zadává jako prvotní (druhá se dopočítá z poměru SL:PT)
+PRIMARY_LEVELS = ("pt", "sl")
 # Povolené režimy výběru expirace
 EXPIRATION_MODES = ("nearest", "fixed")
 
@@ -61,6 +63,10 @@ class TradingConfig:
     #           a realizuje se příkazem přímo na cenu opce (LMT, resp. STP)
     pt_on_underlying: bool = True
     sl_on_underlying: bool = True
+    # Která úroveň se ve formuláři zadává jako prvotní; druhá se dopočítá
+    # podle sl_to_pt_ratio: "sl" = zadává se SL a PT se dopočte (výchozí),
+    # "pt" = zadává se PT a SL se dopočte. Určuje výchozí stav zaškrtávátka.
+    primary_level: str = "sl"
     max_spread_pct: float = 7.0
     entry_order_type: str = "LMT_ASK"
     # Tolerance nad ASK v procentech pro typ příkazu LMT_ASK
@@ -313,6 +319,11 @@ def validate_config(cfg: AppConfig) -> None:
     for nazev in ("pt_on_underlying", "sl_on_underlying"):
         if not isinstance(getattr(cfg.trading, nazev), bool):
             problems.append(f"trading.{nazev} musí být true nebo false")
+    if cfg.trading.primary_level not in PRIMARY_LEVELS:
+        problems.append(
+            f"trading.primary_level musí být jedna z {PRIMARY_LEVELS}, "
+            f"nalezeno '{cfg.trading.primary_level}'"
+        )
     if cfg.trading.max_spread_pct <= 0:
         problems.append("trading.max_spread_pct musí být kladné číslo")
     if cfg.trading.risk_free_rate_pct < 0:
