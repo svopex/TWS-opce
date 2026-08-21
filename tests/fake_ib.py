@@ -8,7 +8,17 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from ib_async import Contract, ContractDetails, Option, OptionChain, OrderStatus, Stock, Trade
+from ib_async import (
+    Contract,
+    ContractDetails,
+    Option,
+    OptionChain,
+    OptionComputation,
+    OrderStatus,
+    Stock,
+    Ticker,
+    Trade,
+)
 
 from tws_opce.config import AppConfig
 from tws_opce.ib_service import IBService, PositionInfo
@@ -16,6 +26,9 @@ from tws_opce.ib_service import IBService, PositionInfo
 # Identifikátory kontraktů používané v testech
 UNDERLYING_CONID = 265598
 OPTION_CONID = 700001
+
+# Nevyplněná hodnota tržních dat - stejně jako ji posílá ib_async
+NAN = float("nan")
 
 
 class FakeIBService(IBService):
@@ -43,6 +56,9 @@ class FakeIBService(IBService):
         self.held_positions: dict[int, float] = {}
         # Strike ceny, které řetězec nabízí, ale kontrakt pro ně v TWS neexistuje
         self.unavailable_strikes: set[float] = set()
+        # Počet odběratelů tržních dat podle conId - testy tak odhalí odběr,
+        # který se po chybě nebo zrušení přípravy neuvolnil
+        self.subscribed: dict[int, int] = {}
         self._next_order_id = 1
 
     # --- spojení ---
@@ -116,12 +132,20 @@ class FakeIBService(IBService):
     # --- tržní data ---
 
     def subscribe(self, contract: Contract):
-        """Odběr se v testech nezakládá."""
+        """Odběr se v testech jen počítá, žádná data se z TWS nežádají."""
+        self.subscribed[contract.conId] = self.subscribed.get(contract.conId, 0) + 1
         return None
 
     def unsubscribe(self, contract: Contract | None) -> None:
-        """Odběr se v testech neruší."""
-        return None
+        """Sníží počet odběratelů kontraktu; při nule záznam zmizí."""
+        if contract is None:
+            return
+        conid = contract.conId
+        if conid not in self.subscribed:
+            return
+        self.subscribed[conid] -= 1
+        if self.subscribed[conid] <= 0:
+            del self.subscribed[conid]
 
     async def wait_for_quotes(
         self, contract: Contract, timeout: float, quotes_grace: float = 0.0
@@ -129,31 +153,31 @@ class FakeIBService(IBService):
         """Ceny jsou k dispozici okamžitě."""
         return None
 
-    def underlying_price(self, contract: Contract | None) -> float | None:
-        """Aktuální cena podkladu nastavená testem."""
-        return self.price_underlying
-
-    def option_quotes(self, contract: Contract | None):
-        """Kotace a delta opce nastavené testem."""
-        return self.price_bid, self.price_ask, self.greek_delta
-
-    def option_price(self, contract: Contract | None):
+    def ticker(self, contract: Contract | None) -> Ticker | None:
         """
-        Cena opce pro model ve stejném pořadí zdrojů jako ostrá služba:
-        střed kotace, jedna strana, poslední obchod, závěrečná cena.
+        Sestaví tržní data kontraktu z hodnot nastavených testem.
+
+        Překrývá se záměrně jen tato metoda: výběr ceny podkladu, kotací
+        i ceny opce pro model tak prochází ostrou implementací a testy
+        odhalí, kdyby se změnilo pořadí zdrojů.
         """
-        bid, ask = self.price_bid, self.price_ask
-        if bid is not None and ask is not None:
-            return (bid + ask) / 2.0, "BID/ASK"
-        if ask is not None:
-            return ask, "ASK"
-        if bid is not None:
-            return bid, "BID"
-        if self.price_last is not None:
-            return self.price_last, "last"
-        if self.price_close is not None:
-            return self.price_close, "close"
-        return None, ""
+        if contract is None:
+            return None
+
+        # Ceny se nastavují až po vytvoření Tickeru - ib_async je v __post_init__
+        # přepisuje na nevyplněné hodnoty, konstruktorem je předat nelze
+        ticker = Ticker(contract=contract)
+        if contract.conId == UNDERLYING_CONID:
+            ticker.last = NAN if self.price_underlying is None else self.price_underlying
+            return ticker
+
+        ticker.bid = NAN if self.price_bid is None else self.price_bid
+        ticker.ask = NAN if self.price_ask is None else self.price_ask
+        ticker.last = NAN if self.price_last is None else self.price_last
+        ticker.close = NAN if self.price_close is None else self.price_close
+        if self.greek_delta is not None:
+            ticker.modelGreeks = OptionComputation(tickAttrib=0, delta=self.greek_delta)
+        return ticker
 
     # --- příkazy ---
 

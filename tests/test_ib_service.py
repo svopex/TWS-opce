@@ -244,6 +244,29 @@ class TestCekaniNaKotace(unittest.IsolatedAsyncioTestCase):
         await self.sluzba.wait_for_quotes(kontrakt, timeout=0.5)
         self.assertGreaterEqual(loop.time() - start, 0.4)
 
+    async def test_odklad_se_ceka_jen_poprve(self):
+        # Příprava zadání běží po každé změně formuláře; u opce, ze které
+        # TWS posílá jen závěrečnou cenu, se odklad čeká jen napoprvé
+        kontrakt = vloz_ticker(self.sluzba, close=2.00)
+        loop = asyncio.get_running_loop()
+        await self.sluzba.wait_for_quotes(kontrakt, timeout=5.0, quotes_grace=0.5)
+
+        start = loop.time()
+        await self.sluzba.wait_for_quotes(kontrakt, timeout=5.0, quotes_grace=0.5)
+        self.assertLess(loop.time() - start, 0.3)
+
+    async def test_nove_spojeni_odklad_obnovi(self):
+        kontrakt = vloz_ticker(self.sluzba, close=2.00)
+        await self.sluzba.wait_for_quotes(kontrakt, timeout=5.0, quotes_grace=0.3)
+        # Ztráta spojení zahodí tržní data i paměť odkladů
+        self.sluzba._on_disconnected()
+        vloz_ticker(self.sluzba, close=2.00)
+
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        await self.sluzba.wait_for_quotes(kontrakt, timeout=5.0, quotes_grace=0.3)
+        self.assertGreaterEqual(loop.time() - start, 0.2)
+
     async def test_jednostranna_kotace_ceka_jen_odklad(self):
         # Jen BID bez last/close - nečeká se celý limit, jen odklad na ASK
         kontrakt = vloz_ticker(self.sluzba, bid=3.00)

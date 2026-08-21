@@ -97,6 +97,10 @@ class IBService:
         self._tickers: dict[int, Ticker] = {}
         # Počet flow, která daný kontrakt používají - odběr se ruší až při posledním
         self._subscribers: dict[int, int] = {}
+        # Kontrakty, u kterých už odklad na úplné kotace proběhl. Příprava
+        # zadání se volá po každé změně formuláře a bez této paměti by se
+        # u opce bez kotací čekalo znovu při každém stisku klávesy.
+        self._quotes_grace_done: set[int] = set()
         self._connect_lock = asyncio.Lock()
         self._chain_cache: dict[str, Any] = {}
         self.on_status_change: Callable[[], None] | None = None
@@ -157,6 +161,8 @@ class IBService:
         log.warning("Spojení s TWS bylo přerušeno.")
         self._tickers.clear()
         self._subscribers.clear()
+        # Po novém spojení začínají tržní data od nuly - odklad se čeká znovu
+        self._quotes_grace_done.clear()
         self._notify_status()
 
     def _on_error(self, reqId: int, errorCode: int, errorString: str, contract: Any) -> None:
@@ -390,8 +396,14 @@ class IBService:
         typicky závěrečná cena), čeká se ještě quotes_grace sekund, aby úplné
         kotace dostaly šanci - bez toho by se model počítal ze závěrečné ceny
         jen proto, že se četlo o zlomek sekundy dřív.
-        Po vypršení časového limitu se pokračuje i bez dat.
+        Po vypršení časového limitu se pokračuje i bez dat. Odklad se u téhož
+        kontraktu čeká jen jednou - TWS úplné kotace buď posílá, nebo neposílá,
+        a opakovaná příprava zadání by jinak čekala pokaždé znovu.
         """
+        conid = getattr(contract, "conId", 0)
+        if conid in self._quotes_grace_done:
+            quotes_grace = 0.0
+
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         prvni_cena: float | None = None
@@ -408,6 +420,8 @@ class IBService:
                     if prvni_cena is None:
                         prvni_cena = loop.time()
                     if loop.time() - prvni_cena >= quotes_grace:
+                        if conid:
+                            self._quotes_grace_done.add(conid)
                         return
             await asyncio.sleep(0.2)
 

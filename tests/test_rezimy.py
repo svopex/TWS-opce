@@ -6,6 +6,7 @@ kdy vznikají dva prodejní příkazy a po vyplnění jednoho se druhý ruší.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import tempfile
 import unittest
@@ -1249,6 +1250,47 @@ class TestStropuZtratyNaOpci(ZakladRezimu):
 
         # Bez zastropování by vyšlo 1000 / 200 = 5 kontraktů
         self.assertGreater(nahled.quantity, 5)
+
+
+class TestOdberuPriPriprave(ZakladRezimu):
+    """Příprava zadání si po sobě uklidí odběry, i když nedoběhne."""
+
+    async def test_uspesna_priprava_drzi_oba_kontrakty(self):
+        self.ib.price_underlying = 230.0
+        await self.engine.prepare("AAPL", 232.0, 10.0, None, False, False)
+        # Podklad a vybraná opce; referenční opce je tu tentýž kontrakt
+        self.assertEqual(set(self.ib.subscribed), {UNDERLYING_CONID, OPTION_CONID})
+        self.assertEqual(self.ib.subscribed[OPTION_CONID], 1)
+
+    async def test_chyba_pri_vyberu_expirace_uvolni_odbery(self):
+        self.cfg.expiration.mode = "fixed"
+        self.cfg.expiration.fixed_date = "20200101"
+        self.ib.price_underlying = 230.0
+
+        with self.assertRaises(ValueError):
+            await self.engine.prepare("AAPL", 232.0, 10.0, None, False, False)
+
+        self.assertEqual(self.ib.subscribed, {})
+
+    async def test_zruseni_pripravy_uvolni_odbery(self):
+        self.ib.price_underlying = 230.0
+
+        async def cekej(contract, timeout, quotes_grace=0.0):
+            """Kotace opce nedorazí - příprava na nich uvázne."""
+            if contract.conId == OPTION_CONID:
+                await asyncio.sleep(5)
+
+        self.ib.wait_for_quotes = cekej
+        uloha = asyncio.create_task(
+            self.engine.prepare("AAPL", 232.0, 10.0, None, False, False)
+        )
+        # Nechá se doběhnout až k čekání na kotace opce a pak se zruší
+        await asyncio.sleep(0.05)
+        uloha.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await uloha
+
+        self.assertEqual(self.ib.subscribed, {})
 
 
 class TestNeznameNakupniCeny(ZakladRezimu):

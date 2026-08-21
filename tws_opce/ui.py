@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -209,6 +210,8 @@ class TradingUI:
         self.last_log_stamp: datetime | None = None
         # Pořadové číslo přípravy zadání - rozlišuje souběžně běžící požadavky
         self.preview_seq: int = 0
+        # Právě běžící příprava zadání - novější zadání tu předchozí ruší
+        self._preview_task: asyncio.Task | None = None
         # Ticker, ke kterému patří hodnoty ve formuláři
         self.last_symbol: str | None = None
         # Naposledy zobrazené pozice bez dozoru; None znamená, že pruh ještě nebyl
@@ -721,8 +724,21 @@ class TradingUI:
                     pt = None
             elif pt is not None:
                 sl = None
+        # Rozběhnutá dřívější příprava už není potřeba - její výsledek by se
+        # stejně zahodil a do té doby by zbytečně držela odběry a odpovědi z TWS
+        if self._preview_task is not None and not self._preview_task.done():
+            self._preview_task.cancel()
+        self._preview_task = asyncio.create_task(
+            self.engine.prepare(symbol, entry, pt, sl, pt_on, sl_on)
+        )
         try:
-            preview = await self.engine.prepare(symbol, entry, pt, sl, pt_on, sl_on)
+            preview = await self._preview_task
+        except asyncio.CancelledError:
+            # Nahradila ji novější příprava, ta indikaci i výsledek dořeší.
+            # Zrušení celé obsluhy zvenčí se naopak musí propagovat dál
+            if pozadavek != self.preview_seq:
+                return
+            raise
         except Exception as exc:
             # Indikaci zhasíná až poslední rozběhnutý požadavek
             if pozadavek != self.preview_seq:

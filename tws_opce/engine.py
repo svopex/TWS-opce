@@ -48,6 +48,9 @@ class _ReferenceOption:
 
     strike: float
     contract: Any
+    # Podrobnosti kontraktu z TWS (minimální tik) - je-li referenční opce
+    # zároveň tou vybranou, ušetří se opakovaný dotaz do TWS
+    details: Any
     price: float | None
     # Odkud cena pochází (BID/ASK, ASK, BID, last, close) - ukazuje se v náhledu
     price_source: str
@@ -312,169 +315,181 @@ class FlowEngine:
             sl_on_underlying=sl_on_underlying,
         )
 
-        # Podklad a jeho aktuální cena
-        underlying = await self.ib.qualify_stock(symbol)
-        preview.underlying = underlying
-        self.ib.subscribe(underlying)
-        await self.ib.wait_for_quotes(underlying, self.cfg.engine.market_data_timeout_sec)
-        preview.current_price = self.ib.underlying_price(underlying)
+        # Odběry tržních dat zakládá příprava sama; nedoběhne-li (chyba,
+        # nebo zrušení kvůli novějšímu zadání), musí je zase uvolnit -
+        # jinak by kontrakty zůstaly odebírané až do restartu
+        referencni: _ReferenceOption | None = None
+        try:
+            # Podklad a jeho aktuální cena
+            underlying = await self.ib.qualify_stock(symbol)
+            preview.underlying = underlying
+            self.ib.subscribe(underlying)
+            await self.ib.wait_for_quotes(underlying, self.cfg.engine.market_data_timeout_sec)
+            preview.current_price = self.ib.underlying_price(underlying)
 
-        if preview.current_price is None:
-            preview.warnings.append(
-                "Z TWS zatím nedorazila cena podkladu - zkontrolujte odběr tržních dat."
+            if preview.current_price is None:
+                preview.warnings.append(
+                    "Z TWS zatím nedorazila cena podkladu - zkontrolujte odběr tržních dat."
+                )
+
+            # Bez známé velikosti účtu nelze spočítat riskovanou částku ani množství
+            if self.account_size <= 0:
+                preview.warnings.append(
+                    "Velikost účtu se přebírá z TWS (account.size = 0), ale zatím nedorazila - "
+                    "množství proto nelze doporučit."
+                )
+
+            # Bez vstupní ceny a aspoň jedné úrovně nelze určit kontrakt,
+            # vrací se jen cena podkladu
+            if entry_price is None or (profit_target is None and stop_loss is None):
+                self._replace_preview(preview)
+                return preview
+
+            reference = preview.current_price if preview.current_price is not None else entry_price
+            preview.right = calc.determine_right(reference, entry_price)
+
+            # Výběr expirace
+            chain = await self.ib.option_chain(underlying)
+            expiration = calc.select_expiration(
+                list(chain.expirations),
+                self.cfg.expiration.mode,
+                self.cfg.expiration.min_dte,
+                self.cfg.expiration.fixed_date,
+            )
+            if expiration is None:
+                raise ValueError(
+                    f"Pro ticker {symbol} nebyla nalezena vhodná expirace "
+                    f"(režim '{self.cfg.expiration.mode}')."
+                )
+            preview.expiration = expiration
+
+            # Referenční opce (strike u vstupu) slouží modelu z ceny opce - je
+            # potřeba, kdykoliv se převádí mezi USD na opci a úrovní podkladu:
+            # pro strike při PT na opci a pro dopočet PT ze SL ve smíšeném režimu
+            if not pt_on_underlying or (profit_target is None and not sl_on_underlying):
+                referencni = await self._reference_option(preview, chain, entry_price)
+
+            # Chybí-li PT, dopočítá se ze SL podle poměru z konfigurace
+            if profit_target is None:
+                profit_target = self._default_profit_target(
+                    preview, entry_price, stop_loss, referencni
+                )
+            preview.profit_target = profit_target
+
+            # Strike se vybírá k cílové úrovni podkladu: při PT na podkladu přímo
+            # k PT, při PT ziskem na opci k úrovni odvozené z ceny opce
+            if pt_on_underlying:
+                cil_strike = profit_target
+            else:
+                cil_strike = self._target_level_for_option_pt(
+                    preview, entry_price, profit_target, referencni
+                )
+
+            nejblizsi = calc.nearest_strike(sorted(chain.strikes), cil_strike)
+            if referencni is not None and nejblizsi == referencni.strike:
+                # Cílový strike je tentýž jako referenční - kontrakt je už
+                # ověřený i odebíraný, další dotaz do TWS by byl zbytečný
+                strike, option, details = (
+                    referencni.strike,
+                    referencni.contract,
+                    referencni.details,
+                )
+            else:
+                strike, option, details = await self._qualify_nearest_option(
+                    symbol, expiration, list(chain.strikes), cil_strike, preview.right, chain.tradingClass
+                )
+            preview.strike = strike
+            preview.option = option
+            preview.min_tick = details.minTick or 0.01
+
+            # Náhradní strike se hlásí, aby bylo jasné, proč kontrakt neodpovídá cíli
+            if nejblizsi is not None and strike != nejblizsi:
+                preview.warnings.append(
+                    f"Strike {nejblizsi:g} není pro expiraci {expiration} v TWS dostupný, "
+                    f"použit nejbližší obchodovatelný {strike:g}."
+                )
+
+            # Tržní data opce kvůli deltě a spreadu
+            self.ib.subscribe(option)
+            await self.ib.wait_for_quotes(
+                option, self.cfg.engine.market_data_timeout_sec, self.cfg.engine.quotes_grace_sec
+            )
+            bid, ask, delta = self.ib.option_quotes(option)
+            preview.option_bid = bid
+            preview.option_ask = ask
+            preview.option_price, preview.option_price_source = self.ib.option_price(option)
+            preview.spread_pct = calc.spread_pct(bid, ask)
+            preview.delta = delta
+
+            # TWS model greeks u opcí neposílá spolehlivě, proto se delta v takovém
+            # případě dopočítá z tržní ceny opce; teprve pak se sáhne po náhradní hodnotě
+            if delta is None:
+                delta = self._estimate_delta(preview)
+                if delta is not None:
+                    preview.delta = delta
+                    preview.delta_estimated = True
+
+            if delta is None:
+                preview.warnings.append(
+                    f"Deltu opce se nepodařilo získat ani dopočítat - množství je spočítáno "
+                    f"s náhradní hodnotou {self.cfg.trading.default_delta:g}."
+                )
+            used_delta = delta if delta is not None else self.cfg.trading.default_delta
+
+            # SL buď zadaný uživatelem, nebo dopočtený podle poměru z konfigurace;
+            # při smíšeném režimu PT a SL se převádí přes cenu opce, proto až teď,
+            # kdy jsou k dispozici kotace vybrané opce
+            preview.stop_loss = (
+                stop_loss
+                if stop_loss is not None
+                else self._default_stop_loss(preview, entry_price, profit_target, used_delta)
             )
 
-        # Bez známé velikosti účtu nelze spočítat riskovanou částku ani množství
-        if self.account_size <= 0:
-            preview.warnings.append(
-                "Velikost účtu se přebírá z TWS (account.size = 0), ale zatím nedorazila - "
-                "množství proto nelze doporučit."
-            )
+            # Množství z riskované částky a ztráty na kontrakt: při SL na podkladu
+            # se ztráta odhaduje přes deltu, při SL na opci je zadaná přímo v USD
+            if sl_on_underlying:
+                preview.quantity = calc.suggest_quantity(
+                    self.risk_amount,
+                    entry_price,
+                    preview.stop_loss,
+                    used_delta,
+                    self.cfg.trading.min_quantity,
+                    self.cfg.trading.max_quantity,
+                )
+            else:
+                preview.quantity = calc.suggest_quantity_for_loss(
+                    self.risk_amount,
+                    self._capped_option_loss(preview, entry_price, preview.stop_loss),
+                    self.cfg.trading.min_quantity,
+                    self.cfg.trading.max_quantity,
+                )
 
-        # Bez vstupní ceny a aspoň jedné úrovně nelze určit kontrakt,
-        # vrací se jen cena podkladu
-        if entry_price is None or (profit_target is None and stop_loss is None):
+            # Závěrečná cena je jediná dostupná mimo obchodní hodiny; pohnul-li se
+            # mezitím podklad (typicky pre-market gap), vyjde z ní nesmyslná
+            # implikovaná volatilita a s ní i dopočítané úrovně a množství
+            if preview.option_price_source == "close":
+                preview.warnings.append(
+                    "Opce nemá aktuální kotace, model počítá ze závěrečné ceny - "
+                    "dopočítané úrovně i doporučené množství mohou být nepřesné."
+                )
+
+            if preview.spread_pct is not None and preview.spread_pct > self.cfg.trading.max_spread_pct:
+                preview.warnings.append(
+                    f"Aktuální spread {preview.spread_pct:.2f} % překračuje limit "
+                    f"{self.cfg.trading.max_spread_pct:g} %."
+                )
+
             self._replace_preview(preview)
             return preview
-
-        reference = preview.current_price if preview.current_price is not None else entry_price
-        preview.right = calc.determine_right(reference, entry_price)
-
-        # Výběr expirace
-        chain = await self.ib.option_chain(underlying)
-        expiration = calc.select_expiration(
-            list(chain.expirations),
-            self.cfg.expiration.mode,
-            self.cfg.expiration.min_dte,
-            self.cfg.expiration.fixed_date,
-        )
-        if expiration is None:
-            raise ValueError(
-                f"Pro ticker {symbol} nebyla nalezena vhodná expirace "
-                f"(režim '{self.cfg.expiration.mode}')."
-            )
-        preview.expiration = expiration
-
-        # Referenční opce (strike u vstupu) slouží modelu z ceny opce - je
-        # potřeba, kdykoliv se převádí mezi USD na opci a úrovní podkladu:
-        # pro strike při PT na opci a pro dopočet PT ze SL ve smíšeném režimu
-        referencni: _ReferenceOption | None = None
-        if not pt_on_underlying or (profit_target is None and not sl_on_underlying):
-            referencni = await self._reference_option(preview, chain, entry_price)
-
-        # Chybí-li PT, dopočítá se ze SL podle poměru z konfigurace
-        if profit_target is None:
-            profit_target = self._default_profit_target(
-                preview, entry_price, stop_loss, referencni
-            )
-        preview.profit_target = profit_target
-
-        # Strike se vybírá k cílové úrovni podkladu: při PT na podkladu přímo
-        # k PT, při PT ziskem na opci k úrovni odvozené z ceny opce
-        if pt_on_underlying:
-            cil_strike = profit_target
-        else:
-            cil_strike = self._target_level_for_option_pt(
-                preview, entry_price, profit_target, referencni
-            )
-
-        try:
-            strike, option, details = await self._qualify_nearest_option(
-                symbol, expiration, list(chain.strikes), cil_strike, preview.right, chain.tradingClass
-            )
-        except ValueError:
-            # Odběr referenční opce nesmí zůstat viset, když vybraná opce neexistuje
+        finally:
+            # Odběr referenční opce drží jen příprava - uvolňuje se až tady,
+            # po přihlášení vybrané opce, protože to bývá tentýž kontrakt
             if referencni is not None:
                 self.ib.unsubscribe(referencni.contract)
-            raise
-        preview.strike = strike
-        preview.option = option
-        preview.min_tick = details.minTick or 0.01
-
-        # Náhradní strike se hlásí, aby bylo jasné, proč kontrakt neodpovídá cíli
-        nejblizsi = calc.nearest_strike(sorted(chain.strikes), cil_strike)
-        if nejblizsi is not None and strike != nejblizsi:
-            preview.warnings.append(
-                f"Strike {nejblizsi:g} není pro expiraci {expiration} v TWS dostupný, "
-                f"použit nejbližší obchodovatelný {strike:g}."
-            )
-
-        # Tržní data opce kvůli deltě a spreadu. Odběr referenční opce se
-        # uvolňuje až po přihlášení té vybrané - bývá to tentýž kontrakt
-        # a odběr by se jinak zbytečně rušil a zakládal znovu
-        self.ib.subscribe(option)
-        if referencni is not None:
-            self.ib.unsubscribe(referencni.contract)
-        await self.ib.wait_for_quotes(
-            option, self.cfg.engine.market_data_timeout_sec, self.cfg.engine.quotes_grace_sec
-        )
-        bid, ask, delta = self.ib.option_quotes(option)
-        preview.option_bid = bid
-        preview.option_ask = ask
-        preview.option_price, preview.option_price_source = self.ib.option_price(option)
-        preview.spread_pct = calc.spread_pct(bid, ask)
-        preview.delta = delta
-
-        # TWS model greeks u opcí neposílá spolehlivě, proto se delta v takovém
-        # případě dopočítá z tržní ceny opce; teprve pak se sáhne po náhradní hodnotě
-        if delta is None:
-            delta = self._estimate_delta(preview)
-            if delta is not None:
-                preview.delta = delta
-                preview.delta_estimated = True
-
-        if delta is None:
-            preview.warnings.append(
-                f"Deltu opce se nepodařilo získat ani dopočítat - množství je spočítáno "
-                f"s náhradní hodnotou {self.cfg.trading.default_delta:g}."
-            )
-        used_delta = delta if delta is not None else self.cfg.trading.default_delta
-
-        # SL buď zadaný uživatelem, nebo dopočtený podle poměru z konfigurace;
-        # při smíšeném režimu PT a SL se převádí přes cenu opce, proto až teď,
-        # kdy jsou k dispozici kotace vybrané opce
-        preview.stop_loss = (
-            stop_loss
-            if stop_loss is not None
-            else self._default_stop_loss(preview, entry_price, profit_target, used_delta)
-        )
-
-        # Množství z riskované částky a ztráty na kontrakt: při SL na podkladu
-        # se ztráta odhaduje přes deltu, při SL na opci je zadaná přímo v USD
-        if sl_on_underlying:
-            preview.quantity = calc.suggest_quantity(
-                self.risk_amount,
-                entry_price,
-                preview.stop_loss,
-                used_delta,
-                self.cfg.trading.min_quantity,
-                self.cfg.trading.max_quantity,
-            )
-        else:
-            preview.quantity = calc.suggest_quantity_for_loss(
-                self.risk_amount,
-                self._capped_option_loss(preview, entry_price, preview.stop_loss),
-                self.cfg.trading.min_quantity,
-                self.cfg.trading.max_quantity,
-            )
-
-        # Závěrečná cena je jediná dostupná mimo obchodní hodiny; pohnul-li se
-        # mezitím podklad (typicky pre-market gap), vyjde z ní nesmyslná
-        # implikovaná volatilita a s ní i dopočítané úrovně a množství
-        if preview.option_price_source == "close":
-            preview.warnings.append(
-                "Opce nemá aktuální kotace, model počítá ze závěrečné ceny - "
-                "dopočítané úrovně i doporučené množství mohou být nepřesné."
-            )
-
-        if preview.spread_pct is not None and preview.spread_pct > self.cfg.trading.max_spread_pct:
-            preview.warnings.append(
-                f"Aktuální spread {preview.spread_pct:.2f} % překračuje limit "
-                f"{self.cfg.trading.max_spread_pct:g} %."
-            )
-
-        self._replace_preview(preview)
-        return preview
+            # Náhled, který se nestal aktuálním, po sobě uklidí sám
+            if self._preview is not preview:
+                self.ib.unsubscribe(preview.underlying)
+                self.ib.unsubscribe(preview.option)
 
     def _model_delta(
         self,
@@ -597,7 +612,7 @@ class FlowEngine:
         Bez obchodovatelného strike vrací None.
         """
         try:
-            ref_strike, ref_option, _ = await self._qualify_nearest_option(
+            ref_strike, ref_option, ref_details = await self._qualify_nearest_option(
                 preview.symbol,
                 preview.expiration,
                 list(chain.strikes),
@@ -609,13 +624,26 @@ class FlowEngine:
             return None
 
         self.ib.subscribe(ref_option)
-        await self.ib.wait_for_quotes(
-            ref_option, self.cfg.engine.market_data_timeout_sec, self.cfg.engine.quotes_grace_sec
-        )
-        _, _, delta = self.ib.option_quotes(ref_option)
-        cena, zdroj = self.ib.option_price(ref_option)
+        try:
+            await self.ib.wait_for_quotes(
+                ref_option,
+                self.cfg.engine.market_data_timeout_sec,
+                self.cfg.engine.quotes_grace_sec,
+            )
+            _, _, delta = self.ib.option_quotes(ref_option)
+            cena, zdroj = self.ib.option_price(ref_option)
+        except BaseException:
+            # Volající odběr převezme až s vrácenou referenční opcí; skončí-li
+            # čekání chybou nebo zrušením, musí se uvolnit tady
+            self.ib.unsubscribe(ref_option)
+            raise
         return _ReferenceOption(
-            strike=ref_strike, contract=ref_option, price=cena, price_source=zdroj, delta=delta
+            strike=ref_strike,
+            contract=ref_option,
+            details=ref_details,
+            price=cena,
+            price_source=zdroj,
+            delta=delta,
         )
 
     def _target_level_for_option_pt(
