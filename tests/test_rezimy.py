@@ -921,5 +921,102 @@ class TestNeznameNakupniCeny(ZakladRezimu):
         self.assertEqual(flow.state, FlowState.ERROR)
 
 
+
+class TestSoubehuPriUzavirani(ZakladRezimu):
+    """Prodej vyplněný těsně před zrušením příkazů se nesmí prodat znovu trhem."""
+
+    def trzni_prodeje(self) -> list:
+        """Tržní prodejní příkazy bez podmínek (uzavírání trhem)."""
+        return [
+            t for t in self.ib.placed
+            if t.order.action == "SELL" and t.order.orderType == "MKT" and not t.order.conditions
+        ]
+
+    async def test_sl_vyplneny_pred_zrusenim_a_uzavrenim(self):
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=2)
+        await self.nakup(flow, 2, 3.00)
+        # SL příkaz se v TWS vyplnil, smyčka to ještě nezaznamenala,
+        # obchodník dal Zrušit + uzavřít pozici trhem
+        self.ib.fill(flow.exit_sl_trade, 2, 2.90)
+        await self.engine.cancel_flow(flow.id, close_position=True)
+
+        await self.engine._tick()
+
+        self.assertEqual(self.trzni_prodeje(), [])
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        self.assertAlmostEqual(flow.exit_fill_price, 2.90)
+        self.assertEqual(flow.exit_reason, "SL")
+        self.assertAlmostEqual(flow.unrealized_pnl, -20.0)
+
+    async def test_castecny_prodej_pred_zrusenim_proda_trhem_jen_zbytek(self):
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=3)
+        await self.nakup(flow, 3, 3.00)
+        # PT limit stihl prodat 1 ks, pak byl zrušen
+        self.ib.fill(flow.exit_trade, 1, 3.10, status="Cancelled")
+        await self.engine.cancel_flow(flow.id, close_position=True)
+
+        await self.engine._tick()
+
+        trzni = self.trzni_prodeje()
+        self.assertEqual(len(trzni), 1)
+        self.assertEqual(int(trzni[0].order.totalQuantity), 2)
+        self.assertEqual(flow.main_sold_quantity, 1)
+
+        # Zbytek se prodá trhem; výsledná cena je vážený průměr (3,10 + 2 × 2,95) / 3
+        self.ib.fill(trzni[0], 2, 2.95)
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        self.assertAlmostEqual(flow.exit_fill_price, 3.0)
+        self.assertAlmostEqual(flow.unrealized_pnl, 0.0)
+
+    async def test_uzavrit_pozici_po_vyplneni_sl_neproda_znovu(self):
+        flow = await self.zaloz(True, False, 235.0, 10.0, quantity=2)
+        await self.nakup(flow, 2, 3.00)
+        await self.engine.close_main(flow.id)
+        # Stop se vyplnil dřív, než TWS potvrdila zrušení (stav Filled, ne Cancelled)
+        self.ib.fill(flow.exit_sl_trade, 2, 2.90)
+
+        await self.engine._tick()
+
+        self.assertEqual(self.trzni_prodeje(), [])
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        self.assertAlmostEqual(flow.exit_fill_price, 2.90)
+
+    async def test_uzavrit_pozici_po_castecnem_prodeji_proda_zbytek(self):
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=3)
+        await self.nakup(flow, 3, 3.00)
+        await self.engine.close_main(flow.id)
+        # Limit stihl prodat 1 ks a pak TWS potvrdila zrušení zbytku
+        self.ib.fill(flow.exit_trade, 1, 3.10, status="Cancelled")
+
+        await self.engine._tick()
+
+        trzni = self.trzni_prodeje()
+        self.assertEqual(len(trzni), 1)
+        self.assertEqual(int(trzni[0].order.totalQuantity), 2)
+        self.assertIsNone(flow.exit_fill_price)
+
+        self.ib.fill(trzni[0], 2, 2.95)
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        self.assertAlmostEqual(flow.exit_fill_price, 3.0)
+
+    async def test_uzavrit_runner_po_vyplneni_jeho_sl_neproda_znovu(self):
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=3)
+        await self.nakup(flow, 3, 3.00)
+        await self.engine.set_runner(flow.id, 2.0)
+        await self.engine.close_runner(flow.id)
+        self.ib.fill(flow.runner_sl_trade, 1, 2.90)
+
+        await self.engine._tick()
+
+        self.assertEqual(self.trzni_prodeje(), [])
+        self.assertFalse(flow.runner_active)
+        self.assertEqual(flow.runner_sold_quantity, 1)
+        self.assertAlmostEqual(flow.runner_realized_pnl, -10.0)
+        # Hlavní část běží dál
+        self.assertEqual(flow.state, FlowState.EXIT_ARMED)
+
+
 if __name__ == "__main__":
     unittest.main()

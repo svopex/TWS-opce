@@ -2945,16 +2945,19 @@ class FlowEngine:
             and flow.runner_fill_price is None
             and self._part_all_dead(flow, "runner")
         ):
-            order = self.ib.market_sell_order(
-                flow.runner_quantity, order_ref(flow.id, "runner")
-            )
-            self._clear_part(flow, "runner")
-            self._set_leg(flow, "runner", "pt", self.ib.place(flow.option_contract, order))
-            flow.runner_market_sent = datetime.now()
-            flow.runner_market_attempts += 1
-            self.log_event(
-                f"{flow.id}: runner se prodává trhem ({flow.runner_quantity} ks)."
-            )
+            # Kusy prodané těsně před zrušením se zaúčtují, trhem jde jen zbytek
+            self._settle_part_fills(flow, "runner")
+            if flow.runner_active:
+                order = self.ib.market_sell_order(
+                    flow.runner_quantity, order_ref(flow.id, "runner")
+                )
+                self._clear_part(flow, "runner")
+                self._set_leg(flow, "runner", "pt", self.ib.place(flow.option_contract, order))
+                flow.runner_market_sent = datetime.now()
+                flow.runner_market_attempts += 1
+                self.log_event(
+                    f"{flow.id}: runner se prodává trhem ({flow.runner_quantity} ks)."
+                )
             changed = True
 
         # Tržní prodej runneru, který TWS drží nevyplněný, se zadá znovu
@@ -3031,14 +3034,17 @@ class FlowEngine:
             and flow.exit_fill_price is None
             and self._part_all_dead(flow, "exit")
         ):
-            order = self.ib.market_sell_order(flow.main_quantity, order_ref(flow.id, "exit"))
-            self._clear_part(flow, "exit")
-            self._set_leg(flow, "exit", "pt", self.ib.place(flow.option_contract, order))
-            flow.exit_market_sent = datetime.now()
-            flow.exit_market_attempts += 1
-            self.log_event(
-                f"{flow.id}: hlavní část se prodává trhem ({flow.main_quantity} ks)."
-            )
+            # Kusy prodané těsně před zrušením se zaúčtují, trhem jde jen zbytek;
+            # prodala-li se celá hlavní část, tržní prodej se nezadává vůbec
+            self._settle_part_fills(flow, "exit")
+            zbyva = flow.main_quantity - flow.main_sold_quantity
+            if flow.exit_fill_price is None and zbyva >= 1:
+                order = self.ib.market_sell_order(zbyva, order_ref(flow.id, "exit"))
+                self._clear_part(flow, "exit")
+                self._set_leg(flow, "exit", "pt", self.ib.place(flow.option_contract, order))
+                flow.exit_market_sent = datetime.now()
+                flow.exit_market_attempts += 1
+                self.log_event(f"{flow.id}: hlavní část se prodává trhem ({zbyva} ks).")
             changed = True
 
         # Tržní prodej hlavní části, který TWS drží nevyplněný, se zadá znovu
@@ -3055,8 +3061,10 @@ class FlowEngine:
             # skupinu ruší také, ale na to se nečeká
             self._cancel_other_legs(flow, "exit", vyplneny)
             # Cena je vážený průměr přes oba příkazy dvojice - po částečném
-            # prodeji na PT TWS zmenší SL příkaz a zbytek se prodá na něm
-            flow.exit_fill_price, _, vyplnene = self._part_fill_summary(flow, "exit")
+            # prodeji na PT TWS zmenší SL příkaz a zbytek se prodá na něm;
+            # započítají se i kusy prodané dřív, před zrušením příkazů
+            cena_ted, ks_ted, vyplnene = self._part_fill_summary(flow, "exit")
+            flow.exit_fill_price = self._blended_exit_price(flow, cena_ted, ks_ted)
             flow.exit_reason = (
                 "ručně" if flow.main_close_requested
                 else self._part_reason(flow, "exit", vyplnene)
@@ -3172,12 +3180,18 @@ class FlowEngine:
             if trade is not None and trade.orderStatus.status in MODIFIABLE_ORDER_STATES:
                 return False
 
-        # Prodává se jen skutečně otevřený zbytek - po ručním prodeji hlavní
-        # části to bývá pouze runner
-        mnozstvi = flow.open_quantity
-
         # Prodej se zadává jednou; v dalších průchodech se sleduje jeho vyplnění
         if flow.exit_trade is None or flow.exit_trade.orderStatus.status in DEAD_ORDER_STATES:
+            # Prodeje vyplněné těsně před zrušením příkazů (i částečné) se
+            # zaúčtují dřív, než se zadá tržní prodej - jinak by se prodalo
+            # víc kusů, než pozice drží, a vznikla by nekrytá krátká pozice
+            self._settle_part_fills(flow, "exit")
+            self._settle_part_fills(flow, "runner")
+
+            # Prodává se jen skutečně otevřený zbytek - po ručním prodeji hlavní
+            # části to bývá pouze runner
+            mnozstvi = flow.open_quantity
+
             # Bez otevřených kusů už není co prodávat - obchod se rovnou uzavře
             if mnozstvi < 1:
                 pnl = flow.unrealized_pnl
@@ -3198,10 +3212,11 @@ class FlowEngine:
 
         if flow.exit_trade.orderStatus.status == "Filled":
             cena = valid_price(flow.exit_trade.orderStatus.avgFillPrice)
+            prodano = int(flow.exit_trade.orderStatus.filled or 0)
 
             # Zbylý runner (prodaný samostatně i v rámci celé pozice)
             # se zúčtuje do realizovaného výsledku
-            if flow.runner_active and flow.runner_quantity <= mnozstvi:
+            if flow.runner_active and flow.runner_quantity <= prodano:
                 if cena is not None and flow.fill_price is not None:
                     flow.runner_realized_pnl += (
                         (cena - flow.fill_price) * flow.runner_quantity * 100
@@ -3214,9 +3229,11 @@ class FlowEngine:
                 flow.runner_order_id = None
 
             # Cena prodeje hlavní části se nepřepisuje, pokud už byla prodána
-            # dříve - teď se uzavíral jen zbytek pozice
+            # dříve - teď se uzavíral jen zbytek pozice. Kusy prodané před
+            # zrušením příkazů se do ceny započítají váženým průměrem
             if flow.exit_fill_price is None:
-                flow.exit_fill_price = cena
+                ks_ted = max(min(prodano, flow.main_quantity - flow.main_sold_quantity), 0)
+                flow.exit_fill_price = self._blended_exit_price(flow, cena, ks_ted)
                 flow.exit_reason = "ručně"
 
             pnl = flow.unrealized_pnl
@@ -3313,6 +3330,74 @@ class FlowEngine:
         if celkem == 0:
             return None, 0, []
         return hodnota / celkem, celkem, vyplnene
+
+    def _blended_exit_price(self, flow: Flow, cena: float | None, ks: int) -> float | None:
+        """
+        Výsledná prodejní cena hlavní části: vážený průměr kusů prodaných
+        dříve (před zrušením příkazů) a kusů prodaných teď.
+        """
+        if cena is None:
+            return None
+        celkem = flow.main_sold_quantity + ks
+        if celkem <= 0:
+            return cena
+        return (flow.main_sold_value + cena * ks) / celkem
+
+    def _settle_part_fills(self, flow: Flow, part: str) -> int:
+        """
+        Zaúčtuje prodeje části, které se (i zčásti) vyplnily na jejích dosavadních
+        příkazech, a vrátí počet takto prodaných kusů.
+
+        Volá se těsně před zadáním tržního prodeje na pokyn obchodníka: příkaz
+        se mohl vyplnit ve stejné chvíli, kdy se rušil, a tyto kusy se už
+        prodávat nesmí - jinak by vznikla nekrytá krátká pozice. Celá prodaná
+        hlavní část se zapíše jako její prodej, částečný prodej se jen
+        poznamená a zbytek prodá trh.
+        """
+        cena, ks, vyplnene = self._part_fill_summary(flow, part)
+        if ks == 0:
+            return 0
+
+        if part == "exit":
+            if flow.exit_fill_price is not None:
+                return 0
+            duvod = self._part_reason(flow, "exit", vyplnene)
+            if flow.main_sold_quantity + ks >= flow.main_quantity:
+                flow.exit_fill_price = self._blended_exit_price(flow, cena, ks)
+                flow.exit_reason = duvod
+                flow.main_sold_quantity += ks
+                flow.main_sold_value += cena * ks
+                self.log_event(
+                    f"{flow.id}: hlavní část ({flow.main_quantity} ks) se prodala ({duvod}) "
+                    f"za {cena:g} ještě před zrušením příkazů - trhem se neprodává."
+                )
+            else:
+                flow.main_sold_quantity += ks
+                flow.main_sold_value += cena * ks
+                self.log_event(
+                    f"{flow.id}: {ks} ks hlavní části se prodalo ({duvod}) za {cena:g} "
+                    f"ještě před zrušením příkazů, trhem se prodá jen zbytek."
+                )
+            return ks
+
+        # Runner: prodané kusy se zúčtují a runner se o ně zmenší
+        if not flow.runner_active or flow.runner_fill_price is not None:
+            return 0
+        ks = min(ks, flow.runner_quantity)
+        if flow.fill_price is not None:
+            flow.runner_realized_pnl += (cena - flow.fill_price) * ks * 100
+        flow.runner_sold_quantity += ks
+        flow.runner_quantity -= ks
+        self.log_event(
+            f"{flow.id}: {ks} ks runneru se prodalo za {cena:g} ještě před zrušením příkazů."
+        )
+        if flow.runner_quantity <= 0:
+            flow.runner_profit_target = None
+            flow.runner_quantity = 0
+            flow.runner_stop_loss = None
+            flow.runner_close_requested = False
+            self._clear_part(flow, "runner")
+        return ks
 
     def _part_reason(self, flow: Flow, part: str, vyplnene: list[Any]) -> str:
         """

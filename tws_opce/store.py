@@ -52,6 +52,8 @@ SAVED_FIELDS = (
     "filled_quantity",
     "exit_fill_price",
     "exit_reason",
+    "main_sold_quantity",
+    "main_sold_value",
     "runner_profit_target",
     "runner_quantity",
     "runner_stop_loss",

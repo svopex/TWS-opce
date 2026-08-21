@@ -156,6 +156,11 @@ class Flow:
     filled_quantity: int = 0
     exit_fill_price: float | None = None
     exit_reason: str = ""
+    # Kusy hlavní části prodané dosavadními příkazy ještě před jejich zrušením
+    # (částečné vyplnění), dokud se zbytek neprodá trhem; hodnota = součet
+    # cena × kusy pro vážený průměr výsledné prodejní ceny
+    main_sold_quantity: int = 0
+    main_sold_value: float = 0.0
 
     # Runner - část pozice prodávaná samostatným příkazem s vlastním cílem.
     # None v runner_profit_target znamená, že runner není aktivní.
@@ -353,6 +358,9 @@ class Flow:
         drzeno = self.held_quantity
         if self.exit_fill_price is not None:
             drzeno -= self.main_quantity
+        else:
+            # Část hlavní části už mohla být prodaná před zrušením příkazů
+            drzeno -= self.main_sold_quantity
         return max(drzeno, 0)
 
     @property
