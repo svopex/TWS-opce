@@ -265,10 +265,6 @@ class TestSmysluplnostiUrovni(unittest.TestCase):
         self.assertFalse(calc.levels_sane(100.0, 155.0, 95.0))
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class TestUrovneNaOpci(unittest.TestCase):
     """Výpočty pro PT a SL zadané ziskem / ztrátou v USD na kontrakt."""
 
@@ -359,3 +355,20 @@ class TestUrovneNaOpci(unittest.TestCase):
         # Nulový zisk ani nulový SL na podkladu platné nejsou
         self.assertFalse(calc.levels_sane(232.0, 0.0, 10.0, pt_on_underlying=False, sl_on_underlying=False))
         self.assertFalse(calc.levels_sane(232.0, 235.0, 0.0))
+
+
+class TestStropuZtratyNaOpci(unittest.TestCase):
+    """Ztráta na kontrakt je omezená zaplacenou prémií."""
+
+    def test_strop_je_premie_bez_jednoho_tiku(self):
+        self.assertAlmostEqual(calc.max_option_loss(3.00, 0.05), 295.0)
+
+    def test_vychozi_tik_bez_zadaneho(self):
+        self.assertAlmostEqual(calc.max_option_loss(1.00, 0.0), 99.0)
+
+    def test_bezcenna_opce_nema_co_ztratit(self):
+        self.assertAlmostEqual(calc.max_option_loss(0.05, 0.05), 0.0)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

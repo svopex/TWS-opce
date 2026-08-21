@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from nicegui import app, background_tasks, ui
+from nicegui import app, ui
 
 from . import calc
 from .config import AppConfig
@@ -593,7 +593,7 @@ class TradingUI:
         prepnute = self.pt_input if druh == "pt" else self.sl_input
         prepnute.set_value(None)
         self._computed_input().set_value(None)
-        background_tasks.create(self._load_preview("auto"), name="nahled po zmene rezimu")
+        self._naplanuj_nahled()
 
     def _on_primary_change(self) -> None:
         """
@@ -606,7 +606,18 @@ class TradingUI:
         if self._modes_locked:
             return
         self._computed_input().set_value(None)
-        background_tasks.create(self._load_preview("auto"), name="nahled po zmene prvotni urovne")
+        self._naplanuj_nahled()
+
+    def _naplanuj_nahled(self, rezim: str = "auto") -> None:
+        """
+        Spustí přípravu náhledu až po doběhnutí právě probíhající obsluhy.
+
+        Úloha založená přes background_tasks běží bez kontextu prvku a
+        ui.notify v ní končí chybou "current slot cannot be determined";
+        časovač vytvořený v kontextu formuláře jej naopak má.
+        """
+        with self.radek_prvotni:
+            ui.timer(0, lambda: self._load_preview(rezim), once=True)
 
     def _bezici_pro_formular(
         self, symbol: str, entry: float | None, pt: float | None, sl: float | None = None
@@ -637,9 +648,22 @@ class TradingUI:
         self._set_modes(flow.pt_on_underlying, flow.sl_on_underlying)
         self.entry_input.set_value(round(flow.entry_price, 2))
         self.pt_input.set_value(round(flow.profit_target, 2))
-        self.sl_input.set_value(round(flow.stop_loss, 2))
+        self._zapis_sl(flow)
         self.spread_input.set_value(flow.max_spread_pct)
         self.qty_input.set_value(flow.quantity)
+
+    def _zapis_sl(self, flow: Flow) -> None:
+        """
+        Zapíše SL obchodu do formuláře.
+
+        Break even na opci je nulová ztráta; ve formuláři by nula znamenala
+        "nezadáno" a přepočet ani nové zadání by s ní nešly provést, proto
+        se pole nechává prázdné. Skutečnou úroveň ukazuje přehled obchodů.
+        """
+        if not flow.sl_on_underlying and flow.stop_loss <= 0:
+            self.sl_input.set_value(None)
+            return
+        self.sl_input.set_value(round(flow.stop_loss, 2))
 
     def _clear_inputs(self) -> None:
         """
@@ -715,11 +739,14 @@ class TradingUI:
         self._set_loading(True)
 
         pt_on, sl_on = self._form_modes()
-        # Přepočet zahazuje dopočítávanou úroveň (podle prvotní), aby se spočítala znovu
+        # Přepočet zahazuje dopočítávanou úroveň (podle prvotní), aby se spočítala
+        # znovu. Prázdná prvotní úroveň by ale nechala formulář bez zadání,
+        # proto se v takovém případě počítá z té vyplněné
         if rezim == "prepocitat":
             if self._form_primary() == "sl":
-                pt = None
-            else:
+                if sl is not None:
+                    pt = None
+            elif pt is not None:
                 sl = None
         try:
             preview = await self.engine.prepare(symbol, entry, pt, sl, pt_on, sl_on)
@@ -886,7 +913,7 @@ class TradingUI:
             ui.notify(f"{flow.id}: SL {uroven_text(flow, 'sl')} ({popis}).", type="positive")
         # Formulář může ukazovat tento obchod, hodnotu je třeba srovnat
         if self.form_flow_id == flow.id:
-            self.sl_input.set_value(round(flow.stop_loss, 2))
+            self._zapis_sl(flow)
         self._refresh()
 
     async def _on_set_runner_sl(self, event: Any) -> None:
@@ -989,11 +1016,11 @@ class TradingUI:
         if not symbol:
             ui.notify("Zadejte ticker.", type="negative")
             return
-        # Povinná je vstupní cena a prvotní úroveň; druhá se dopočítá
-        prvotni = self._form_primary()
-        if entry is None or (pt is None if prvotni == "pt" else sl is None):
+        # Povinná je vstupní cena a aspoň jedna z úrovní - druhou dopočítá
+        # engine podle poměru SL:PT, ať už je prvotní kterákoliv
+        if entry is None or (pt is None and sl is None):
             ui.notify(
-                f"Zadejte vstupní cenu podkladu a {'PT' if prvotni == 'pt' else 'SL'}.",
+                "Zadejte vstupní cenu podkladu a alespoň jednu z úrovní PT / SL.",
                 type="negative",
             )
             return

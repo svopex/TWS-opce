@@ -112,12 +112,19 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    se po ní ještě `engine.quotes_grace_sec` počká na BID/ASK. Teprve bez
    jakékoliv ceny se použije lineární odhad přes deltu, bez delty vstupní
    cena. Zvolená úroveň i zdroj odhadu („z ceny opce (BID/ASK)“, „… (close)“,
-   „z delty“) jsou vidět v náhledu formuláře.
+   „z delty“) jsou vidět v náhledu formuláře. Počítá-li model ze závěrečné
+   ceny, náhled i log na to výslovně upozorní: mimo obchodní hodiny je
+   závěrečná cena jediná dostupná, a pohnul-li se mezitím podklad (typicky
+   pre-market gap), vyjde z ní nesmyslná volatilita a s ní i dopočítané
+   úrovně a množství.
    SL se bez zadání dopočítá stejným poměrem jako dosud (na opci
    `PT × poměr`); při smíšeném režimu se zisk na PT převede mezi podkladem
    a cenou opce stejným modelem, jakým se počítá sloupec *Zisk na PT*.
    Množství při SL na opci vychází přímo ze zadané ztráty:
-   `riskovaná částka / SL v USD`. Přepnutí zaškrtávátka pole vyprázdní,
+   `riskovaná částka / SL v USD`. Ztráta se přitom stropí zaplacenou prémií —
+   stop nemůže klesnout pod jeden tik, takže i SL zadaný nad prémii odnese
+   nejvýš `(nákupní cena − tik) × 100` USD. Stejným stropem prochází
+   i sloupec *Ztráta na SL*. Přepnutí zaškrtávátka pole vyprázdní,
    protože hodnota by v novém režimu znamenala něco jiného.
 
    **Která úroveň je prvotní.** Oranžové zaškrtávátko hned za polem *Vstup
@@ -130,7 +137,9 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    přes cenu opce jako výše), odškrtnuto = povinný je PT a dopočte se SL.
    Bez vstupní ceny dopočet neproběhne – úrovně se zrcadlí kolem vstupu.
    Dopočítanou úroveň lze vždy přepsat ručně; **Přepočítat** ji spočítá
-   znovu. Strike se i při dopočteném PT vybírá k jeho úrovni.
+   znovu — je-li ale prvotní pole prázdné, počítá se naopak z toho vyplněného,
+   aby zadání nezmizelo celé. K odeslání proto stačí vstupní cena a kterákoliv
+   z úrovní. Strike se i při dopočteném PT vybírá k jeho úrovni.
 
    TWS model greeks u opcí neposílá spolehlivě — závisí to na účtu
    a předplatném dat. Chybí-li delta, aplikace ji dopočítá z tržní ceny opce
@@ -223,7 +232,10 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    rovnou zruší a příslušnou část pozice prodá trhem.
    U úrovní zadaných na opci fungují tlačítka obdobně: násobky cíle násobí
    zisk v USD (2× z 10 USD je 20 USD, limit se posune na 3,20), *SL BE* je
-   stop na nákupní ceně opce (ztráta 0 USD) a proražení se měří BIDem opce.
+   stop na nákupní ceně opce (ztráta 0 USD) a proražení se měří BIDem opce
+   proti stop ceně příkazu (tedy po zaokrouhlení na tik). Nulová ztráta se
+   do pole SL ve formuláři nepřenáší — tam by znamenala „nezadáno“ a nešlo
+   by s ní přepočítat ani založit obchod; skutečnou úroveň ukazuje přehled.
    Ve sloupcích *PT* a *SL* se taková úroveň ukazuje jako částka v USD
    a po nákupu i s cenou opce, na kterou příkaz míří, např. `3,10 (+10,00 USD)`.
 

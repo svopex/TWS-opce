@@ -161,10 +161,6 @@ class TestOdbery(unittest.TestCase):
         self.assertNotIn(kontrakt.conId, sluzba._tickers)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class TestCenaOpceProModel(unittest.TestCase):
     """Cena opce pro model - pořadí zdrojů: střed kotace, jedna strana, last, close."""
 
@@ -257,3 +253,7 @@ class TestCekaniNaKotace(unittest.IsolatedAsyncioTestCase):
         uplynulo = loop.time() - start
         self.assertGreaterEqual(uplynulo, 0.2)
         self.assertLess(uplynulo, 1.5)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

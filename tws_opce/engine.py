@@ -453,9 +453,18 @@ class FlowEngine:
         else:
             preview.quantity = calc.suggest_quantity_for_loss(
                 self.risk_amount,
-                preview.stop_loss,
+                self._capped_option_loss(preview, entry_price, preview.stop_loss),
                 self.cfg.trading.min_quantity,
                 self.cfg.trading.max_quantity,
+            )
+
+        # Závěrečná cena je jediná dostupná mimo obchodní hodiny; pohnul-li se
+        # mezitím podklad (typicky pre-market gap), vyjde z ní nesmyslná
+        # implikovaná volatilita a s ní i dopočítané úrovně a množství
+        if preview.option_price_source == "close":
+            preview.warnings.append(
+                "Opce nemá aktuální kotace, model počítá ze závěrečné ceny - "
+                "dopočítané úrovně i doporučené množství mohou být nepřesné."
             )
 
         if preview.spread_pct is not None and preview.spread_pct > self.cfg.trading.max_spread_pct:
@@ -730,6 +739,33 @@ class FlowEngine:
         # Bez použitelného modelu lineárně přes deltu, na opačnou stranu než PT
         return round(entry_price - smer * ztrata_ceny / max(abs(delta), 1e-6), 2)
 
+    def _capped_option_loss(self, preview: Preview, entry_price: float, stop_loss: float) -> float:
+        """
+        Ztráta na kontrakt omezená zaplacenou prémií.
+
+        SL zadaný na opci může být větší než celá prémie; stop pak stojí na
+        nejnižší možné ceně a obchod nemůže ztratit víc. Nákupní cena se
+        odhaduje modelem pro chvíli, kdy podklad dosáhne vstupní úrovně -
+        nakupuje se u ASKu, proto se k modelovému středu přičítá půl spreadu.
+        Bez použitelného modelu zůstává zadaná ztráta.
+        """
+        if not preview.option_price or preview.current_price is None:
+            return stop_loss
+        cena = calc.project_option_price(
+            preview.option_price,
+            preview.current_price,
+            entry_price,
+            preview.strike,
+            preview.expiration,
+            self.cfg.trading.risk_free_rate_pct,
+            preview.right,
+        )
+        if cena is None:
+            return stop_loss
+        if preview.option_bid and preview.option_ask:
+            cena += (preview.option_ask - preview.option_bid) / 2.0
+        return min(stop_loss, calc.max_option_loss(cena, preview.min_tick))
+
     def _estimate_delta(self, preview: Preview) -> float | None:
         """
         Dopočítá deltu z tržní ceny opce, když ji TWS nepošle.
@@ -947,6 +983,14 @@ class FlowEngine:
                 f"SL {self._level_text(flow, 'sl')}."
             )
 
+            # Zdroj ceny pro model se hlásí i do logu - v náhledu ho obchodník
+            # vidět nemusel, přesto z něj vycházejí dopočítané úrovně
+            if preview.option_price_source == "close":
+                self.log_event(
+                    f"{flow.id}: POZOR - opce nemá aktuální kotace, model počítal ze "
+                    f"závěrečné ceny; zkontrolujte dopočítané úrovně i množství."
+                )
+
             # Při příliš širokém spreadu se příkaz zatím nezadává
             if flow.option_spread_pct is not None and flow.option_spread_pct > max_spread:
                 flow.set_state(
@@ -1076,7 +1120,13 @@ class FlowEngine:
             úroveň na podkladu se přeceňuje modelem proti nákupní ceně.
             """
             if not na_podkladu:
-                return uroven if zisk else -uroven
+                if zisk:
+                    return uroven
+                # Ztráta na opci nemůže přesáhnout zaplacenou prémii - stop
+                # stojí nejvýš o ni níž (nejnižší možná cena je jeden tik)
+                if nakupni is None:
+                    return -uroven
+                return -min(uroven, calc.max_option_loss(nakupni, flow.min_tick))
             if nakupni is None:
                 return None
             cena = prodejni_cena_pri(uroven)

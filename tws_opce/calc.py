@@ -112,6 +112,16 @@ def option_loss_stop(fill_price: float, loss_usd: float, min_tick: float) -> flo
     return max(stop, tick)
 
 
+def max_option_loss(fill_price: float, min_tick: float) -> float:
+    """
+    Největší ztráta na jeden kontrakt v USD, kterou SL na opci může způsobit.
+    Stop nemůže klesnout pod jeden tik (opce nemá zápornou cenu), takže
+    ztráta je omezená zaplacenou prémií sníženou o tento tik.
+    """
+    tick = min_tick if min_tick and min_tick > 0 else 0.01
+    return max((fill_price - tick) * OPTION_MULTIPLIER, 0.0)
+
+
 def entry_limit_price(
     order_type: str,
     bid: float | None,

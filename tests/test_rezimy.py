@@ -954,6 +954,26 @@ class TestZdrojCenyOpce(ZakladRezimu):
         self.assertEqual(nahled.option_price_source, "close")
         self.assertAlmostEqual(nahled.option_price, 3.05)
 
+    async def test_zaverecna_cena_varuje_v_nahledu_i_v_logu(self):
+        # Mimo obchodní hodiny je závěrečná cena jediná dostupná; pohnul-li se
+        # mezitím podklad, vyjde z ní nesmyslná volatilita
+        self.ib.price_bid = None
+        self.ib.price_ask = None
+        self.ib.price_close = 3.05
+        self.cfg.trading.entry_order_type = "MKT"
+        self.ib.price_underlying = 230.0
+
+        nahled = await self.engine.prepare("AAPL", 232.0, 10.0, None, False, False)
+        self.assertTrue(any("závěrečné ceny" in v for v in nahled.warnings))
+
+        await self.zaloz(False, False, 10.0, 10.0)
+        self.assertTrue(any("závěrečné ceny" in z for _, z in self.engine.events))
+
+    async def test_s_kotacemi_se_nevaruje(self):
+        self.ib.price_underlying = 230.0
+        nahled = await self.engine.prepare("AAPL", 232.0, 10.0, None, False, False)
+        self.assertFalse(any("závěrečné ceny" in v for v in nahled.warnings))
+
     async def test_posledni_obchod_ma_prednost_pred_zaverecnou(self):
         self.ib.price_bid = None
         self.ib.price_ask = None
@@ -1193,6 +1213,42 @@ class TestCastecnehoVyplneniZaBehu(ZakladRezimu):
         self.assertEqual(flow.runner_sold_quantity, 1)
         self.assertAlmostEqual(flow.runner_realized_pnl, 30.0)
         self.assertEqual(flow.held_quantity, 3)
+
+
+class TestStropuZtratyNaOpci(ZakladRezimu):
+    """SL zadaný na opci nemůže odnést víc než zaplacenou prémii."""
+
+    async def test_ocekavana_ztrata_nepresahne_premii(self):
+        # Ztráta 400 USD na kontrakt je víc než prémie 3,00 (= 300 USD);
+        # stop stojí na nejnižší možné ceně, takže ztratit lze nejvýš
+        # (3,00 − 0,05) × 100 = 295 USD
+        flow = await self.zaloz(False, False, 500.0, 400.0)
+        await self.nakup(flow, 1, 3.00)
+
+        await self.engine._tick()
+
+        self.assertAlmostEqual(flow.exit_sl_trade.order.auxPrice, 0.05)
+        self.assertAlmostEqual(flow.expected_loss, -295.0)
+
+    async def test_mensi_ztrata_se_nemeni(self):
+        flow = await self.zaloz(False, False, 20.0, 50.0)
+        await self.nakup(flow, 1, 3.00)
+
+        await self.engine._tick()
+
+        self.assertAlmostEqual(flow.expected_loss, -50.0)
+
+    async def test_mnozstvi_vychazi_ze_skutecne_ztraty(self):
+        # Levná opce a velký SL: skutečná ztráta je jen zlomek zadané,
+        # doporučené množství proto vyjde vyšší
+        self.cfg.account.size = 100000.0
+        self.ib.price_underlying = 230.0
+        self.ib.price_bid, self.ib.price_ask = 0.50, 0.60
+
+        nahled = await self.engine.prepare("AAPL", 232.0, 400.0, 200.0, False, False)
+
+        # Bez zastropování by vyšlo 1000 / 200 = 5 kontraktů
+        self.assertGreater(nahled.quantity, 5)
 
 
 class TestNeznameNakupniCeny(ZakladRezimu):
