@@ -386,9 +386,10 @@ class IBService:
         Počká, než TWS pošle první použitelná data kontraktu.
 
         Vrací ihned, jakmile jsou k dispozici obě strany kotace (BID i ASK).
-        Dorazí-li nejdřív jen jiná cena (typicky závěrečná), čeká se ještě
-        quotes_grace sekund, aby kotace dostaly šanci - bez toho by se model
-        počítal ze závěrečné ceny jen proto, že se četlo o zlomek sekundy dřív.
+        Dorazí-li nejdřív jen jiná cena (jedna strana kotace, poslední obchod,
+        typicky závěrečná cena), čeká se ještě quotes_grace sekund, aby úplné
+        kotace dostaly šanci - bez toho by se model počítal ze závěrečné ceny
+        jen proto, že se četlo o zlomek sekundy dřív.
         Po vypršení časového limitu se pokračuje i bez dat.
         """
         loop = asyncio.get_running_loop()
@@ -399,8 +400,11 @@ class IBService:
             if ticker is not None:
                 if valid_price(ticker.bid) is not None and valid_price(ticker.ask) is not None:
                     return
-                # Jiná použitelná cena - kotace nebo závěrečná cena
-                if any(valid_price(v) is not None for v in (ticker.last, ticker.close)):
+                # Jakákoliv jiná použitelná cena - čeká se ještě odklad na úplné kotace
+                if any(
+                    valid_price(v) is not None
+                    for v in (ticker.bid, ticker.ask, ticker.last, ticker.close)
+                ):
                     if prvni_cena is None:
                         prvni_cena = loop.time()
                     if loop.time() - prvni_cena >= quotes_grace:

@@ -352,3 +352,10 @@ class TestUrovneNaOpci(unittest.TestCase):
             self.assertAlmostEqual(calc.default_profit_target(232.0, sl, pomer), 235.0)
             sl_put = calc.default_stop_loss(228.0, 225.0, pomer)
             self.assertAlmostEqual(calc.default_profit_target(228.0, sl_put, pomer), 225.0)
+
+    def test_nulova_ztrata_na_opci_je_break_even(self):
+        # SL BE v režimu na opci = ztráta 0 USD, to je platná úroveň
+        self.assertTrue(calc.levels_sane(232.0, 10.0, 0.0, pt_on_underlying=False, sl_on_underlying=False))
+        # Nulový zisk ani nulový SL na podkladu platné nejsou
+        self.assertFalse(calc.levels_sane(232.0, 0.0, 10.0, pt_on_underlying=False, sl_on_underlying=False))
+        self.assertFalse(calc.levels_sane(232.0, 235.0, 0.0))

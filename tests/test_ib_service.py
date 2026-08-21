@@ -247,3 +247,13 @@ class TestCekaniNaKotace(unittest.IsolatedAsyncioTestCase):
         start = loop.time()
         await self.sluzba.wait_for_quotes(kontrakt, timeout=0.5)
         self.assertGreaterEqual(loop.time() - start, 0.4)
+
+    async def test_jednostranna_kotace_ceka_jen_odklad(self):
+        # Jen BID bez last/close - nečeká se celý limit, jen odklad na ASK
+        kontrakt = vloz_ticker(self.sluzba, bid=3.00)
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        await self.sluzba.wait_for_quotes(kontrakt, timeout=5.0, quotes_grace=0.3)
+        uplynulo = loop.time() - start
+        self.assertGreaterEqual(uplynulo, 0.2)
+        self.assertLess(uplynulo, 1.5)

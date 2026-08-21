@@ -791,5 +791,53 @@ class TestZdrojCenyOpce(ZakladRezimu):
         self.assertGreater(flow.expected_profit, 0)
 
 
+
+class TestObnovaSlBeNaOpci(unittest.IsolatedAsyncioTestCase):
+    """SL na break even v režimu na opci (ztráta 0 USD) musí přežít restart."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = AppConfig()
+        self.cfg.state.file = str(Path(self.tmp.name) / "state.json")
+        self.cfg.trading.auto_close_enabled = False
+        self.ib = FakeIBService(self.cfg)
+        self.engine = FlowEngine(self.cfg, self.ib)
+
+    async def asyncSetUp(self) -> None:
+        await self.engine.restore()
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    async def test_sl_be_na_opci_se_obnovi(self):
+        self.ib.price_underlying = 230.0
+        flow = await self.engine.start_flow(
+            FlowRequest(
+                symbol="AAPL",
+                entry_price=232.0,
+                profit_target=10.0,
+                stop_loss=10.0,
+                quantity=2,
+                pt_on_underlying=False,
+                sl_on_underlying=False,
+            )
+        )
+        self.ib.fill(flow.entry_trade, 2, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        self.ib.price_bid, self.ib.price_ask = 3.20, 3.30
+        await self.engine.set_stop_loss(flow.id, "be")
+        self.assertAlmostEqual(flow.stop_loss, 0.0)
+        self.ib.held_positions[OPTION_CONID] = 2
+
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        obnovene = novy.flows[flow.id]
+
+        self.assertEqual(obnovene.state, FlowState.EXIT_ARMED)
+        self.assertAlmostEqual(obnovene.stop_loss, 0.0)
+        self.assertAlmostEqual(obnovene.original_stop_loss, 10.0)
+
+
 if __name__ == "__main__":
     unittest.main()

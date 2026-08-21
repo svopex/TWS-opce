@@ -199,6 +199,9 @@ def uroven_text(flow: Flow, druh: str, hodnota: float | None = None) -> str:
 
     znamenko = "+" if druh == "pt" else "-"
     castka = f"{znamenko}{fmt(hodnota)} USD"
+    # Nulová ztráta je stop na nákupní ceně opce - break even
+    if druh == "sl" and hodnota == 0:
+        castka = "BE"
     if flow.fill_price is None:
         return castka
     if druh == "pt":

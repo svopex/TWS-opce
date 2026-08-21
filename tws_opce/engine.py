@@ -378,9 +378,15 @@ class FlowEngine:
                 preview, entry_price, profit_target, referencni
             )
 
-        strike, option, details = await self._qualify_nearest_option(
-            symbol, expiration, list(chain.strikes), cil_strike, preview.right, chain.tradingClass
-        )
+        try:
+            strike, option, details = await self._qualify_nearest_option(
+                symbol, expiration, list(chain.strikes), cil_strike, preview.right, chain.tradingClass
+            )
+        except ValueError:
+            # Odběr referenční opce nesmí zůstat viset, když vybraná opce neexistuje
+            if referencni is not None:
+                self.ib.unsubscribe(referencni.contract)
+            raise
         preview.strike = strike
         preview.option = option
         preview.min_tick = details.minTick or 0.01
@@ -998,6 +1004,9 @@ class FlowEngine:
 
         znamenko = "+" if druh == "pt" else "-"
         text = f"{znamenko}{hodnota:,.2f} USD/ks".replace(",", " ")
+        # Nulová ztráta je stop na nákupní ceně - break even
+        if druh == "sl" and hodnota == 0:
+            text = "BE"
         if flow.fill_price is not None:
             if druh == "pt":
                 cena = calc.option_profit_limit(flow.fill_price, hodnota, flow.min_tick)

@@ -214,12 +214,18 @@ def levels_sane(
     Chrání před obchodem s poškozenými úrovněmi - například z dřívější
     chyby ve výpočtu, kdy se cíl opakovaným násobením vyšplhal do milionů.
     Úroveň zadaná na opci (USD na kontrakt) nemá ke vstupní ceně podkladu
-    vztah - u ní se kontroluje jen, že je kladná a konečná.
+    vztah - u ní se kontroluje jen, že je konečná a nezáporná; zisk (PT)
+    musí být kladný, ztráta (SL) smí být nulová - to je stop na break even.
     """
     if entry_price <= 0:
         return False
-    for uroven, na_podkladu in ((profit_target, pt_on_underlying), (stop_loss, sl_on_underlying)):
-        if uroven <= 0 or not math.isfinite(uroven):
+    for uroven, na_podkladu, nula_povolena in (
+        (profit_target, pt_on_underlying, False),
+        (stop_loss, sl_on_underlying, not sl_on_underlying),
+    ):
+        if not math.isfinite(uroven):
+            return False
+        if uroven < 0 or (uroven == 0 and not nula_povolena):
             return False
         if not na_podkladu:
             continue
