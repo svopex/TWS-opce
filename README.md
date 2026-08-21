@@ -199,7 +199,14 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    neběží) a navíc ji hlídá aplikace sama: jakmile se jeden příkaz vyplní,
    druhý ihned ruší, aby se opce neprodala dvakrát. Prodá-li se část kusů
    na PT a zbytek po zmenšení na SL, je prodejní cenou vážený průměr obou
-   a důvod výstupu „PT+SL“. Nepošle-li TWS nákupní cenu opce (tržní nákup
+   a důvod výstupu „PT+SL“. **Částečné vyplnění** se do přehledu i do modelu
+   pozice promítá hned, jak k němu dojde, ne až po dokončení prodeje: prodané
+   kusy zmizí z otevřeného množství a další úpravy (sloučení runneru zpět,
+   dorovnání po doplněném nákupu, uzavření trhem) se týkají jen zbytku.
+   Množství se každému příkazu nastavuje jako „kolik ještě prodat“ zvýšené
+   o jeho vlastní vyplnění — TWS totiž bere `totalQuantity` včetně už
+   prodaných kusů. Vyplní-li se příkaz na menší množství, než pozice drží,
+   skončí obchod ve stavu *Chyba* s údajem, kolik kusů zůstalo bez zajištění. Nepošle-li TWS nákupní cenu opce (tržní nákup
    bez limitu), vezme se jako základ pro úrovně na opci aktuální cena opce
    a aplikace na to upozorní v průběhu. Runner má vlastní
    dvojici ve vlastní OCA skupině. Zmizí-li z dvojice jeden příkaz bez
@@ -427,10 +434,19 @@ v souboru:
 | --- | --- |
 | pozice a k ní prodejní příkaz | pokračuje v hlídání |
 | pozice bez prodejního příkazu | zajištění doplní |
+| prodaná hlavní část a běžící runner | nechá runner běžet, nic nezadává |
+| rozdělané uzavírání trhem | dokončí je (tržní prodej dál hlídá) |
 | pozice uzavřená během výpadku | označí obchod za uzavřený |
 | nákupní příkaz čekající v trhu | naváže na něj |
 | nákupní příkaz, který v TWS není | zadá jej znovu |
 | nakoupený obchod bez pozice i příkazu | označí jako chybu k ruční kontrole |
+
+Zajištění se posuzuje po částech pozice zvlášť: hlavní část, která už je
+prodaná, ani část právě uzavíraná trhem žádné nepotřebují, takže se kvůli
+nim nesahá na zdravé příkazy té druhé. Vyplněný příkaz se přitom za živý
+nepovažuje — prodal, co měl, a v trhu po něm nic nezůstalo. Kolik kusů
+se má zajistit, říká **pozice v TWS**, ne nákupní příkaz: po restartu
+uprostřed rozprodávání bývá nižší.
 
 Aby aplikace své příkazy poznala, značkuje je v poli `orderRef` zápisem
 `TWSOPCE:<obchod>:entry`, `:exit`, resp. `:runner`; druhý příkaz dvojice
@@ -440,6 +456,10 @@ takže vedle ní můžete obchodovat i ručně.
 
 Drží-li účet pozici a z dvojice prodejních příkazů přežil jen jeden,
 aplikace jej zruší, počká na potvrzení a zajištění založí znovu celé.
+Ztratí-li se soubor se stavem, převzatý obchod si nese i **nákupní cenu opce**
+z vyplněného příkazu — bez ní by úrovně zadané na cenu opce nešlo spočítat
+ani měnit. Přežije-li jen příkaz pro SL (`:exitsl`), pozná se z něj režim SL
+i jeho hodnota; stop na nákupní ceně znamená break even.
 
 Ztratí-li se soubor se stavem, aplikace podle těchto značek dohledá alespoň
 **čekající příkazy** a obchody z nich sestaví — vstupní cenu z cenové podmínky
