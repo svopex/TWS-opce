@@ -375,6 +375,25 @@ class TradingUI:
                 )
                 self.sl_primary.on_value_change(lambda e: self._on_primary_change())
 
+                # Režim SL: odškrtnuto = ztráta v USD na kontrakt, realizuje
+                # se stop-market příkazem přímo na cenu opce
+                self.sl_on_underlying = (
+                    ui.checkbox(
+                        "SL na podkladu (odškrtnuto: ztráta na opci v USD/ks)",
+                        value=self.cfg.trading.sl_on_underlying,
+                    )
+                    .props("dense")
+                    .classes("prepinac")
+                    .tooltip(
+                        "Zaškrtnuto: SL je cena podkladu (podmíněný příkaz). "
+                        "Odškrtnuto: SL je ztráta na jedné opci v USD, prodá se "
+                        "stop-market příkazem na cenu opce."
+                    )
+                )
+                self.sl_on_underlying.on_value_change(
+                    lambda e: self._on_mode_change("sl", bool(e.value))
+                )
+
                 # Režim PT: zaškrtnuto = cena podkladu (podmíněný příkaz),
                 # odškrtnuto = zisk v USD na jeden kontrakt realizovaný
                 # limitním příkazem přímo na cenu opce
@@ -393,25 +412,6 @@ class TradingUI:
                 )
                 self.pt_on_underlying.on_value_change(
                     lambda e: self._on_mode_change("pt", bool(e.value))
-                )
-
-                # Režim SL: odškrtnuto = ztráta v USD na kontrakt, realizuje
-                # se stop-market příkazem přímo na cenu opce
-                self.sl_on_underlying = (
-                    ui.checkbox(
-                        "SL na podkladu (odškrtnuto: ztráta na opci v USD/ks)",
-                        value=self.cfg.trading.sl_on_underlying,
-                    )
-                    .props("dense")
-                    .classes("prepinac")
-                    .tooltip(
-                        "Zaškrtnuto: SL je cena podkladu (podmíněný příkaz). "
-                        "Odškrtnuto: SL je ztráta na jedné opci v USD, prodá se "
-                        "stop-market příkazem na cenu opce."
-                    )
-                )
-                self.sl_on_underlying.on_value_change(
-                    lambda e: self._on_mode_change("sl", bool(e.value))
                 )
 
             # Pole úrovní se rozmístí podle výchozí prvotní úrovně

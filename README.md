@@ -104,7 +104,7 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    vstupu.
 
    **PT a SL na podkladu, nebo na opci.** Pod polem *Množství* jsou pod sebou
-   zaškrtávátka *PT na podkladu* a *SL na podkladu* (výchozí stav určuje
+   zaškrtávátka *SL na podkladu* a *PT na podkladu* (výchozí stav určuje
    `trading.pt_on_underlying` a `trading.sl_on_underlying`). Zaškrtnuté
    pole je cena podkladu a hlídá
    ji podmíněný příkaz, jak je popsáno výše. Odškrtnuté pole je **zisk
