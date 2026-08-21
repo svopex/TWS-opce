@@ -95,13 +95,18 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
      ze skutečného stavu účtu, je-li `account.size: 0`.
 
    Určený směr ukazuje odznak **LONG (CALL)** / **SHORT (PUT)** vedle
-   nadpisu *Zadání obchodu*. Je to jen indikace — objeví se, jakmile je
-   z vstupní ceny a aktuální ceny podkladu vybraný kontrakt, při načtení
-   běžícího obchodu přebírá jeho směr a při přechodu na jiný ticker zmizí.
+   nadpisu *Zadání obchodu*. Je to jen indikace — objeví se hned po zadání
+   tickeru a vstupní ceny (po opuštění pole se načte aktuální cena podkladu
+   a směr se určí z polohy vstupu vůči ní), při dalších úpravách vstupu se
+   průběžně přepočítává, při načtení běžícího obchodu přebírá jeho směr
+   a při přechodu na jiný ticker zmizí. Bez spojení s TWS, kdy cena podkladu
+   známá není, se směr napoví aspoň z polohy PT nebo SL na podkladu vůči
+   vstupu.
 
-   **PT a SL na podkladu, nebo na opci.** Před poli PT a SL je zaškrtávátko
-   *na podkladu* (výchozí stav určuje `trading.pt_on_underlying`
-   a `trading.sl_on_underlying`). Zaškrtnuté pole je cena podkladu a hlídá
+   **PT a SL na podkladu, nebo na opci.** Pod polem *Množství* jsou pod sebou
+   zaškrtávátka *PT na podkladu* a *SL na podkladu* (výchozí stav určuje
+   `trading.pt_on_underlying` a `trading.sl_on_underlying`). Zaškrtnuté
+   pole je cena podkladu a hlídá
    ji podmíněný příkaz, jak je popsáno výše. Odškrtnuté pole je **zisk
    (PT), resp. ztráta (SL) v USD na jeden kontrakt** — 10 znamená posun
    ceny opce o 0,10 (nákup 3,00 → PT limit 3,10, SL stop 2,90). PT na opci
@@ -135,8 +140,9 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    znovu průběh (ze skutečné nákupní ceny), včetně skutečného stropu ztráty. Přepnutí zaškrtávátka pole vyprázdní,
    protože hodnota by v novém režimu znamenala něco jiného.
 
-   **Která úroveň je prvotní.** Oranžové zaškrtávátko hned za polem *Vstup
-   na podkladu* (výchozí stav `trading.primary_level`, standardně `sl`)
+   **Která úroveň je prvotní.** Oranžové zaškrtávátko *Zadává se SL, PT se
+   dopočítá podle poměru SL:PT* pod polem *Množství* (výchozí stav
+   `trading.primary_level`, standardně `sl`)
    určuje, která z úrovní se zadává a která se dopočítává podle poměru
    `sl_to_pt_ratio`. Zadávaná úroveň stojí vždy vedle vstupu, dopočítávaná
    v dalším řádku – přepnutím si pole PT a SL vymění místo. Zaškrtnuto =
