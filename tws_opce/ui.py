@@ -13,7 +13,7 @@ from . import calc
 from .config import AppConfig
 from .engine import FlowEngine, Preview
 from .ib_service import IBService
-from .models import Flow, FlowRequest, FlowState
+from .models import Flow, FlowRequest, FlowState, level_text
 
 log = logging.getLogger(__name__)
 
@@ -176,39 +176,13 @@ PT_LABELS = {True: "PT na podkladu", False: "PT na opci [USD/ks]"}
 SL_LABELS = {True: "SL na podkladu", False: "SL na opci [USD/ks]"}
 
 
-def popisek_urovne(druh: str, na_podkladu: bool, dopocitana: bool) -> str:
+def popisek_urovne(druh: str, na_podkladu: bool) -> str:
     """
     Popisek pole PT ('pt') nebo SL ('sl') podle režimu. Která z úrovní se
     dopočítává (a je tedy nepovinná), říká zaškrtávátko prvotní úrovně pod
     poli - do úzkého pole se zaškrtávátkem by se delší popisek nevešel.
     """
     return (PT_LABELS if druh == "pt" else SL_LABELS)[na_podkladu]
-
-
-def uroven_text(flow: Flow, druh: str, hodnota: float | None = None) -> str:
-    """
-    Úroveň PT ('pt') nebo SL ('sl') pro tabulku.
-    Na podkladu cena; na opci zisk/ztráta v USD na kontrakt a po nákupu
-    i odpovídající cena opce, na kterou příkaz míří.
-    """
-    na_podkladu = flow.pt_on_underlying if druh == "pt" else flow.sl_on_underlying
-    if hodnota is None:
-        hodnota = flow.profit_target if druh == "pt" else flow.stop_loss
-    if na_podkladu:
-        return fmt(hodnota)
-
-    znamenko = "+" if druh == "pt" else "-"
-    castka = f"{znamenko}{fmt(hodnota)} USD"
-    # Nulová ztráta je stop na nákupní ceně opce - break even
-    if druh == "sl" and hodnota == 0:
-        castka = "BE"
-    if flow.fill_price is None:
-        return castka
-    if druh == "pt":
-        cena = calc.option_profit_limit(flow.fill_price, hodnota, flow.min_tick)
-    else:
-        cena = calc.option_loss_stop(flow.fill_price, hodnota, flow.min_tick)
-    return f"{fmt(cena)} ({castka})"
 
 
 class TradingUI:
@@ -367,7 +341,7 @@ class TradingUI:
                     )
                     self.pt_input = (
                         ui.number(
-                            popisek_urovne("pt", self.cfg.trading.pt_on_underlying, False),
+                            popisek_urovne("pt", self.cfg.trading.pt_on_underlying),
                             format="%.2f",
                         )
                         .classes("pole-vnitrni")
@@ -393,7 +367,7 @@ class TradingUI:
                     )
                     self.sl_input = (
                         ui.number(
-                            popisek_urovne("sl", self.cfg.trading.sl_on_underlying, False),
+                            popisek_urovne("sl", self.cfg.trading.sl_on_underlying),
                             format="%.2f",
                         )
                         .classes("pole-vnitrni")
@@ -556,11 +530,10 @@ class TradingUI:
         self._refresh_mode_labels()
 
     def _refresh_mode_labels(self) -> None:
-        """Popisky polí PT a SL odpovídají zvolenému režimu i prvotní úrovni."""
+        """Popisky polí PT a SL odpovídají zvolenému režimu; rozmístění prvotní úrovni."""
         pt_on, sl_on = self._form_modes()
-        prvotni = self._form_primary()
-        self.pt_input.props(f'label="{popisek_urovne("pt", pt_on, prvotni == "sl")}"')
-        self.sl_input.props(f'label="{popisek_urovne("sl", sl_on, prvotni == "pt")}"')
+        self.pt_input.props(f'label="{popisek_urovne("pt", pt_on)}"')
+        self.sl_input.props(f'label="{popisek_urovne("sl", sl_on)}"')
         self._arrange_level_groups()
 
     def _arrange_level_groups(self) -> None:
@@ -587,9 +560,9 @@ class TradingUI:
         (_set_modes) ji volá pod zámkem, a asynchronní obsluha by se spustila
         až po jeho uvolnění a právě naplněná pole by smazala.
         """
-        self._refresh_mode_labels()
         if self._modes_locked:
             return
+        self._refresh_mode_labels()
         prepnute = self.pt_input if druh == "pt" else self.sl_input
         prepnute.set_value(None)
         self._computed_input().set_value(None)
@@ -602,9 +575,9 @@ class TradingUI:
         spočítá znovu z toho zadaného. Synchronní ze stejného důvodu jako
         _on_mode_change.
         """
-        self._refresh_mode_labels()
         if self._modes_locked:
             return
+        self._refresh_mode_labels()
         self._computed_input().set_value(None)
         self._naplanuj_nahled()
 
@@ -822,16 +795,8 @@ class TradingUI:
                     f"cíl na podkladu ≈ {fmt(preview.target_level)} "
                     f"({preview.target_level_source})"
                 )
-            pt_text = (
-                fmt(preview.profit_target)
-                if preview.pt_on_underlying
-                else f"+{fmt(preview.profit_target)} USD/ks"
-            )
-            sl_text = (
-                fmt(preview.stop_loss)
-                if preview.sl_on_underlying
-                else f"-{fmt(preview.stop_loss)} USD/ks"
-            )
+            pt_text = level_text("pt", preview.profit_target, preview.pt_on_underlying)
+            sl_text = level_text("sl", preview.stop_loss, preview.sl_on_underlying)
             detail_parts.append(
                 f"doporučeno: PT {pt_text}, SL {sl_text}, {preview.quantity} ks"
             )
@@ -880,7 +845,7 @@ class TradingUI:
             return
 
         ui.notify(
-            f"{flow.id}: cíl {uroven_text(flow, 'pt', novy_pt)} ({nasobek:g}× původní).",
+            f"{flow.id}: cíl {flow.level_text('pt', novy_pt)} ({nasobek:g}× původní).",
             type="positive",
         )
         # Formulář může ukazovat tento obchod, hodnotu je třeba srovnat
@@ -910,7 +875,7 @@ class TradingUI:
             ui.notify(f"{flow.id}: {flow.message}", type="warning")
         else:
             popis = "break even" if rezim == "be" else "počáteční"
-            ui.notify(f"{flow.id}: SL {uroven_text(flow, 'sl')} ({popis}).", type="positive")
+            ui.notify(f"{flow.id}: SL {flow.level_text('sl')} ({popis}).", type="positive")
         # Formulář může ukazovat tento obchod, hodnotu je třeba srovnat
         if self.form_flow_id == flow.id:
             self._zapis_sl(flow)
@@ -935,7 +900,7 @@ class TradingUI:
         else:
             popis = "break even" if rezim == "be" else "počáteční"
             ui.notify(
-                f"{flow.id}: SL runneru {uroven_text(flow, 'sl', flow.runner_sl)} ({popis}).",
+                f"{flow.id}: SL runneru {flow.level_text('sl', flow.runner_sl)} ({popis}).",
                 type="positive",
             )
         self._refresh()
@@ -956,7 +921,7 @@ class TradingUI:
 
         ui.notify(
             f"{flow.id}: runner {flow.runner_quantity} ks s cílem "
-            f"{uroven_text(flow, 'pt', flow.runner_profit_target)} ({nasobek:g}×).",
+            f"{flow.level_text('pt', flow.runner_profit_target)} ({nasobek:g}×).",
             type="positive",
         )
         self._refresh()
@@ -1338,18 +1303,18 @@ class TradingUI:
             "fill": fmt(flow.fill_price),
             # Liší-li se cíl runneru od hlavního, ukazují se oba (stejně jako u SL).
             # Úroveň na opci se ukazuje jako zisk/ztráta v USD, po nákupu i cena opce
-            "pt": uroven_text(flow, "pt")
+            "pt": flow.level_text("pt")
             + (
-                f" · R {uroven_text(flow, 'pt', flow.runner_profit_target)}"
+                f" · R {flow.level_text('pt', flow.runner_profit_target)}"
                 if flow.runner_active
                 and flow.runner_fill_price is None
                 and abs(flow.runner_profit_target - flow.profit_target) >= 0.005
                 else ""
             ),
             # Liší-li se SL runneru od hlavního, ukazují se oba
-            "sl": uroven_text(flow, "sl")
+            "sl": flow.level_text("sl")
             + (
-                f" · R {uroven_text(flow, 'sl', flow.runner_sl)}"
+                f" · R {flow.level_text('sl', flow.runner_sl)}"
                 if flow.runner_active
                 and flow.runner_fill_price is None
                 and abs(flow.runner_sl - flow.stop_loss) >= 0.005

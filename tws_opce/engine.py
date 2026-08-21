@@ -476,6 +476,39 @@ class FlowEngine:
         self._replace_preview(preview)
         return preview
 
+    def _model_delta(
+        self,
+        cena_opce: float | None,
+        podklad: float | None,
+        strike: float,
+        expiration: str,
+        right: str,
+        delta: float | None,
+        se_znamenkem: bool = False,
+    ) -> float:
+        """
+        Delta pro záložní lineární odhad, když model z ceny opce selže.
+
+        Přednost má delta z TWS, pak dopočet z aktuální ceny opce a teprve
+        nakonec náhradní hodnota z konfigurace. Se se_znamenkem se náhradní
+        hodnota vrací se znaménkem podle typu opce (u PUT záporná), jinak
+        kladná - volající si ji stejně bere v absolutní hodnotě.
+        """
+        if delta is None and cena_opce and podklad:
+            delta = calc.estimate_delta(
+                cena_opce,
+                podklad,
+                strike,
+                expiration,
+                self.cfg.trading.risk_free_rate_pct,
+                right,
+            )
+        if delta is None:
+            delta = self.cfg.trading.default_delta
+            if se_znamenkem and right == "P":
+                delta = -delta
+        return delta
+
     def _level_from_option_profit(
         self,
         cena_opce: float | None,
@@ -516,10 +549,7 @@ class FlowEngine:
                     return uroven, popis
 
         # Záložní lineární odhad: pohyb podkladu = posun ceny opce / |delta|
-        if delta is None and cena_opce and podklad:
-            delta = calc.estimate_delta(cena_opce, podklad, strike, expiration, sazba, right)
-        if delta is None:
-            delta = self.cfg.trading.default_delta
+        delta = self._model_delta(cena_opce, podklad, strike, expiration, right, delta)
         if abs(delta) > 0:
             return entry_price + smer * posun_ceny / abs(delta), "z delty"
         return entry_price, "vstupní cena"
@@ -551,11 +581,10 @@ class FlowEngine:
             if cena_na_vstupu is not None and cena_na_urovni is not None:
                 return (cena_na_urovni - cena_na_vstupu) * calc.OPTION_MULTIPLIER
 
-        if delta is None and cena_opce and podklad:
-            delta = calc.estimate_delta(cena_opce, podklad, strike, expiration, sazba, right)
-        if delta is None:
-            # Náhradní delta nese znaménko podle typu opce
-            delta = self.cfg.trading.default_delta * (1.0 if right == "C" else -1.0)
+        # Náhradní delta tady nese znaménko podle typu opce - výsledek se jím násobí
+        delta = self._model_delta(
+            cena_opce, podklad, strike, expiration, right, delta, se_znamenkem=True
+        )
         return (uroven - entry_price) * delta * calc.OPTION_MULTIPLIER
 
     async def _reference_option(
@@ -696,48 +725,40 @@ class FlowEngine:
         if not preview.pt_on_underlying and not preview.sl_on_underlying:
             return round(profit_target * pomer, 2)
 
-        sazba = self.cfg.trading.risk_free_rate_pct
-        smer = 1.0 if preview.right == "C" else -1.0
         # Cena vybrané opce pro model - střed kotace, jinak last/close
         cena = preview.option_price
         podklad = preview.current_price
 
-        def cena_opce_pri(uroven: float) -> float | None:
-            """Odhad ceny vybrané opce, až podklad dosáhne dané úrovně."""
-            if not cena or not podklad:
-                return None
-            return calc.project_option_price(
-                cena, podklad, uroven, preview.strike, preview.expiration, sazba, preview.right
-            )
-
-        cena_na_vstupu = cena_opce_pri(entry_price)
-
         if preview.pt_on_underlying:
             # PT na podkladu, SL na opci: očekávaný zisk na PT v USD krát poměr
-            zisk = None
-            cena_na_pt = cena_opce_pri(profit_target) if cena_na_vstupu else None
-            if cena_na_pt is not None:
-                zisk = (cena_na_pt - cena_na_vstupu) * calc.OPTION_MULTIPLIER
-            if zisk is None or zisk <= 0:
+            zisk = self._profit_from_underlying_level(
+                cena,
+                podklad,
+                entry_price,
+                profit_target,
+                preview.strike,
+                preview.expiration,
+                preview.right,
+                delta,
+            )
+            if zisk <= 0:
+                # Model dal nesmyslný výsledek - lineárně přes deltu
                 zisk = abs(profit_target - entry_price) * abs(delta) * calc.OPTION_MULTIPLIER
             return round(max(zisk * pomer, 0.01), 2)
 
-        # PT na opci, SL na podkladu: úroveň podkladu, kde opce ztratí PT krát poměr
-        ztrata_ceny = profit_target * pomer / calc.OPTION_MULTIPLIER
-        if cena_na_vstupu and cena_na_vstupu - ztrata_ceny > 0:
-            uroven = calc.project_underlying_level(
-                cena,
-                podklad,
-                cena_na_vstupu - ztrata_ceny,
-                preview.strike,
-                preview.expiration,
-                sazba,
-                preview.right,
-            )
-            if uroven is not None:
-                return round(uroven, 2)
-        # Bez použitelného modelu lineárně přes deltu, na opačnou stranu než PT
-        return round(entry_price - smer * ztrata_ceny / max(abs(delta), 1e-6), 2)
+        # PT na opci, SL na podkladu: úroveň podkladu, kde opce ztratí PT krát
+        # poměr - tedy tentýž převod jako u cíle, jen se záporným "ziskem"
+        uroven, _ = self._level_from_option_profit(
+            cena,
+            podklad,
+            entry_price,
+            -profit_target * pomer,
+            preview.strike,
+            preview.expiration,
+            preview.right,
+            delta,
+        )
+        return round(uroven, 2)
 
     def _capped_option_loss(self, preview: Preview, entry_price: float, stop_loss: float) -> float:
         """
@@ -806,6 +827,28 @@ class FlowEngine:
     # Založení a zrušení flow
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _check_profit_target(
+        right: str,
+        entry: float,
+        pt: float,
+        pt_on_underlying: bool,
+        popis: str = "PT",
+    ) -> None:
+        """
+        Ověří cílovou úroveň: na podkladu musí u CALL ležet nad vstupem
+        a u PUT pod ním, na opci musí být zisk kladná částka v USD
+        na kontrakt. Popis se objeví v chybové hlášce ('PT', 'Cíl runneru').
+        """
+        if not pt_on_underlying:
+            if pt <= 0:
+                raise ValueError(f"{popis} na opci musí být kladná částka v USD na kontrakt.")
+            return
+        if right == "C" and pt <= entry:
+            raise ValueError(f"U CALL opce musí {popis} ležet nad vstupní cenou podkladu.")
+        if right == "P" and pt >= entry:
+            raise ValueError(f"U PUT opce musí {popis} ležet pod vstupní cenou podkladu.")
+
     def _validate(
         self,
         right: str,
@@ -820,13 +863,7 @@ class FlowEngine:
         Na podkladu musí být u CALL PT nad vstupem a SL pod ním, u PUT opačně.
         Zisk a ztráta zadané na opci musí být kladné částky v USD na kontrakt.
         """
-        if pt_on_underlying:
-            if right == "C" and pt <= entry:
-                raise ValueError("U CALL opce musí být PT nad vstupní cenou podkladu.")
-            if right == "P" and pt >= entry:
-                raise ValueError("U PUT opce musí být PT pod vstupní cenou podkladu.")
-        elif pt <= 0:
-            raise ValueError("Zisk na opci (PT) musí být kladná částka v USD na kontrakt.")
+        self._check_profit_target(right, entry, pt, pt_on_underlying)
 
         if sl_on_underlying:
             if right == "C" and sl >= entry:
@@ -979,8 +1016,8 @@ class FlowEngine:
             self.flows[flow.id] = flow
             self.log_event(
                 f"{flow.id}: založeno flow {flow.option_label()}, množství {quantity}, "
-                f"vstup {request.entry_price:g}, PT {self._level_text(flow, 'pt')}, "
-                f"SL {self._level_text(flow, 'sl')}."
+                f"vstup {request.entry_price:g}, PT {flow.level_text('pt')}, "
+                f"SL {flow.level_text('sl')}."
             )
 
             # Zdroj ceny pro model se hlásí i do logu - v náhledu ho obchodník
@@ -1025,39 +1062,8 @@ class FlowEngine:
         flow.runner_stop_loss = flow.stop_loss
         self.log_event(
             f"{flow.id}: runner {runner_q} ks převzat z nahrazeného obchodu, "
-            f"cíl {self._level_text(flow, 'pt', cil)} ({nasobek:g}× původní cíl)."
+            f"cíl {flow.level_text('pt', cil)} ({nasobek:g}× původní cíl)."
         )
-
-    def _level_text(self, flow: Flow, druh: str, hodnota: float | None = None) -> str:
-        """
-        Popis úrovně PT ('pt') nebo SL ('sl') pro log a hlášky.
-        Na podkladu je to cena, na opci zisk/ztráta v USD na kontrakt
-        a po nákupu i odpovídající cena opce.
-        """
-        if druh == "pt":
-            na_podkladu = flow.pt_on_underlying
-            if hodnota is None:
-                hodnota = flow.profit_target
-        else:
-            na_podkladu = flow.sl_on_underlying
-            if hodnota is None:
-                hodnota = flow.stop_loss
-
-        if na_podkladu:
-            return f"{hodnota:,.2f}".replace(",", " ")
-
-        znamenko = "+" if druh == "pt" else "-"
-        text = f"{znamenko}{hodnota:,.2f} USD/ks".replace(",", " ")
-        # Nulová ztráta je stop na nákupní ceně - break even
-        if druh == "sl" and hodnota == 0:
-            text = "BE"
-        if flow.fill_price is not None:
-            if druh == "pt":
-                cena = calc.option_profit_limit(flow.fill_price, hodnota, flow.min_tick)
-            else:
-                cena = calc.option_loss_stop(flow.fill_price, hodnota, flow.min_tick)
-            text += f" (opce {cena:g})"
-        return text
 
     def _compute_expected_pnl(self, flow: Flow) -> None:
         """
@@ -1530,18 +1536,18 @@ class FlowEngine:
             if trade is not None and trade.order.orderType == "LMT":
                 typ = f"LMT {trade.order.lmtPrice:g}"
             return (
-                f"příkaz {typ} s podmínkami PT {self._level_text(flow, 'pt', pt_level)} "
-                f"/ SL {self._level_text(flow, 'sl', sl_level)}."
+                f"příkaz {typ} s podmínkami PT {flow.level_text('pt', pt_level)} "
+                f"/ SL {flow.level_text('sl', sl_level)}."
             )
 
         if flow.pt_on_underlying:
-            popis_pt = f"PT podmínkou na podkladu {self._level_text(flow, 'pt', pt_level)}"
+            popis_pt = f"PT podmínkou na podkladu {flow.level_text('pt', pt_level)}"
         else:
-            popis_pt = f"PT limitem na opci {self._level_text(flow, 'pt', pt_level)}"
+            popis_pt = f"PT limitem na opci {flow.level_text('pt', pt_level)}"
         if flow.sl_on_underlying:
-            popis_sl = f"SL podmínkou na podkladu {self._level_text(flow, 'sl', sl_level)}"
+            popis_sl = f"SL podmínkou na podkladu {flow.level_text('sl', sl_level)}"
         else:
-            popis_sl = f"SL stop-marketem na opci {self._level_text(flow, 'sl', sl_level)}"
+            popis_sl = f"SL stop-marketem na opci {flow.level_text('sl', sl_level)}"
         return f"dva příkazy (OCA) - {popis_pt}, {popis_sl}."
 
     def _modify_part_levels(self, flow: Flow, part: str, which: str | None = None) -> bool:
@@ -1670,13 +1676,9 @@ class FlowEngine:
 
         # Nový cíl musí zůstat na správné straně vstupu, jinak by obchod
         # ztratil smysl; zisk na opci musí zůstat kladný
-        if flow.pt_on_underlying:
-            if flow.right == "C" and novy_pt <= flow.entry_price:
-                raise ValueError("U CALL opce musí PT zůstat nad vstupní cenou podkladu.")
-            if flow.right == "P" and novy_pt >= flow.entry_price:
-                raise ValueError("U PUT opce musí PT zůstat pod vstupní cenou podkladu.")
-        elif novy_pt <= 0:
-            raise ValueError("Zisk na opci (PT) musí zůstat kladná částka v USD na kontrakt.")
+        self._check_profit_target(
+            flow.right, flow.entry_price, novy_pt, flow.pt_on_underlying
+        )
 
         async with self._lock:
             puvodni = flow.profit_target
@@ -1690,8 +1692,8 @@ class FlowEngine:
             nasobek = flow.pt_multiple
             popis = f" ({nasobek:g}× původní cíl)" if nasobek else ""
             self.log_event(
-                f"{flow.id}: cíl změněn z {self._level_text(flow, 'pt', puvodni)} "
-                f"na {self._level_text(flow, 'pt', novy_pt)}{popis}."
+                f"{flow.id}: cíl změněn z {flow.level_text('pt', puvodni)} "
+                f"na {flow.level_text('pt', novy_pt)}{popis}."
             )
             self._notify()
             return flow
@@ -1774,8 +1776,8 @@ class FlowEngine:
             )
             return
         flow.touch(
-            f"Zajišťovací příkaz upraven na PT {self._level_text(flow, 'pt')} "
-            f"/ SL {self._level_text(flow, 'sl')}."
+            f"Zajišťovací příkaz upraven na PT {flow.level_text('pt')} "
+            f"/ SL {flow.level_text('sl')}."
         )
 
     async def set_runner(self, flow_id: str, multiple: float) -> Flow:
@@ -1818,13 +1820,9 @@ class FlowEngine:
 
         # Cíl runneru musí ležet na stejné straně vstupu jako hlavní cíl;
         # zisk na opci musí být kladný
-        if flow.pt_on_underlying:
-            if flow.right == "C" and novy_pt <= flow.entry_price:
-                raise ValueError("U CALL opce musí cíl runneru zůstat nad vstupní cenou podkladu.")
-            if flow.right == "P" and novy_pt >= flow.entry_price:
-                raise ValueError("U PUT opce musí cíl runneru zůstat pod vstupní cenou podkladu.")
-        elif novy_pt <= 0:
-            raise ValueError("Zisk runneru na opci musí být kladná částka v USD na kontrakt.")
+        self._check_profit_target(
+            flow.right, flow.entry_price, novy_pt, flow.pt_on_underlying, "cíl runneru"
+        )
 
         async with self._lock:
             byl_aktivni = flow.runner_active
@@ -1854,7 +1852,7 @@ class FlowEngine:
                         raise
 
             self.log_event(
-                f"{flow.id}: runner {runner_q} ks s cílem {self._level_text(flow, 'pt', novy_pt)} "
+                f"{flow.id}: runner {runner_q} ks s cílem {flow.level_text('pt', novy_pt)} "
                 f"({multiple:g}× původní cíl)."
             )
             self._notify()
@@ -2030,7 +2028,7 @@ class FlowEngine:
                 flow.main_close_requested = True
                 self._cancel_part(flow, "exit")
                 flow.touch(
-                    f"SL {self._level_text(flow, 'sl')} je již dosažen, hlavní část "
+                    f"SL {flow.level_text('sl')} je již dosažen, hlavní část "
                     f"({flow.main_quantity} ks) se prodává trhem."
                 )
                 self.log_event(f"{flow.id}: {flow.message}")
@@ -2038,7 +2036,7 @@ class FlowEngine:
                 self._update_exit_levels(flow, "sl")
                 popis = "break even" if rezim == "be" else "počáteční hodnota"
                 self.log_event(
-                    f"{flow.id}: SL hlavní části nastaven na {self._level_text(flow, 'sl')} ({popis})."
+                    f"{flow.id}: SL hlavní části nastaven na {flow.level_text('sl')} ({popis})."
                 )
             self._notify()
             return flow
@@ -2072,7 +2070,7 @@ class FlowEngine:
                 flow.runner_close_requested = True
                 self._cancel_part(flow, "runner")
                 flow.touch(
-                    f"SL runneru {self._level_text(flow, 'sl', novy_sl)} je již dosažen, "
+                    f"SL runneru {flow.level_text('sl', novy_sl)} je již dosažen, "
                     f"runner ({flow.runner_quantity} ks) se prodává trhem."
                 )
                 self.log_event(f"{flow.id}: {flow.message}")
@@ -2081,7 +2079,7 @@ class FlowEngine:
                 popis = "break even" if rezim == "be" else "počáteční hodnota"
                 self.log_event(
                     f"{flow.id}: SL runneru nastaven na "
-                    f"{self._level_text(flow, 'sl', novy_sl)} ({popis})."
+                    f"{flow.level_text('sl', novy_sl)} ({popis})."
                 )
             self._notify()
             return flow
@@ -3144,7 +3142,7 @@ class FlowEngine:
                 self._split_exit_for_runner(flow)
                 self.log_event(
                     f"{flow.id}: nákup doplněn, runner {flow.runner_quantity} ks "
-                    f"se oddělil s cílem {self._level_text(flow, 'pt', flow.runner_profit_target)}."
+                    f"se oddělil s cílem {flow.level_text('pt', flow.runner_profit_target)}."
                 )
                 changed = True
 
@@ -3304,7 +3302,7 @@ class FlowEngine:
             flow.touch(
                 f"Hlavní část prodána ({flow.exit_reason}), runner "
                 f"{flow.runner_quantity} ks běží dál s cílem "
-                f"{self._level_text(flow, 'pt', flow.runner_profit_target)}."
+                f"{flow.level_text('pt', flow.runner_profit_target)}."
             )
             changed = True
 

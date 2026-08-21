@@ -7,8 +7,47 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+from . import calc
+
 # Popisky typu opce pro zobrazení v UI
 RIGHT_LABELS = {"C": "CALL", "P": "PUT"}
+
+
+def cislo_text(hodnota: float, desetin: int = 2) -> str:
+    """Číslo pro zobrazení - tisíce oddělené mezerou, desetinná čárka jako tečka."""
+    return f"{hodnota:,.{desetin}f}".replace(",", " ")
+
+
+def level_text(
+    druh: str,
+    hodnota: float,
+    na_podkladu: bool,
+    fill_price: float | None = None,
+    min_tick: float = 0.01,
+) -> str:
+    """
+    Popis úrovně PT ('pt') nebo SL ('sl') pro přehled, log i hlášky.
+
+    Na podkladu je to cena podkladu. Na opci je to zisk, resp. ztráta v USD
+    na jeden kontrakt; je-li známa nákupní cena, uvede se navíc cena opce,
+    na kterou příkaz míří - například „3,10 (+10,00 USD)". Nulová ztráta na
+    opci je stop na nákupní ceně, tedy break even.
+    """
+    if na_podkladu:
+        return cislo_text(hodnota)
+
+    if druh == "sl" and hodnota == 0:
+        castka = "BE"
+    else:
+        castka = f"{'+' if druh == 'pt' else '-'}{cislo_text(hodnota)} USD"
+    if fill_price is None:
+        return castka
+
+    if druh == "pt":
+        cena = calc.option_profit_limit(fill_price, hodnota, min_tick)
+    else:
+        cena = calc.option_loss_stop(fill_price, hodnota, min_tick)
+    return f"{cislo_text(cena)} ({castka})"
 
 
 class FlowState(str, Enum):
@@ -247,6 +286,22 @@ class Flow:
         na opci nulová ztráta (stop na nákupní ceně opce).
         """
         return self.entry_price if self.sl_on_underlying else 0.0
+
+    def level_text(self, druh: str, hodnota: float | None = None) -> str:
+        """
+        Popis vlastní úrovně PT ('pt') nebo SL ('sl').
+        Bez zadané hodnoty se bere aktuální úroveň obchodu; jinak se popíše
+        libovolná hodnota v témže režimu (například cíl runneru).
+        """
+        if druh == "pt":
+            na_podkladu = self.pt_on_underlying
+            if hodnota is None:
+                hodnota = self.profit_target
+        else:
+            na_podkladu = self.sl_on_underlying
+            if hodnota is None:
+                hodnota = self.stop_loss
+        return level_text(druh, hodnota, na_podkladu, self.fill_price, self.min_tick)
 
     def scaled_target(self, multiple: float) -> float:
         """
