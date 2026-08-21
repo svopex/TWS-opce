@@ -725,6 +725,59 @@ class TestObnovaDvojice(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(obnovene.exit_reason, "ručně")
         self.assertAlmostEqual(obnovene.exit_fill_price, 2.95)
 
+    async def test_prevzeti_zna_nakupni_cenu_a_umi_zmenit_cil(self):
+        """
+        Převzatý obchod musí znát nákupní cenu opce - bez ní by úrovně
+        zadané na cenu opce nešlo ani spočítat, ani měnit.
+        """
+        flow = await self.zaloz_nakoupeny()
+        Path(self.cfg.state.file).unlink()
+
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        prevzaty = novy.flows[flow.id]
+
+        self.assertAlmostEqual(prevzaty.fill_price, 3.00)
+        self.assertEqual(prevzaty.filled_quantity, 2)
+
+        await novy.change_profit_target(prevzaty.id, 20.0)
+        self.assertAlmostEqual(prevzaty.profit_target, 20.0)
+        # Zisk 20 USD na kontrakt = limit 0,20 nad nákupní cenou
+        self.assertAlmostEqual(prevzaty.exit_trade.order.lmtPrice, 3.20)
+
+    async def test_prevzeti_podle_samotneho_stop_prikazu(self):
+        """Přežil-li jen příkaz pro SL, obchod se nesmí převzít jako oba na podkladu."""
+        flow = await self.zaloz_nakoupeny()
+        Path(self.cfg.state.file).unlink()
+        # Limitní příkaz pro PT v TWS není (například byl ručně zrušen a smazán)
+        self.ib.placed.remove(flow.exit_trade)
+
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        prevzaty = novy.flows[flow.id]
+
+        self.assertFalse(prevzaty.sl_on_underlying)
+        self.assertTrue(prevzaty.exit_split)
+        self.assertAlmostEqual(prevzaty.stop_loss, 10.0)
+        # PT se z ničeho odvodit nedá - dopočítá se ze strike a je to vidět
+        self.assertTrue(prevzaty.pt_on_underlying)
+        self.assertIn("dopočítané", prevzaty.message)
+
+    async def test_prevzeti_stop_na_nakupni_cene_je_break_even(self):
+        """Stop na nákupní ceně znamená nulovou ztrátu, ne chybějící údaj."""
+        flow = await self.zaloz_nakoupeny()
+        self.ib.price_bid, self.ib.price_ask = 3.20, 3.30
+        await self.engine.set_stop_loss(flow.id, "be")
+        self.assertAlmostEqual(flow.exit_sl_trade.order.auxPrice, 3.00)
+        Path(self.cfg.state.file).unlink()
+
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        prevzaty = novy.flows[flow.id]
+
+        self.assertFalse(prevzaty.sl_on_underlying)
+        self.assertAlmostEqual(prevzaty.stop_loss, 0.0)
+
     async def test_prevzeti_smiseneho_rezimu(self):
         flow = await self.zaloz_nakoupeny(pt_on=True, sl_on=False)
         Path(self.cfg.state.file).unlink()

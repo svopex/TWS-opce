@@ -1189,6 +1189,29 @@ class FlowEngine:
             return None
         return calc.round_to_tick(price, flow.min_tick)
 
+    def _ensure_fill_price(self, flow: Flow) -> None:
+        """
+        Doplní nákupní cenu opce, kterou TWS neposlala (tržní nákup bez limitu).
+
+        Úrovně zadané na cenu opce se od nákupní ceny odvíjejí, bez ní by
+        pozice zůstala bez zajištění. Jako náhrada se bere aktuální cena opce -
+        základ pro PT/SL je pak jen přibližný, proto se to hlásí do logu.
+        """
+        if flow.fill_price is not None or not flow.exit_split:
+            return
+        nahradni, zdroj = self.ib.option_price(flow.option_contract)
+        if nahradni is None:
+            raise ValueError(
+                "Nákupní cena opce není známa a opce nemá žádnou cenu - PT/SL "
+                "zadané na cenu opce nelze zadat, zkontrolujte pozici v TWS."
+            )
+        flow.fill_price = nahradni
+        self.log_event(
+            f"{flow.id}: POZOR - TWS neposlala nákupní cenu opce, jako základ pro "
+            f"PT/SL na cenu opce se bere aktuální cena {nahradni:g} ({zdroj}). "
+            f"Zkontrolujte skutečnou nákupní cenu v TWS."
+        )
+
     def _place_exit(self, flow: Flow, quantity: int) -> None:
         """
         Zadá zajišťovací prodejní příkazy pro PT i SL.
@@ -1198,6 +1221,8 @@ class FlowEngine:
         na vlastním cíli; SL mají oba stejný. Kolik příkazů na jednu část
         vznikne, určuje režim PT a SL (viz _build_part_orders).
         """
+        self._ensure_fill_price(flow)
+
         # Prodaná hlavní část se znovu nezajišťuje - zbylé kusy drží runner
         if flow.exit_fill_price is not None:
             if not flow.runner_active or quantity < 1:
@@ -1405,21 +1430,12 @@ class FlowEngine:
             limit = self._exit_limit(flow) if part == "exit" else None
             return [("pt", self.ib.build_exit_order(quantity, limit, podminky, ref_pt))]
 
-        # Úroveň na opci se odvíjí od nákupní ceny. Nepošle-li ji TWS (a nákup
-        # byl tržní, bez limitu), vezme se jako náhrada aktuální cena opce -
-        # pozice musí dostat zajištění, i když základ pro PT/SL je jen přibližný
+        # Úroveň na opci se odvíjí od nákupní ceny; tu doplňuje _ensure_fill_price
+        # ještě před zadáním zajištění
         if flow.fill_price is None:
-            nahradni, zdroj = self.ib.option_price(flow.option_contract)
-            if nahradni is None:
-                raise ValueError(
-                    "Nákupní cena opce není známa a opce nemá žádnou cenu - PT/SL "
-                    "zadané na cenu opce nelze zadat, zkontrolujte pozici v TWS."
-                )
-            flow.fill_price = nahradni
-            self.log_event(
-                f"{flow.id}: POZOR - TWS neposlala nákupní cenu opce, jako základ pro "
-                f"PT/SL na cenu opce se bere aktuální cena {nahradni:g} ({zdroj}). "
-                f"Zkontrolujte skutečnou nákupní cenu v TWS."
+            raise ValueError(
+                "Nákupní cena opce není známa - PT/SL zadané na cenu opce nelze zadat, "
+                "zkontrolujte pozici v TWS."
             )
 
         oca = self._oca_group(flow, part)
@@ -2444,27 +2460,30 @@ class FlowEngine:
         if vystup is not None:
             podminky_pt = vystup.order.conditions
             if len(podminky_pt) >= 2:
+                # Společný podmíněný příkaz nese obě úrovně na podkladu
                 profit_target = float(podminky_pt[0].price)
                 stop_loss = float(podminky_pt[1].price)
-            else:
-                if podminky_pt:
-                    profit_target = float(podminky_pt[0].price)
-                elif vystup.order.orderType == "LMT" and nakup:
-                    zisk = round((float(vystup.order.lmtPrice) - nakup) * calc.OPTION_MULTIPLIER, 2)
-                    if zisk > 0:
-                        pt_on = False
-                        profit_target = zisk
-                if vystup_sl is not None:
-                    podminky_sl = vystup_sl.order.conditions
-                    if podminky_sl:
-                        stop_loss = float(podminky_sl[0].price)
-                    elif vystup_sl.order.orderType == "STP" and nakup:
-                        ztrata = round(
-                            (nakup - float(vystup_sl.order.auxPrice)) * calc.OPTION_MULTIPLIER, 2
-                        )
-                        if ztrata > 0:
-                            sl_on = False
-                            stop_loss = ztrata
+            elif podminky_pt:
+                profit_target = float(podminky_pt[0].price)
+            elif vystup.order.orderType == "LMT" and nakup:
+                zisk = round((float(vystup.order.lmtPrice) - nakup) * calc.OPTION_MULTIPLIER, 2)
+                if zisk > 0:
+                    pt_on = False
+                    profit_target = zisk
+
+        # Příkaz pro SL se čte samostatně - přežít mohl i sám, bez příkazu pro PT
+        if stop_loss is None and vystup_sl is not None:
+            podminky_sl = vystup_sl.order.conditions
+            if podminky_sl:
+                stop_loss = float(podminky_sl[0].price)
+            elif vystup_sl.order.orderType == "STP" and nakup:
+                ztrata = round(
+                    (nakup - float(vystup_sl.order.auxPrice)) * calc.OPTION_MULTIPLIER, 2
+                )
+                # Nula je platná hodnota - stop na nákupní ceně je break even
+                if ztrata >= 0:
+                    sl_on = False
+                    stop_loss = ztrata
 
         dopocteno = profit_target is None or stop_loss is None
         if profit_target is None:
@@ -2492,6 +2511,13 @@ class FlowEngine:
         )
         flow.entry_order_id = trade.order.orderId
         flow.entry_limit = valid_price(trade.order.lmtPrice)
+        # Nákupní cena je základem úrovní zadaných na cenu opce; bez ní by
+        # je nešlo ani zobrazit, ani měnit. Skutečný čas nákupu TWS u převzatého
+        # příkazu neposkytne, zaznamenává se tedy čas převzetí
+        if nakup is not None:
+            flow.fill_price = nakup
+            flow.fill_time = datetime.now()
+        flow.filled_quantity = int(trade.orderStatus.filled or 0)
 
         await self._restore_flow(flow, prikazy, pozice)
 
