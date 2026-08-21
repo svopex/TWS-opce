@@ -1424,6 +1424,17 @@ class FlowEngine:
             trade.orderStatus.status in DEAD_ORDER_STATES for trade in self._legs(flow, part)
         )
 
+    def _part_out_of_market(self, flow: Flow, part: str) -> bool:
+        """
+        True, pokud žádný příkaz části už nemůže prodat - byl zrušen, nebo se
+        celý vyplnil. Na rozdíl od _part_all_dead počítá i s vyplněným příkazem:
+        ten sice není zrušený, ale v trhu po něm také nic nezůstalo.
+        """
+        return all(
+            trade.orderStatus.status in DEAD_ORDER_STATES + ("Filled",)
+            for trade in self._legs(flow, part)
+        )
+
     def _part_covered(self, flow: Flow, part: str) -> bool:
         """
         True, pokud má část v trhu tolik živých příkazů, kolik jich režim PT
@@ -3230,7 +3241,7 @@ class FlowEngine:
         legy_runneru = self._legs(flow, "runner") if flow.runner_active else []
         if (
             legy_runneru
-            and self._part_all_dead(flow, "runner")
+            and self._part_out_of_market(flow, "runner")
             and flow.runner_fill_price is None
             and not flow.runner_close_requested
         ):
@@ -3287,16 +3298,18 @@ class FlowEngine:
         if not legy:
             return changed
 
-        # Prodejní příkazy zrušené mimo aplikaci
+        # Prodejní příkazy, které už nemohou prodat - zrušené mimo aplikaci,
+        # nebo vyplněné na menší množství, než pozice drží
         if (
-            self._part_all_dead(flow, "exit")
+            self._part_out_of_market(flow, "exit")
             and flow.exit_fill_price is None
             and not flow.main_close_requested
         ):
             flow.set_state(
                 FlowState.ERROR,
-                f"Prodejní příkaz byl zrušen v TWS ({self._part_status_text(flow, 'exit')}) - "
-                f"pozice je bez zajištění.",
+                f"Prodejní příkaz už není v trhu ({self._part_status_text(flow, 'exit')}) - "
+                f"zbytek pozice ({flow.main_quantity - flow.main_sold_quantity} ks) "
+                f"je bez zajištění.",
             )
             self.log_event(f"{flow.id}: {flow.message}")
             return True

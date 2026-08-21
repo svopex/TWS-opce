@@ -323,6 +323,26 @@ class TestVyplneniJednohoZDvojice(ZakladRezimu):
         await self.engine._tick()
         self.assertEqual(flow.state, FlowState.CLOSED)
 
+    async def test_vyplneny_prikaz_na_mensi_mnozstvi_hlasi_nezajisteny_zbytek(self):
+        """
+        TWS ohlásí příkaz jako vyplněný, ale prodal míň kusů, než pozice drží.
+        Zbytek zůstává bez zajištění - obchodník to musí vidět.
+        """
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=3)
+        await self.nakup(flow, 3, 3.00)
+        # Limit se vyplnil jen na 1 ks a přesto skončil jako Filled,
+        # stop k němu zrušila OCA skupina
+        self.ib.fill(flow.exit_trade, 1, 3.10)
+        flow.exit_sl_trade.orderStatus.status = "Cancelled"
+
+        await self.engine._tick()
+
+        self.assertEqual(flow.main_sold_quantity, 1)
+        self.assertIsNone(flow.exit_fill_price)
+        self.assertEqual(flow.state, FlowState.ERROR)
+        self.assertIn("bez zajištění", flow.message)
+        self.assertIn("2 ks", flow.message)
+
     async def test_nova_dvojice_varuje_znovu(self):
         """Po založení nové dvojice se varování o ztraceném příkazu smí zopakovat."""
         flow = await self.zaloz(False, False, 10.0, 10.0, quantity=3)
