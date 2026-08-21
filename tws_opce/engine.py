@@ -1198,6 +1198,21 @@ class FlowEngine:
         na vlastním cíli; SL mají oba stejný. Kolik příkazů na jednu část
         vznikne, určuje režim PT a SL (viz _build_part_orders).
         """
+        # Prodaná hlavní část se znovu nezajišťuje - zbylé kusy drží runner
+        if flow.exit_fill_price is not None:
+            if not flow.runner_active or quantity < 1:
+                flow.set_state(
+                    FlowState.EXIT_ARMED,
+                    "Hlavní část pozice je prodaná, zajišťovat není co.",
+                )
+                return
+            mnozstvi = min(quantity, flow.runner_quantity)
+            popis = self._place_part(flow, "runner", mnozstvi)
+            flow.runner_quantity = mnozstvi
+            flow.set_state(FlowState.EXIT_ARMED, f"Prodej runneru {mnozstvi} ks: {popis}")
+            self.log_event(f"{flow.id}: {flow.message}")
+            return
+
         # Runner se uplatní, jen když na něj po odečtení zbude aspoň 1 kontrakt
         runner_q = 0
         if flow.runner_active and quantity > flow.runner_quantity:
@@ -1299,6 +1314,30 @@ class FlowEngine:
         return all(
             trade.orderStatus.status in DEAD_ORDER_STATES for trade in self._legs(flow, part)
         )
+
+    def _part_covered(self, flow: Flow, part: str) -> bool:
+        """
+        True, pokud má část v trhu tolik živých příkazů, kolik jich režim PT
+        a SL vyžaduje (dvojice při odděleném výstupu, jinak jeden).
+        Vyplněný příkaz se za živý nepovažuje - prodal, co měl, a v trhu
+        už není; zajištění zbytku by po něm chybělo.
+        """
+        zive = [
+            trade
+            for trade in self._legs(flow, part)
+            if trade.orderStatus.status not in DEAD_ORDER_STATES + ("Filled",)
+        ]
+        return len(zive) >= (2 if flow.exit_split else 1)
+
+    def _market_sell_running(self, flow: Flow, part: str) -> bool:
+        """
+        True, pokud je v prvním slotu části živý tržní prodej bez podmínek -
+        tedy rozdělané uzavírání na pokyn obchodníka, které má doběhnout.
+        """
+        trade = self._leg(flow, part, "pt")
+        if trade is None or trade.orderStatus.status in DEAD_ORDER_STATES + ("Filled",):
+            return False
+        return trade.order.orderType == "MKT" and not trade.order.conditions
 
     def _filled_leg(self, flow: Flow, part: str) -> Any:
         """Vyplněný příkaz části, pokud některý je; jinak None."""
@@ -2540,44 +2579,77 @@ class FlowEngine:
             flow.touch("Spojení obnoveno, pozice se dál uzavírá.")
             return
 
-        # Pozice je otevřená - rozhoduje stav prodejních příkazů hlavní části
+        # Pozice je otevřená - rozhoduje stav prodejních příkazů obou částí
         if drzeno > 0:
-            flow.filled_quantity = drzeno
-            zive = [
-                trade
-                for trade in self._legs(flow, "exit")
-                if trade.orderStatus.status not in DEAD_ORDER_STATES
+            # Závazné je držené množství v TWS; už prodané kusy se přičtou,
+            # aby hlavní část, runner i otevřené množství vycházely správně
+            flow.filled_quantity = drzeno + flow.main_sold_quantity + flow.runner_sold_quantity
+
+            # Rozdělané uzavírání trhem pokračuje. Podmíněné příkazy, na jejichž
+            # zrušení se čekalo, se ruší znovu - požadavek se mohl ztratit
+            # s výpadkem spojení a bez zrušení by tržní prodej nešel zadat
+            for cast, uzavira in (
+                ("exit", flow.main_close_requested),
+                ("runner", flow.runner_close_requested),
+            ):
+                if uzavira and not self._market_sell_running(flow, cast):
+                    self._cancel_part(flow, cast)
+
+            # Zajištění potřebuje jen část, která se ještě neprodala a zároveň
+            # se neuzavírá trhem
+            chybi = [
+                cast
+                for cast, potreba in (
+                    ("exit", flow.exit_fill_price is None and not flow.main_close_requested),
+                    ("runner", flow.runner_active and not flow.runner_close_requested),
+                )
+                if potreba and not self._part_covered(flow, cast)
             ]
-            # Oddělený výstup potřebuje oba příkazy, společný jeden
-            potrebne = 2 if flow.exit_split else 1
-            if len(zive) >= potrebne:
+
+            if not chybi:
                 flow.set_state(
                     FlowState.EXIT_ARMED,
-                    f"Obnoveno: drženo {drzeno} ks, prodejní příkaz je v TWS.",
+                    f"Obnoveno: drženo {drzeno} ks, prodejní příkazy jsou v TWS.",
                 )
-            else:
-                # Zajištění chybí celé, nebo jen zčásti (osamocená polovina
-                # odděleného výstupu, přeživší příkaz runneru). Přeživší
-                # příkazy se ruší, ale zůstávají ve svých slotech - smyčka
-                # počká na potvrzení zrušení a teprve pak zajištění založí
-                # znovu, aby se v trhu neprodávalo víc kusů, než pozice drží
-                self._cancel_part(flow, "exit")
-                self._cancel_part(flow, "runner")
-                # Rozdělané uzavírání trhem se po restartu nedokončuje naslepo -
-                # zajištění se založí znovu a obchodník může uzavření zopakovat
-                flow.main_close_requested = False
-                flow.runner_close_requested = False
+                return
+
+            if flow.main_close_requested or flow.runner_close_requested:
+                # Nové zajištění by se sčítalo s běžícím tržním prodejem -
+                # rozhodnutí zůstává na obchodníkovi
                 flow.set_state(
-                    FlowState.FILLED,
-                    f"Obnoveno: drženo {drzeno} ks bez úplného zajištění, zajištění se doplní.",
+                    FlowState.EXIT_ARMED,
+                    f"Obnoveno: drženo {drzeno} ks, ale zajištění části pozice v TWS chybí "
+                    f"a zároveň probíhá uzavírání trhem - zkontrolujte pozici v TWS.",
                 )
-                flow.entry_cancel_requested = True
+                self.log_event(f"{flow.id}: {flow.message}")
+                return
+
+            # Zajištění chybí celé, nebo jen zčásti (osamocená polovina
+            # odděleného výstupu, přeživší příkaz runneru). Přeživší
+            # příkazy se ruší, ale zůstávají ve svých slotech - smyčka
+            # počká na potvrzení zrušení a teprve pak zajištění založí
+            # znovu, aby se v trhu neprodávalo víc kusů, než pozice drží
+            self._cancel_part(flow, "exit")
+            self._cancel_part(flow, "runner")
+            flow.set_state(
+                FlowState.FILLED,
+                f"Obnoveno: drženo {drzeno} ks bez úplného zajištění, zajištění se doplní.",
+            )
+            flow.entry_cancel_requested = True
             return
 
         # Pozice není a prodejní příkaz byl vyplněn - obchod se uzavřel během výpadku
         if self._filled_leg(flow, "exit") is not None:
-            flow.exit_fill_price, _, vyplnene = self._part_fill_summary(flow, "exit")
-            flow.exit_reason = self._part_reason(flow, "exit", vyplnene)
+            _, _, vyplnene = self._part_fill_summary(flow, "exit")
+            # Vyžádané uzavření trhem není ani PT, ani SL
+            duvod = (
+                "ručně" if flow.main_close_requested
+                else self._part_reason(flow, "exit", vyplnene)
+            )
+            self._sync_part_fills(flow, "exit")
+            if flow.main_sold_quantity:
+                flow.exit_fill_price = flow.main_sold_value / flow.main_sold_quantity
+            flow.exit_reason = duvod
             flow.set_state(FlowState.CLOSED, "Obnoveno: pozice byla uzavřena během výpadku.")
             self._release(flow)
             return
@@ -2585,6 +2657,8 @@ class FlowEngine:
         # Nákupní příkaz stále čeká v trhu
         if vstup is not None and vstup.orderStatus.status not in DEAD_ORDER_STATES:
             if vstup.orderStatus.filled > 0:
+                # Vyplněné množství je závazné - zajišťovat se bude podle něj
+                flow.filled_quantity = max(flow.filled_quantity, int(vstup.orderStatus.filled))
                 flow.set_state(FlowState.FILLED, "Obnoveno: nákup vyplněn, zajištění se doplní.")
             else:
                 flow.entry_limit = valid_price(vstup.order.lmtPrice) or flow.entry_limit
@@ -2908,7 +2982,10 @@ class FlowEngine:
                 )
                 return False
 
-        self._place_exit(flow, filled)
+        # Zajišťuje se skutečně držené množství - po restartu bývá nižší než
+        # vyplněný nákup, protože část pozice se už mezitím prodala
+        drzeno = flow.held_quantity - flow.main_sold_quantity
+        self._place_exit(flow, drzeno if drzeno > 0 else filled)
         return True
 
     def _handle_exit(self, flow: Flow) -> bool:

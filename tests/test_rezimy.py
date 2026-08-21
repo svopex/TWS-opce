@@ -543,7 +543,7 @@ class TestObnovaDvojice(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    async def zaloz_nakoupeny(self, pt_on: bool = False, sl_on: bool = False):
+    async def zaloz_nakoupeny(self, pt_on: bool = False, sl_on: bool = False, quantity: int = 2):
         """Založí obchod s oběma úrovněmi na opci, nakoupí a zajistí."""
         self.ib.price_underlying = 230.0
         flow = await self.engine.start_flow(
@@ -552,15 +552,15 @@ class TestObnovaDvojice(unittest.IsolatedAsyncioTestCase):
                 entry_price=232.0,
                 profit_target=10.0 if not pt_on else 235.0,
                 stop_loss=10.0 if not sl_on else 229.0,
-                quantity=2,
+                quantity=quantity,
                 pt_on_underlying=pt_on,
                 sl_on_underlying=sl_on,
             )
         )
-        self.ib.fill(flow.entry_trade, 2, 3.00)
+        self.ib.fill(flow.entry_trade, quantity, 3.00)
         await self.engine._tick()
         await self.engine._tick()
-        self.ib.held_positions[OPTION_CONID] = 2
+        self.ib.held_positions[OPTION_CONID] = quantity
         return flow
 
     async def test_rezimy_se_ukladaji_a_obnovi(self):
@@ -633,6 +633,97 @@ class TestObnovaDvojice(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(prevzaty.stop_loss, 10.0)
         self.assertEqual(prevzaty.state, FlowState.EXIT_ARMED)
         self.assertNotIn("dopočítané", prevzaty.message)
+
+    async def test_prodana_hlavni_cast_necha_runner_bezet(self):
+        """
+        PT hlavní části se vyplnil a SL k němu TWS zrušila přes OCA skupinu.
+        Runner běží dál - obnova se ho nesmí ani dotknout.
+        """
+        flow = await self.zaloz_nakoupeny(quantity=3)
+        await self.engine.set_runner(flow.id, 2.0)
+        # Hlavní část (2 ks) se prodala na PT, SL zrušila OCA skupina
+        self.ib.fill(flow.exit_trade, 2, 3.10)
+        flow.exit_sl_trade.orderStatus.status = "Cancelled"
+        await self.engine._tick()
+        self.assertIsNotNone(flow.exit_fill_price)
+        # V TWS zbývá jen kus runneru
+        self.ib.held_positions[OPTION_CONID] = 1
+        runner_pt, runner_sl = flow.runner_trade, flow.runner_sl_trade
+        prikazu_pred = len(self.ib.placed)
+
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        obnovene = novy.flows[flow.id]
+
+        self.assertEqual(obnovene.state, FlowState.EXIT_ARMED)
+        self.assertNotIn(runner_pt, self.ib.cancelled)
+        self.assertNotIn(runner_sl, self.ib.cancelled)
+        self.assertEqual(len(self.ib.placed), prikazu_pred)
+        self.assertTrue(obnovene.runner_active)
+        self.assertEqual(obnovene.open_quantity, 1)
+
+    async def test_po_prodanem_runneru_se_zajisti_zbyle_kusy(self):
+        """
+        Runner je prodaný, hlavní části někdo zrušil polovinu dvojice.
+        Nové zajištění musí krýt přesně držené kusy, ne celý nákup.
+        """
+        flow = await self.zaloz_nakoupeny(quantity=4)
+        await self.engine.set_runner(flow.id, 2.0)
+        self.ib.fill(flow.runner_trade, 1, 3.30)
+        await self.engine._tick()
+        self.assertEqual(flow.runner_sold_quantity, 1)
+        # Zbývají 3 ks a stop hlavní části byl v TWS zrušen
+        self.ib.held_positions[OPTION_CONID] = 3
+        flow.exit_sl_trade.orderStatus.status = "Cancelled"
+
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        obnovene = novy.flows[flow.id]
+        self.assertEqual(obnovene.state, FlowState.FILLED)
+
+        # Po potvrzení zrušení vznikne nová dvojice na 3 ks
+        for leg in (obnovene.exit_trade, obnovene.exit_sl_trade):
+            if leg is not None:
+                leg.orderStatus.status = "Cancelled"
+        await novy._tick()
+
+        self.assertEqual(obnovene.state, FlowState.EXIT_ARMED)
+        self.assertEqual(int(obnovene.exit_trade.order.totalQuantity), 3)
+        self.assertEqual(int(obnovene.exit_sl_trade.order.totalQuantity), 3)
+
+    async def test_rozdelane_uzavirani_trhem_pokracuje(self):
+        """Živý tržní prodej po restartu doběhne, nezruší se a nezakládá se zajištění."""
+        flow = await self.zaloz_nakoupeny()
+        await self.engine.close_main(flow.id)
+        await self.engine._tick()
+        trzni = flow.exit_trade
+        self.assertEqual(trzni.order.orderType, "MKT")
+        self.assertFalse(trzni.order.conditions)
+
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        obnovene = novy.flows[flow.id]
+
+        self.assertEqual(obnovene.state, FlowState.EXIT_ARMED)
+        self.assertTrue(obnovene.main_close_requested)
+        self.assertNotIn(trzni, self.ib.cancelled)
+        self.assertIs(obnovene.exit_trade, trzni)
+
+    async def test_trzni_prodej_vyplneny_behem_vypadku_je_rucni(self):
+        """Prodej na pokyn obchodníka se po obnově nesmí vydávat za PT."""
+        flow = await self.zaloz_nakoupeny()
+        await self.engine.close_main(flow.id)
+        await self.engine._tick()
+        self.ib.fill(flow.exit_trade, 2, 2.95)
+        self.ib.held_positions.clear()
+
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        obnovene = novy.flows[flow.id]
+
+        self.assertEqual(obnovene.state, FlowState.CLOSED)
+        self.assertEqual(obnovene.exit_reason, "ručně")
+        self.assertAlmostEqual(obnovene.exit_fill_price, 2.95)
 
     async def test_prevzeti_smiseneho_rezimu(self):
         flow = await self.zaloz_nakoupeny(pt_on=True, sl_on=False)
