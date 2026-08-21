@@ -94,6 +94,11 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
      vychází z velikosti účtu — buď z pevné hodnoty v konfiguraci, nebo
      ze skutečného stavu účtu, je-li `account.size: 0`.
 
+   Určený směr ukazuje odznak **LONG (CALL)** / **SHORT (PUT)** vedle
+   nadpisu *Zadání obchodu*. Je to jen indikace — objeví se, jakmile je
+   z vstupní ceny a aktuální ceny podkladu vybraný kontrakt, při načtení
+   běžícího obchodu přebírá jeho směr a při přechodu na jiný ticker zmizí.
+
    **PT a SL na podkladu, nebo na opci.** Před poli PT a SL je zaškrtávátko
    *na podkladu* (výchozí stav určuje `trading.pt_on_underlying`
    a `trading.sl_on_underlying`). Zaškrtnuté pole je cena podkladu a hlídá

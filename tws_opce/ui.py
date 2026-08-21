@@ -270,7 +270,16 @@ class TradingUI:
     def _build_form(self) -> None:
         """Formulář pro zadání obchodu."""
         with ui.card().classes("karta"):
-            ui.label("Zadání obchodu").classes("nadpis-sekce")
+            # Vedle nadpisu je odznak LONG/SHORT - jen indikace směru, který
+            # aplikace určila z polohy vstupu vůči aktuální ceně podkladu
+            with ui.row().classes("radek-nadpis"):
+                ui.label("Zadání obchodu").classes("nadpis-sekce")
+                self.direction_badge = ui.label("").classes("odznak-smer odznak-smer-formular")
+                self.direction_badge.tooltip(
+                    "Směr obchodu podle polohy vstupu vůči aktuální ceně podkladu: "
+                    "vstup nad trhem = LONG (CALL), vstup pod trhem = SHORT (PUT)."
+                )
+                self.direction_badge.set_visibility(False)
 
             with ui.row().classes("radek"):
                 self.symbol_input = (
@@ -490,6 +499,20 @@ class TradingUI:
             self.loading_label.set_text(text)
         self.loading_label.set_visibility(active)
 
+    def _set_direction(self, right: str | None) -> None:
+        """
+        Ukáže odznak směru obchodu ('C' = LONG, 'P' = SHORT) vedle nadpisu
+        formuláře; bez známého směru (None) odznak skryje.
+        """
+        if right not in ("C", "P"):
+            self.direction_badge.set_visibility(False)
+            return
+        self.direction_badge.set_text("LONG (CALL)" if right == "C" else "SHORT (PUT)")
+        self.direction_badge.classes(
+            remove="smer-long smer-short", add="smer-long" if right == "C" else "smer-short"
+        )
+        self.direction_badge.set_visibility(True)
+
     def _form_values(self) -> tuple[str, float | None, float | None, float | None]:
         """Přečte hodnoty z formuláře a převede je na čísla."""
         symbol = (self.symbol_input.value or "").upper().strip()
@@ -620,6 +643,7 @@ class TradingUI:
         self.last_symbol = flow.symbol
         self.form_flow_id = flow.id
         self.symbol_input.set_value(flow.symbol)
+        self._set_direction(flow.right)
         # Režimy se nastavují před hodnotami - jejich změna pole maže
         self._set_modes(flow.pt_on_underlying, flow.sl_on_underlying)
         self.entry_input.set_value(round(flow.entry_price, 2))
@@ -659,6 +683,7 @@ class TradingUI:
         self.preview = None
         self.preview_detail.set_text("")
         self.preview_warning.set_text("")
+        self._set_direction(None)
 
     async def _load_preview(self, rezim: str = "nacist") -> None:
         """
@@ -748,6 +773,7 @@ class TradingUI:
             self.preview_label.set_text(f"Chyba přípravy zadání: {exc}")
             self.preview_detail.set_text("")
             self.preview_warning.set_text("")
+            self._set_direction(None)
             return
 
         if pozadavek != self.preview_seq:
@@ -821,6 +847,8 @@ class TradingUI:
             )
         self.preview_detail.set_text(" | ".join(detail_parts))
         self.preview_warning.set_text(" ".join(preview.warnings))
+        # Typ opce je určený až s vybraným kontraktem; do té doby se odznak neukazuje
+        self._set_direction(preview.right if preview.expiration else None)
 
     async def _on_select_flow(self, event: Any) -> None:
         """

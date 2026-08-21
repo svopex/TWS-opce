@@ -140,6 +140,24 @@
   margin-bottom: 6px;
 }
 
+/* Nadpis formuláře s odznakem směru (LONG/SHORT) na jednom řádku */
+.radek-nadpis {
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.radek-nadpis .nadpis-sekce {
+  margin-bottom: 0;
+}
+
+.odznak-smer-formular {
+  font-size: 0.78rem;
+  margin-left: 0;
+  padding: 2px 8px;
+}
+
 .radek {
   align-items: center;
   gap: 10px;
