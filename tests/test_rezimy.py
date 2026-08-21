@@ -8,36 +8,19 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.fake_ib import OPTION_CONID, UNDERLYING_CONID, FakeIBService
-from tws_opce.config import AppConfig
+from tests.fake_ib import OPTION_CONID, UNDERLYING_CONID
+from tests.zaklad import ZakladEnginu, ZakladSeStavem
 from tws_opce.engine import FlowEngine
 from tws_opce.models import FlowRequest, FlowState
 
 
-def vychozi_config() -> AppConfig:
-    """Konfigurace pro testy - účet 5000 USD, risk 1 %, limit spreadu 5 %."""
-    cfg = AppConfig()
-    cfg.account.size = 5000.0
-    cfg.account.risk_pct = 1.0
-    cfg.trading.max_spread_pct = 5.0
-    cfg.state.enabled = False
-    cfg.trading.auto_close_enabled = False
-    return cfg
-
-
-class ZakladRezimu(unittest.IsolatedAsyncioTestCase):
-    """Společná příprava enginu s náhradou TWS a pomocné kroky scénářů."""
-
-    def setUp(self) -> None:
-        self.cfg = vychozi_config()
-        self.ib = FakeIBService(self.cfg)
-        self.engine = FlowEngine(self.cfg, self.ib)
+class ZakladRezimu(ZakladEnginu):
+    """Engine s náhradou TWS a pomocné kroky scénářů zadání na opci."""
 
     async def zaloz(self, pt_on: bool, sl_on: bool, pt: float, sl: float | None = None, **zmeny):
         """
@@ -586,22 +569,8 @@ class TestRunnerNaOpci(ZakladRezimu):
         self.assertEqual(int(flow.exit_sl_trade.order.totalQuantity), 3)
 
 
-class TestObnovaDvojice(unittest.IsolatedAsyncioTestCase):
+class TestObnovaDvojice(ZakladSeStavem):
     """Obnova obchodu s dvojicí prodejních příkazů po restartu."""
-
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.cfg = AppConfig()
-        self.cfg.state.file = str(Path(self.tmp.name) / "state.json")
-        self.cfg.trading.auto_close_enabled = False
-        self.ib = FakeIBService(self.cfg)
-        self.engine = FlowEngine(self.cfg, self.ib)
-
-    async def asyncSetUp(self) -> None:
-        await self.engine.restore()
-
-    def tearDown(self) -> None:
-        self.tmp.cleanup()
 
     async def zaloz_nakoupeny(self, pt_on: bool = False, sl_on: bool = False, quantity: int = 2):
         """Založí obchod s oběma úrovněmi na opci, nakoupí a zajistí."""
@@ -1016,22 +985,8 @@ class TestZdrojCenyOpce(ZakladRezimu):
 
 
 
-class TestObnovaSlBeNaOpci(unittest.IsolatedAsyncioTestCase):
+class TestObnovaSlBeNaOpci(ZakladSeStavem):
     """SL na break even v režimu na opci (ztráta 0 USD) musí přežít restart."""
-
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.cfg = AppConfig()
-        self.cfg.state.file = str(Path(self.tmp.name) / "state.json")
-        self.cfg.trading.auto_close_enabled = False
-        self.ib = FakeIBService(self.cfg)
-        self.engine = FlowEngine(self.cfg, self.ib)
-
-    async def asyncSetUp(self) -> None:
-        await self.engine.restore()
-
-    def tearDown(self) -> None:
-        self.tmp.cleanup()
 
     async def test_sl_be_na_opci_se_obnovi(self):
         self.ib.price_underlying = 230.0
