@@ -36,6 +36,8 @@ SAVED_FIELDS = (
     "quantity",
     "max_spread_pct",
     "right",
+    "pt_on_underlying",
+    "sl_on_underlying",
     "expiration",
     "strike",
     "option_conid",
@@ -45,17 +47,25 @@ SAVED_FIELDS = (
     "entry_limit",
     "entry_order_id",
     "exit_order_id",
+    "exit_sl_order_id",
     "fill_price",
     "filled_quantity",
     "exit_fill_price",
     "exit_reason",
+    "main_sold_quantity",
+    "main_sold_value",
+    "main_counted_quantity",
+    "main_counted_value",
     "runner_profit_target",
     "runner_quantity",
     "runner_stop_loss",
     "runner_order_id",
+    "runner_sl_order_id",
     "runner_fill_price",
     "runner_sold_quantity",
     "runner_realized_pnl",
+    "runner_counted_quantity",
+    "runner_counted_value",
     "main_close_requested",
     "runner_close_requested",
     "entry_cancel_requested",
@@ -92,8 +102,10 @@ def dict_to_flow(data: dict[str, Any]) -> Flow:
     if not flow.original_profit_target:
         flow.original_profit_target = flow.profit_target
 
-    # Totéž pro počáteční SL - tlačítko "Počáteční SL" se bez něj nemá kam vracet
-    if not flow.original_stop_loss:
+    # Totéž pro počáteční SL - tlačítko "Počáteční SL" se bez něj nemá kam vracet.
+    # Nula je přitom platná hodnota (break even u SL na opci), takže se doplňuje
+    # jen chybějící údaj, resp. nesmyslná nula u SL na podkladu
+    if not flow.original_sl_known:
         flow.original_stop_loss = flow.stop_loss
 
     for name in TIME_FIELDS:

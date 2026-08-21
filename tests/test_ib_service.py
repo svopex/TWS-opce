@@ -6,6 +6,7 @@ používá pole a metody ib_async správně.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import sys
 import unittest
@@ -158,6 +159,123 @@ class TestOdbery(unittest.TestCase):
 
         sluzba.unsubscribe(kontrakt)
         self.assertNotIn(kontrakt.conId, sluzba._tickers)
+
+
+class TestCenaOpceProModel(unittest.TestCase):
+    """Cena opce pro model - pořadí zdrojů: střed kotace, jedna strana, last, close."""
+
+    def setUp(self) -> None:
+        self.sluzba = IBService(AppConfig())
+
+    def test_stred_kotace_ma_prednost(self):
+        kontrakt = vloz_ticker(self.sluzba, bid=3.00, ask=3.10, last=2.50, close=2.00)
+        cena, zdroj = self.sluzba.option_price(kontrakt)
+        self.assertAlmostEqual(cena, 3.05)
+        self.assertEqual(zdroj, "BID/ASK")
+
+    def test_jedna_strana_kotace(self):
+        kontrakt = vloz_ticker(self.sluzba, ask=3.10, last=2.50)
+        cena, zdroj = self.sluzba.option_price(kontrakt)
+        self.assertAlmostEqual(cena, 3.10)
+        self.assertEqual(zdroj, "ASK")
+
+    def test_bez_kotaci_posledni_obchod(self):
+        kontrakt = vloz_ticker(self.sluzba, last=2.50, close=2.00)
+        cena, zdroj = self.sluzba.option_price(kontrakt)
+        self.assertAlmostEqual(cena, 2.50)
+        self.assertEqual(zdroj, "last")
+
+    def test_nakonec_zaverecna_cena(self):
+        kontrakt = vloz_ticker(self.sluzba, close=2.00)
+        cena, zdroj = self.sluzba.option_price(kontrakt)
+        self.assertAlmostEqual(cena, 2.00)
+        self.assertEqual(zdroj, "close")
+
+    def test_bez_jakekoliv_ceny(self):
+        kontrakt = vloz_ticker(self.sluzba, bid=-1.0, ask=NAN)
+        cena, zdroj = self.sluzba.option_price(kontrakt)
+        self.assertIsNone(cena)
+        self.assertEqual(zdroj, "")
+
+
+class TestCekaniNaKotace(unittest.IsolatedAsyncioTestCase):
+    """Čekání na data kontraktu dává kotacím šanci dorazit po závěrečné ceně."""
+
+    def setUp(self) -> None:
+        self.sluzba = IBService(AppConfig())
+
+    async def test_s_kotacemi_vraci_ihned(self):
+        kontrakt = vloz_ticker(self.sluzba, bid=3.00, ask=3.10)
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        await self.sluzba.wait_for_quotes(kontrakt, timeout=5.0, quotes_grace=2.0)
+        self.assertLess(loop.time() - start, 0.5)
+
+    async def test_jen_zaverecna_cena_ceka_odklad(self):
+        kontrakt = vloz_ticker(self.sluzba, close=2.00)
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        await self.sluzba.wait_for_quotes(kontrakt, timeout=5.0, quotes_grace=0.5)
+        uplynulo = loop.time() - start
+        # Počká zhruba odklad, ale ne celý časový limit
+        self.assertGreaterEqual(uplynulo, 0.4)
+        self.assertLess(uplynulo, 2.0)
+
+    async def test_kotace_behem_odkladu_ukonci_cekani(self):
+        kontrakt = vloz_ticker(self.sluzba, close=2.00)
+        ticker = self.sluzba._tickers[kontrakt.conId]
+
+        async def dodej_kotace():
+            await asyncio.sleep(0.3)
+            ticker.bid, ticker.ask = 3.00, 3.10
+
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        await asyncio.gather(
+            self.sluzba.wait_for_quotes(kontrakt, timeout=5.0, quotes_grace=3.0),
+            dodej_kotace(),
+        )
+        self.assertLess(loop.time() - start, 1.5)
+
+    async def test_bez_dat_vyprsi_limit(self):
+        kontrakt = vloz_ticker(self.sluzba)
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        await self.sluzba.wait_for_quotes(kontrakt, timeout=0.5)
+        self.assertGreaterEqual(loop.time() - start, 0.4)
+
+    async def test_odklad_se_ceka_jen_poprve(self):
+        # Příprava zadání běží po každé změně formuláře; u opce, ze které
+        # TWS posílá jen závěrečnou cenu, se odklad čeká jen napoprvé
+        kontrakt = vloz_ticker(self.sluzba, close=2.00)
+        loop = asyncio.get_running_loop()
+        await self.sluzba.wait_for_quotes(kontrakt, timeout=5.0, quotes_grace=0.5)
+
+        start = loop.time()
+        await self.sluzba.wait_for_quotes(kontrakt, timeout=5.0, quotes_grace=0.5)
+        self.assertLess(loop.time() - start, 0.3)
+
+    async def test_nove_spojeni_odklad_obnovi(self):
+        kontrakt = vloz_ticker(self.sluzba, close=2.00)
+        await self.sluzba.wait_for_quotes(kontrakt, timeout=5.0, quotes_grace=0.3)
+        # Ztráta spojení zahodí tržní data i paměť odkladů
+        self.sluzba._on_disconnected()
+        vloz_ticker(self.sluzba, close=2.00)
+
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        await self.sluzba.wait_for_quotes(kontrakt, timeout=5.0, quotes_grace=0.3)
+        self.assertGreaterEqual(loop.time() - start, 0.2)
+
+    async def test_jednostranna_kotace_ceka_jen_odklad(self):
+        # Jen BID bez last/close - nečeká se celý limit, jen odklad na ASK
+        kontrakt = vloz_ticker(self.sluzba, bid=3.00)
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        await self.sluzba.wait_for_quotes(kontrakt, timeout=5.0, quotes_grace=0.3)
+        uplynulo = loop.time() - start
+        self.assertGreaterEqual(uplynulo, 0.2)
+        self.assertLess(uplynulo, 1.5)
 
 
 if __name__ == "__main__":

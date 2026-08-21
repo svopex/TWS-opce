@@ -22,6 +22,7 @@ from ib_async import (
     PriceCondition,
     OrderStatus,
     Stock,
+    StopOrder,
     Ticker,
     Trade,
 )
@@ -33,6 +34,12 @@ log = logging.getLogger(__name__)
 # Předpona značky, kterou aplikace označuje své příkazy v poli orderRef.
 # Podle ní je po restartu pozná i bez uloženého stavu.
 ORDER_REF_PREFIX = "TWSOPCE"
+
+# Typ OCA skupiny: 2 = po (i částečném) vyplnění jednoho příkazu TWS
+# ostatní příkazy ve skupině úměrně zmenší, při úplném vyplnění zruší,
+# a po dobu zpracování je blokuje proti přeplnění. Oproti typu 1 (zrušit
+# vše) tak po částečném prodeji na PT zůstává zbytek pozice dál krytý SL.
+OCA_TYPE_REDUCE_WITH_BLOCK = 2
 
 
 def order_ref(flow_id: str, druh: str) -> str:
@@ -90,6 +97,10 @@ class IBService:
         self._tickers: dict[int, Ticker] = {}
         # Počet flow, která daný kontrakt používají - odběr se ruší až při posledním
         self._subscribers: dict[int, int] = {}
+        # Kontrakty, u kterých už odklad na úplné kotace proběhl. Příprava
+        # zadání se volá po každé změně formuláře a bez této paměti by se
+        # u opce bez kotací čekalo znovu při každém stisku klávesy.
+        self._quotes_grace_done: set[int] = set()
         self._connect_lock = asyncio.Lock()
         self._chain_cache: dict[str, Any] = {}
         self.on_status_change: Callable[[], None] | None = None
@@ -150,6 +161,8 @@ class IBService:
         log.warning("Spojení s TWS bylo přerušeno.")
         self._tickers.clear()
         self._subscribers.clear()
+        # Po novém spojení začínají tržní data od nuly - odklad se čeká znovu
+        self._quotes_grace_done.clear()
         self._notify_status()
 
     def _on_error(self, reqId: int, errorCode: int, errorString: str, contract: Any) -> None:
@@ -341,22 +354,75 @@ class IBService:
 
         return bid, ask, delta
 
-    async def wait_for_quotes(self, contract: Contract, timeout: float) -> None:
+    def option_price(self, contract: Contract | None) -> tuple[float | None, str]:
+        """
+        Nejlepší dostupná cena opce pro model (implikovaná volatilita) a její zdroj.
+
+        Pořadí: střed BID/ASK, jedna strana kotace, poslední obchod (last),
+        závěrečná cena (close). Last a close mohou být staré, ale pořád jde
+        o cenu této konkrétní opce - model z ní zachová tvar (gamma, časovou
+        hodnotu), zatímco lineární odhad přes deltu ho ignoruje. Bez jakékoliv
+        ceny vrací (None, "").
+        """
+        ticker = self.ticker(contract)
+        if ticker is None:
+            return None, ""
+
+        bid = valid_price(ticker.bid)
+        ask = valid_price(ticker.ask)
+        if bid is not None and ask is not None:
+            return (bid + ask) / 2.0, "BID/ASK"
+        if ask is not None:
+            return ask, "ASK"
+        if bid is not None:
+            return bid, "BID"
+
+        last = valid_price(ticker.last)
+        if last is not None:
+            return last, "last"
+        close = valid_price(ticker.close)
+        if close is not None:
+            return close, "close"
+        return None, ""
+
+    async def wait_for_quotes(
+        self, contract: Contract, timeout: float, quotes_grace: float = 0.0
+    ) -> None:
         """
         Počká, než TWS pošle první použitelná data kontraktu.
-        Po vypršení časového limitu se pokračuje i bez nich.
+
+        Vrací ihned, jakmile jsou k dispozici obě strany kotace (BID i ASK).
+        Dorazí-li nejdřív jen jiná cena (jedna strana kotace, poslední obchod,
+        typicky závěrečná cena), čeká se ještě quotes_grace sekund, aby úplné
+        kotace dostaly šanci - bez toho by se model počítal ze závěrečné ceny
+        jen proto, že se četlo o zlomek sekundy dřív.
+        Po vypršení časového limitu se pokračuje i bez dat. Odklad se u téhož
+        kontraktu čeká jen jednou - TWS úplné kotace buď posílá, nebo neposílá,
+        a opakovaná příprava zadání by jinak čekala pokaždé znovu.
         """
+        conid = getattr(contract, "conId", 0)
+        if conid in self._quotes_grace_done:
+            quotes_grace = 0.0
+
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        prvni_cena: float | None = None
         while loop.time() < deadline:
             ticker = self.ticker(contract)
             if ticker is not None:
-                # Stačí jakákoliv použitelná cena - kotace nebo závěrečná cena
+                if valid_price(ticker.bid) is not None and valid_price(ticker.ask) is not None:
+                    return
+                # Jakákoliv jiná použitelná cena - čeká se ještě odklad na úplné kotace
                 if any(
                     valid_price(v) is not None
                     for v in (ticker.bid, ticker.ask, ticker.last, ticker.close)
                 ):
-                    return
+                    if prvni_cena is None:
+                        prvni_cena = loop.time()
+                    if loop.time() - prvni_cena >= quotes_grace:
+                        if conid:
+                            self._quotes_grace_done.add(conid)
+                        return
             await asyncio.sleep(0.2)
 
     # ------------------------------------------------------------------
@@ -405,15 +471,38 @@ class IBService:
             order.account = self.account
         return order
 
+    def _finish_sell_order(self, order: Order, ref: str, oca_group: str) -> Order:
+        """
+        Doplní prodejnímu příkazu společné atributy: platnost, účet, značku
+        a případnou OCA skupinu. Příkazy ve stejné OCA skupině TWS sama
+        váže dohromady - vyplnění jednoho zmenší či zruší ostatní, a to
+        i kdyby aplikace zrovna neběžela.
+        """
+        trading = self.cfg.trading
+        order.tif = trading.tif
+        order.outsideRth = trading.outside_rth
+        if ref:
+            order.orderRef = ref
+        if oca_group:
+            order.ocaGroup = oca_group
+            order.ocaType = OCA_TYPE_REDUCE_WITH_BLOCK
+        if self.account:
+            order.account = self.account
+        return order
+
     def build_exit_order(
         self,
         quantity: int,
         limit_price: float | None,
         conditions: list[PriceCondition],
         ref: str = "",
+        oca_group: str = "",
     ) -> Order:
         """
-        Sestaví jediný prodejní příkaz pokrývající PT i SL.
+        Sestaví prodejní příkaz s cenovými podmínkami na podkladu.
+        S oběma podmínkami (PT i SL) jde o jediný příkaz pokrývající celý
+        výstup; s jedinou podmínkou o jednu ze dvou částí výstupu, kdy
+        druhou hlídá příkaz přímo na cenu opce.
         Podmínky jsou spojeny logickým OR - stačí splnit jednu z nich.
         """
         trading = self.cfg.trading
@@ -422,25 +511,47 @@ class IBService:
         else:
             order = LimitOrder("SELL", quantity, limit_price)
 
-        order.tif = trading.tif
-        order.outsideRth = trading.outside_rth
-        # Spojka uložená v podmínce ji váže k NÁSLEDUJÍCÍ podmínce, nikoliv
-        # k předchozí. Aby stačilo splnit kteroukoliv z nich, nesou všechny
-        # kromě poslední 'o' (OR); u poslední se spojka již neuplatní.
-        # Ověřeno proti TWS: opačné pořadí vede k AND a příkaz se nikdy nespustí.
+        order.conditions = self.prepare_conditions(conditions)
+        order.conditionsCancelOrder = False
+        order.conditionsIgnoreRth = trading.outside_rth
+        return self._finish_sell_order(order, ref, oca_group)
+
+    @staticmethod
+    def prepare_conditions(conditions: list[PriceCondition]) -> list[PriceCondition]:
+        """
+        Nastaví spojky podmínek tak, aby stačilo splnit kteroukoliv z nich.
+
+        Spojka uložená v podmínce ji váže k NÁSLEDUJÍCÍ podmínce, nikoliv
+        k předchozí. Proto nesou všechny kromě poslední 'o' (OR); u poslední
+        se spojka již neuplatní. Ověřeno proti TWS: opačné pořadí vede
+        k AND a příkaz se nikdy nespustí.
+        """
         prepared: list[PriceCondition] = []
         posledni = len(conditions) - 1
         for index, cond in enumerate(conditions):
             cond.conjunction = "a" if index == posledni else "o"
             prepared.append(cond)
-        order.conditions = prepared
-        order.conditionsCancelOrder = False
-        order.conditionsIgnoreRth = trading.outside_rth
-        if ref:
-            order.orderRef = ref
-        if self.account:
-            order.account = self.account
-        return order
+        return prepared
+
+    def build_limit_sell_order(
+        self, quantity: int, limit_price: float, ref: str = "", oca_group: str = ""
+    ) -> Order:
+        """
+        Limitní prodejní příkaz přímo na cenu opce - realizuje PT zadané
+        ziskem v USD na kontrakt. Bez podmínek na podkladu.
+        """
+        order = LimitOrder("SELL", quantity, limit_price)
+        return self._finish_sell_order(order, ref, oca_group)
+
+    def build_stop_sell_order(
+        self, quantity: int, stop_price: float, ref: str = "", oca_group: str = ""
+    ) -> Order:
+        """
+        Stop-market prodejní příkaz přímo na cenu opce - realizuje SL zadaný
+        ztrátou v USD na kontrakt. Po dosažení stop ceny se prodá trhem.
+        """
+        order = StopOrder("SELL", quantity, stop_price)
+        return self._finish_sell_order(order, ref, oca_group)
 
     async def app_trades(self) -> dict[str, Trade]:
         """

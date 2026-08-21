@@ -10,39 +10,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.fake_ib import OPTION_CONID, FakeIBService
+from tests.fake_ib import OPTION_CONID
+from tests.zaklad import ZakladSeStavem
 from tws_opce import store
-from tws_opce.config import AppConfig
 from tws_opce.engine import FlowEngine
 from tws_opce.ib_service import PositionInfo, order_ref
 from tws_opce.models import FlowRequest, FlowState
 
 
-class ZakladObnovy(unittest.IsolatedAsyncioTestCase):
-    """Připraví engine s dočasným souborem stavu."""
-
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.cfg = AppConfig()
-        self.cfg.state.file = str(Path(self.tmp.name) / "state.json")
-        # Testy si čas burzy řídí samy - jinak by sada spuštěná těsně před
-        # zavřením burzy obchody nečekaně uzavírala
-        self.cfg.trading.auto_close_enabled = False
-        self.ib = FakeIBService(self.cfg)
-        self.engine = FlowEngine(self.cfg, self.ib)
-
-    async def asyncSetUp(self) -> None:
-        # Aplikace po připojení k TWS vždy nejprve obnoví stav
-        await self.engine.restore()
-
-    def tearDown(self) -> None:
-        self.tmp.cleanup()
+class ZakladObnovy(ZakladSeStavem):
+    """Engine s dočasným souborem stavu a vzorový restart."""
 
     async def zaloz_a_restartuj(self, priprav=None) -> FlowEngine:
         """

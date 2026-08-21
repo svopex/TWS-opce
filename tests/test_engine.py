@@ -11,35 +11,13 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.fake_ib import UNDERLYING_CONID, FakeIBService
-from tws_opce.config import AppConfig
-from tws_opce.engine import FlowEngine
+from tests.fake_ib import UNDERLYING_CONID
+from tests.zaklad import ZakladEnginu
 from tws_opce.models import FlowRequest, FlowState
 
 
-def vychozi_config() -> AppConfig:
-    """Konfigurace pro testy - účet 5000 USD, risk 1 %, limit spreadu 5 %."""
-    cfg = AppConfig()
-    cfg.account.size = 5000.0
-    cfg.account.risk_pct = 1.0
-    cfg.trading.max_spread_pct = 5.0
-    cfg.trading.entry_order_type = "LMT_ASK"
-    cfg.trading.ask_tolerance_pct = 2.0
-    # Testy stavového automatu nezapisují stav na disk
-    cfg.state.enabled = False
-    # Automatické uzavírání se v testech zapíná cíleně s podvrženým časem -
-    # jinak by sada spuštěná těsně před zavřením burzy obchody uzavírala
-    cfg.trading.auto_close_enabled = False
-    return cfg
-
-
-class ZakladTestu(unittest.IsolatedAsyncioTestCase):
-    """Společná příprava enginu s náhradou TWS."""
-
-    def setUp(self) -> None:
-        self.cfg = vychozi_config()
-        self.ib = FakeIBService(self.cfg)
-        self.engine = FlowEngine(self.cfg, self.ib)
+class ZakladTestu(ZakladEnginu):
+    """Společná příprava enginu s náhradou TWS a vzorová zadání."""
 
     async def zaloz_call(self, **zmeny):
         """Založí vzorové CALL flow: podklad 230, vstup 232, PT 235."""

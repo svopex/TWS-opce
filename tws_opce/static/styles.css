@@ -140,6 +140,24 @@
   margin-bottom: 6px;
 }
 
+/* Nadpis formuláře s odznakem směru (LONG/SHORT) na jednom řádku */
+.radek-nadpis {
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.radek-nadpis .nadpis-sekce {
+  margin-bottom: 0;
+}
+
+.odznak-smer-formular {
+  font-size: 0.78rem;
+  margin-left: 0;
+  padding: 2px 8px;
+}
+
 .radek {
   align-items: center;
   gap: 10px;
@@ -541,4 +559,36 @@ body.body--dark .ztrata {
 /* Provozní log */
 body.body--dark .log-radek {
   color: #cbd5e1;
+}
+
+/* --- Přepínač režimu PT / SL (na podkladu vs. na opci) --- */
+/* Zaškrtávátko stojí těsně před polem a společně zabírají jeden slot řádku;
+   slot je o něco širší, aby se vešel delší popisek pole i se zaškrtávátkem */
+.pole-prepinac {
+  align-items: center;
+  flex: 1 1 50%;
+  flex-wrap: nowrap;
+  gap: 2px;
+}
+
+.pole-prepinac .prepinac-rezimu {
+  flex: 0 0 auto;
+  margin-left: -6px;
+}
+
+.pole-prepinac .pole-vnitrni {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Přepínač prvotní úrovně stojí mezi vstupem a zadávanou úrovní; vstup
+   je o něco užší, aby se do řádku vešel i s přepínačem */
+.prepinac-prvotni {
+  flex: 0 0 auto;
+  margin: 0 -6px;
+}
+
+.pole-vstup {
+  flex: 1 1 40%;
+  min-width: 130px;
 }

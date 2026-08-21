@@ -19,6 +19,8 @@ ENTRY_ORDER_TYPES = ("LMT_ASK", "MKT", "LMT_MID")
 PT_STRIKE_MODES = ("keep", "recalculate")
 # Povolené typy výstupního příkazu (jeden příkaz s podmínkami pro PT i SL)
 EXIT_ORDER_TYPES = ("MKT", "LMT")
+# Která úroveň se zadává jako prvotní (druhá se dopočítá z poměru SL:PT)
+PRIMARY_LEVELS = ("pt", "sl")
 # Povolené režimy výběru expirace
 EXPIRATION_MODES = ("nearest", "fixed")
 
@@ -55,6 +57,16 @@ class TradingConfig:
 
     # Výchozí poměr SL vůči PT, pokud uživatel SL nezadá (1.0 = 1:1)
     sl_to_pt_ratio: float = 1.0
+    # Výchozí stav zaškrtávátek "na podkladu" ve formuláři:
+    #   true  = PT / SL se zadává jako cena podkladu (podmíněný příkaz)
+    #   false = PT / SL se zadává jako zisk / ztráta v USD na jeden kontrakt
+    #           a realizuje se příkazem přímo na cenu opce (LMT, resp. STP)
+    pt_on_underlying: bool = True
+    sl_on_underlying: bool = True
+    # Která úroveň se ve formuláři zadává jako prvotní; druhá se dopočítá
+    # podle sl_to_pt_ratio: "sl" = zadává se SL a PT se dopočte (výchozí),
+    # "pt" = zadává se PT a SL se dopočte. Určuje výchozí stav zaškrtávátka.
+    primary_level: str = "sl"
     max_spread_pct: float = 7.0
     entry_order_type: str = "LMT_ASK"
     # Tolerance nad ASK v procentech pro typ příkazu LMT_ASK
@@ -127,6 +139,9 @@ class EngineConfig:
     poll_interval_sec: float = 1.0
     # Jak dlouho čekat na první ceny z TWS při zakládání flow
     market_data_timeout_sec: float = 6.0
+    # Dorazí-li u opce nejdřív jen poslední/závěrečná cena, kolik sekund se
+    # ještě počká na BID/ASK, než se model spočítá z ní
+    quotes_grace_sec: float = 1.5
     # Interval kontroly opčních pozic, které aplikace neřídí (0 = vypnuto)
     unmanaged_check_sec: float = 30.0
     # Jak často se obnovuje velikost účtu z TWS, používá-li se account.size = 0
@@ -302,6 +317,16 @@ def validate_config(cfg: AppConfig) -> None:
         problems.append("account.risk_pct musí být v intervalu (0, 100]")
     if cfg.trading.sl_to_pt_ratio <= 0:
         problems.append("trading.sl_to_pt_ratio musí být kladné číslo")
+    # Přepínače režimu PT/SL musí být skutečné pravdivostní hodnoty - YAML
+    # řetězec "false" by se jinak vyhodnotil jako pravda
+    for nazev in ("pt_on_underlying", "sl_on_underlying"):
+        if not isinstance(getattr(cfg.trading, nazev), bool):
+            problems.append(f"trading.{nazev} musí být true nebo false")
+    if cfg.trading.primary_level not in PRIMARY_LEVELS:
+        problems.append(
+            f"trading.primary_level musí být jedna z {PRIMARY_LEVELS}, "
+            f"nalezeno '{cfg.trading.primary_level}'"
+        )
     if cfg.trading.max_spread_pct <= 0:
         problems.append("trading.max_spread_pct musí být kladné číslo")
     if cfg.trading.risk_free_rate_pct < 0:
@@ -326,6 +351,8 @@ def validate_config(cfg: AppConfig) -> None:
         problems.append("engine.unmanaged_check_sec nesmí být záporné")
     if cfg.engine.poll_interval_sec <= 0:
         problems.append("engine.poll_interval_sec musí být kladné číslo")
+    if cfg.engine.quotes_grace_sec < 0:
+        problems.append("engine.quotes_grace_sec nesmí být záporné")
     if cfg.state.enabled and not cfg.state.file:
         problems.append("state.file musí být vyplněn, pokud je ukládání stavu zapnuté")
 
