@@ -28,6 +28,9 @@ class FakeIBService(IBService):
         self.price_underlying: float | None = 230.0
         self.price_bid: float | None = 3.00
         self.price_ask: float | None = 3.10
+        # Poslední obchod a závěrečná cena opce - náhrada, když kotace chybí
+        self.price_last: float | None = None
+        self.price_close: float | None = None
         self.greek_delta: float | None = 0.35
         # Velikost účtu vracená místo dotazu do TWS
         self.net_liquidation_value: float | None = 12345.0
@@ -120,7 +123,9 @@ class FakeIBService(IBService):
         """Odběr se v testech neruší."""
         return None
 
-    async def wait_for_quotes(self, contract: Contract, timeout: float) -> None:
+    async def wait_for_quotes(
+        self, contract: Contract, timeout: float, quotes_grace: float = 0.0
+    ) -> None:
         """Ceny jsou k dispozici okamžitě."""
         return None
 
@@ -131,6 +136,24 @@ class FakeIBService(IBService):
     def option_quotes(self, contract: Contract | None):
         """Kotace a delta opce nastavené testem."""
         return self.price_bid, self.price_ask, self.greek_delta
+
+    def option_price(self, contract: Contract | None):
+        """
+        Cena opce pro model ve stejném pořadí zdrojů jako ostrá služba:
+        střed kotace, jedna strana, poslední obchod, závěrečná cena.
+        """
+        bid, ask = self.price_bid, self.price_ask
+        if bid is not None and ask is not None:
+            return (bid + ask) / 2.0, "BID/ASK"
+        if ask is not None:
+            return ask, "ASK"
+        if bid is not None:
+            return bid, "BID"
+        if self.price_last is not None:
+            return self.price_last, "last"
+        if self.price_close is not None:
+            return self.price_close, "close"
+        return None, ""
 
     # --- příkazy ---
 

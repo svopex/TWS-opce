@@ -49,6 +49,8 @@ class _ReferenceOption:
     strike: float
     contract: Any
     price: float | None
+    # Odkud cena pochází (BID/ASK, ASK, BID, last, close) - ukazuje se v náhledu
+    price_source: str
     delta: float | None
 
 
@@ -79,6 +81,9 @@ class Preview:
     delta_estimated: bool = False
     option_bid: float | None = None
     option_ask: float | None = None
+    # Cena vybrané opce pro model (střed kotace, jinak last/close) a její zdroj
+    option_price: float | None = None
+    option_price_source: str = ""
     spread_pct: float | None = None
     quantity: int = 1
     risk_amount: float = 0.0
@@ -394,10 +399,13 @@ class FlowEngine:
         self.ib.subscribe(option)
         if referencni is not None:
             self.ib.unsubscribe(referencni.contract)
-        await self.ib.wait_for_quotes(option, self.cfg.engine.market_data_timeout_sec)
+        await self.ib.wait_for_quotes(
+            option, self.cfg.engine.market_data_timeout_sec, self.cfg.engine.quotes_grace_sec
+        )
         bid, ask, delta = self.ib.option_quotes(option)
         preview.option_bid = bid
         preview.option_ask = ask
+        preview.option_price, preview.option_price_source = self.ib.option_price(option)
         preview.spread_pct = calc.spread_pct(bid, ask)
         preview.delta = delta
 
@@ -463,6 +471,7 @@ class FlowEngine:
         expiration: str,
         right: str,
         delta: float | None,
+        zdroj_ceny: str = "",
     ) -> tuple[float, str]:
         """
         Úroveň podkladu, na které opce vydělá zadaný zisk v USD na kontrakt.
@@ -470,8 +479,10 @@ class FlowEngine:
         Z aktuální ceny opce se odvodí implikovaná volatilita, spočítá se
         cena opce v okamžiku vstupu (podklad na vstupní úrovni), přičte se
         požadovaný zisk a zpětně se najde úroveň podkladu, kde opce této
-        ceny dosáhne. Bez kotací se použije lineární odhad přes deltu,
-        bez delty zůstává vstupní cena. Vrací dvojici (úroveň, zdroj odhadu).
+        ceny dosáhne. Bez jakékoliv ceny opce se použije lineární odhad přes
+        deltu, bez delty zůstává vstupní cena. Vrací dvojici (úroveň, zdroj
+        odhadu); zdroj_ceny (BID/ASK, last, close…) se do popisu přidává,
+        aby bylo vidět, na jak čerstvé ceně odhad stojí.
         """
         sazba = self.cfg.trading.risk_free_rate_pct
         smer = 1.0 if right == "C" else -1.0
@@ -486,7 +497,8 @@ class FlowEngine:
                     cena_opce, podklad, cena_na_vstupu + posun_ceny, strike, expiration, sazba, right
                 )
                 if uroven is not None:
-                    return uroven, "z ceny opce"
+                    popis = f"z ceny opce ({zdroj_ceny})" if zdroj_ceny else "z ceny opce"
+                    return uroven, popis
 
         # Záložní lineární odhad: pohyb podkladu = posun ceny opce / |delta|
         if delta is None and cena_opce and podklad:
@@ -553,10 +565,14 @@ class FlowEngine:
             return None
 
         self.ib.subscribe(ref_option)
-        await self.ib.wait_for_quotes(ref_option, self.cfg.engine.market_data_timeout_sec)
-        bid, ask, delta = self.ib.option_quotes(ref_option)
-        cena = (bid + ask) / 2.0 if bid and ask else (ask or bid)
-        return _ReferenceOption(strike=ref_strike, contract=ref_option, price=cena, delta=delta)
+        await self.ib.wait_for_quotes(
+            ref_option, self.cfg.engine.market_data_timeout_sec, self.cfg.engine.quotes_grace_sec
+        )
+        _, _, delta = self.ib.option_quotes(ref_option)
+        cena, zdroj = self.ib.option_price(ref_option)
+        return _ReferenceOption(
+            strike=ref_strike, contract=ref_option, price=cena, price_source=zdroj, delta=delta
+        )
 
     def _target_level_for_option_pt(
         self,
@@ -587,6 +603,7 @@ class FlowEngine:
             preview.expiration,
             preview.right,
             referencni.delta,
+            referencni.price_source,
         )
         preview.target_level = uroven
         preview.target_level_source = zdroj
@@ -666,11 +683,8 @@ class FlowEngine:
 
         sazba = self.cfg.trading.risk_free_rate_pct
         smer = 1.0 if preview.right == "C" else -1.0
-        cena = None
-        if preview.option_bid is not None and preview.option_ask is not None:
-            cena = (preview.option_bid + preview.option_ask) / 2.0
-        elif preview.option_ask is not None:
-            cena = preview.option_ask
+        # Cena vybrané opce pro model - střed kotace, jinak last/close
+        cena = preview.option_price
         podklad = preview.current_price
 
         def cena_opce_pri(uroven: float) -> float | None:
@@ -713,14 +727,9 @@ class FlowEngine:
     def _estimate_delta(self, preview: Preview) -> float | None:
         """
         Dopočítá deltu z tržní ceny opce, když ji TWS nepošle.
-        Používá se střed trhu, při jeho nedostupnosti poslední známá cena.
+        Používá se střed kotace, při jeho nedostupnosti poslední známá cena.
         """
-        cena = None
-        if preview.option_bid is not None and preview.option_ask is not None:
-            cena = (preview.option_bid + preview.option_ask) / 2.0
-        elif preview.option_ask is not None:
-            cena = preview.option_ask
-
+        cena = preview.option_price
         if cena is None or preview.current_price is None:
             return None
 
@@ -1018,7 +1027,8 @@ class FlowEngine:
         půl aktuálního spreadu.
         """
         bid, ask, _ = self.ib.option_quotes(flow.option_contract)
-        aktualni = (bid + ask) / 2.0 if bid and ask else (ask or bid)
+        # Cena opce pro model: střed kotace, bez kotací poslední/závěrečná cena
+        aktualni, _ = self.ib.option_price(flow.option_contract)
         podklad = flow.underlying_price
         sazba = self.cfg.trading.risk_free_rate_pct
 
@@ -1540,8 +1550,8 @@ class FlowEngine:
         if flow.pt_on_underlying:
             cil = flow.profit_target
         else:
-            bid, ask, delta = self.ib.option_quotes(flow.option_contract)
-            cena = (bid + ask) / 2.0 if bid and ask else (ask or bid)
+            _, _, delta = self.ib.option_quotes(flow.option_contract)
+            cena, zdroj = self.ib.option_price(flow.option_contract)
             cil, _ = self._level_from_option_profit(
                 cena,
                 self.ib.underlying_price(flow.underlying_contract),
@@ -1551,6 +1561,7 @@ class FlowEngine:
                 flow.expiration,
                 flow.right,
                 delta,
+                zdroj,
             )
 
         chain = await self.ib.option_chain(flow.underlying_contract)

@@ -291,6 +291,14 @@ engine:
   # pokračuje i bez nich (například mimo obchodní hodiny).
   market_data_timeout_sec: 6.0
 
+  # Cena opce pro model (implikovaná volatilita, ze které se odvozuje strike
+  # při PT na opci, smíšený dopočet SL/PT a sloupec Zisk na PT) se bere
+  # ze středu BID/ASK, bez kotací z poslední (last) a nakonec ze závěrečné
+  # (close) ceny; teprve bez jakékoliv ceny se odhaduje lineárně přes deltu.
+  # TWS obvykle pošle závěrečnou cenu dřív než kotace - tolik sekund se
+  # po první ceně ještě počká na BID/ASK, než se vezme zavděk tou starší.
+  quotes_grace_sec: 1.5
+
   # Jak často (v sekundách) aplikace kontroluje opční pozice na účtu, ke kterým
   # nemá obchod ani zajišťovací příkaz. Na takové pozice upozorní pruhem
   # v záhlaví, sama k nim ale nic nezadává. Hodnota 0 kontrolu vypne.

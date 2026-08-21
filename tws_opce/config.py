@@ -139,6 +139,9 @@ class EngineConfig:
     poll_interval_sec: float = 1.0
     # Jak dlouho čekat na první ceny z TWS při zakládání flow
     market_data_timeout_sec: float = 6.0
+    # Dorazí-li u opce nejdřív jen poslední/závěrečná cena, kolik sekund se
+    # ještě počká na BID/ASK, než se model spočítá z ní
+    quotes_grace_sec: float = 1.5
     # Interval kontroly opčních pozic, které aplikace neřídí (0 = vypnuto)
     unmanaged_check_sec: float = 30.0
     # Jak často se obnovuje velikost účtu z TWS, používá-li se account.size = 0
@@ -348,6 +351,8 @@ def validate_config(cfg: AppConfig) -> None:
         problems.append("engine.unmanaged_check_sec nesmí být záporné")
     if cfg.engine.poll_interval_sec <= 0:
         problems.append("engine.poll_interval_sec musí být kladné číslo")
+    if cfg.engine.quotes_grace_sec < 0:
+        problems.append("engine.quotes_grace_sec nesmí být záporné")
     if cfg.state.enabled and not cfg.state.file:
         problems.append("state.file musí být vyplněn, pokud je ukládání stavu zapnuté")
 

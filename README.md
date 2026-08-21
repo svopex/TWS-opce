@@ -106,8 +106,13 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    odvodí z ceny opce: z aktuální kotace opce se strikem u vstupu zjistí
    implikovanou volatilitu, spočítá cenu opce v okamžiku vstupu, přičte
    požadovaný zisk a najde úroveň podkladu, kde opce této ceny dosáhne —
-   strike tedy i tady leží na cílové úrovni. Bez kotací se použije delta,
-   bez delty vstupní cena; zvolená úroveň je vidět v náhledu formuláře.
+   strike tedy i tady leží na cílové úrovni. Cena opce pro model se bere
+   ze středu BID/ASK, bez kotací z poslední (last) a nakonec ze závěrečné
+   (close) ceny — TWS obvykle pošle závěrečnou cenu dřív než kotace, proto
+   se po ní ještě `engine.quotes_grace_sec` počká na BID/ASK. Teprve bez
+   jakékoliv ceny se použije lineární odhad přes deltu, bez delty vstupní
+   cena. Zvolená úroveň i zdroj odhadu („z ceny opce (BID/ASK)“, „… (close)“,
+   „z delty“) jsou vidět v náhledu formuláře.
    SL se bez zadání dopočítá stejným poměrem jako dosud (na opci
    `PT × poměr`); při smíšeném režimu se zisk na PT převede mezi podkladem
    a cenou opce stejným modelem, jakým se počítá sloupec *Zisk na PT*.

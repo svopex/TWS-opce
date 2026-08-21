@@ -732,5 +732,64 @@ class TestDopoctuPtZeSl(ZakladRezimu):
         self.assertAlmostEqual(nahled.current_price, 230.0)
 
 
+
+class TestZdrojCenyOpce(ZakladRezimu):
+    """Model z ceny opce se použije i bez kotací - z poslední či závěrečné ceny."""
+
+    async def test_bez_kotaci_se_pouzije_zaverecna_cena(self):
+        # BID/ASK chybí, ale závěrečná cena je - model běží z ní, ne z delty
+        self.ib.price_bid = None
+        self.ib.price_ask = None
+        self.ib.price_close = 3.05
+        self.cfg.trading.entry_order_type = "MKT"
+        self.ib.price_underlying = 230.0
+
+        nahled = await self.engine.prepare("AAPL", 232.0, 10.0, None, False, False)
+
+        self.assertIn("z ceny opce", nahled.target_level_source)
+        self.assertIn("close", nahled.target_level_source)
+        self.assertEqual(nahled.option_price_source, "close")
+        self.assertAlmostEqual(nahled.option_price, 3.05)
+
+    async def test_posledni_obchod_ma_prednost_pred_zaverecnou(self):
+        self.ib.price_bid = None
+        self.ib.price_ask = None
+        self.ib.price_last = 3.20
+        self.ib.price_close = 2.00
+        self.cfg.trading.entry_order_type = "MKT"
+        self.ib.price_underlying = 230.0
+
+        nahled = await self.engine.prepare("AAPL", 232.0, 10.0, None, False, False)
+
+        self.assertIn("last", nahled.target_level_source)
+        self.assertAlmostEqual(nahled.option_price, 3.20)
+
+    async def test_s_kotacemi_se_uvadi_bid_ask(self):
+        self.ib.price_underlying = 230.0
+        nahled = await self.engine.prepare("AAPL", 232.0, 10.0, None, False, False)
+        self.assertEqual(nahled.target_level_source, "z ceny opce (BID/ASK)")
+
+    async def test_delta_jen_bez_jakekoliv_ceny(self):
+        self.ib.price_bid = None
+        self.ib.price_ask = None
+        self.cfg.trading.entry_order_type = "MKT"
+        self.ib.price_underlying = 230.0
+
+        nahled = await self.engine.prepare("AAPL", 232.0, 10.0, None, False, False)
+
+        self.assertEqual(nahled.target_level_source, "z delty")
+        self.assertIsNone(nahled.option_price)
+
+    async def test_ocekavany_zisk_se_pocita_i_ze_zaverecne_ceny(self):
+        flow = await self.zaloz(True, True, 235.0)
+        self.ib.price_bid = None
+        self.ib.price_ask = None
+        self.ib.price_close = 3.05
+        await self.engine._tick()
+        # Bez kotací by dřív sloupce zůstaly prázdné; ze závěrečné ceny se spočítají
+        self.assertIsNotNone(flow.expected_profit)
+        self.assertGreater(flow.expected_profit, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

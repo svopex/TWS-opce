@@ -348,22 +348,63 @@ class IBService:
 
         return bid, ask, delta
 
-    async def wait_for_quotes(self, contract: Contract, timeout: float) -> None:
+    def option_price(self, contract: Contract | None) -> tuple[float | None, str]:
+        """
+        Nejlepší dostupná cena opce pro model (implikovaná volatilita) a její zdroj.
+
+        Pořadí: střed BID/ASK, jedna strana kotace, poslední obchod (last),
+        závěrečná cena (close). Last a close mohou být staré, ale pořád jde
+        o cenu této konkrétní opce - model z ní zachová tvar (gamma, časovou
+        hodnotu), zatímco lineární odhad přes deltu ho ignoruje. Bez jakékoliv
+        ceny vrací (None, "").
+        """
+        ticker = self.ticker(contract)
+        if ticker is None:
+            return None, ""
+
+        bid = valid_price(ticker.bid)
+        ask = valid_price(ticker.ask)
+        if bid is not None and ask is not None:
+            return (bid + ask) / 2.0, "BID/ASK"
+        if ask is not None:
+            return ask, "ASK"
+        if bid is not None:
+            return bid, "BID"
+
+        last = valid_price(ticker.last)
+        if last is not None:
+            return last, "last"
+        close = valid_price(ticker.close)
+        if close is not None:
+            return close, "close"
+        return None, ""
+
+    async def wait_for_quotes(
+        self, contract: Contract, timeout: float, quotes_grace: float = 0.0
+    ) -> None:
         """
         Počká, než TWS pošle první použitelná data kontraktu.
-        Po vypršení časového limitu se pokračuje i bez nich.
+
+        Vrací ihned, jakmile jsou k dispozici obě strany kotace (BID i ASK).
+        Dorazí-li nejdřív jen jiná cena (typicky závěrečná), čeká se ještě
+        quotes_grace sekund, aby kotace dostaly šanci - bez toho by se model
+        počítal ze závěrečné ceny jen proto, že se četlo o zlomek sekundy dřív.
+        Po vypršení časového limitu se pokračuje i bez dat.
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        prvni_cena: float | None = None
         while loop.time() < deadline:
             ticker = self.ticker(contract)
             if ticker is not None:
-                # Stačí jakákoliv použitelná cena - kotace nebo závěrečná cena
-                if any(
-                    valid_price(v) is not None
-                    for v in (ticker.bid, ticker.ask, ticker.last, ticker.close)
-                ):
+                if valid_price(ticker.bid) is not None and valid_price(ticker.ask) is not None:
                     return
+                # Jiná použitelná cena - kotace nebo závěrečná cena
+                if any(valid_price(v) is not None for v in (ticker.last, ticker.close)):
+                    if prvni_cena is None:
+                        prvni_cena = loop.time()
+                    if loop.time() - prvni_cena >= quotes_grace:
+                        return
             await asyncio.sleep(0.2)
 
     # ------------------------------------------------------------------
