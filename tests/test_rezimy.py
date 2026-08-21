@@ -888,6 +888,110 @@ class TestCastecnehoProdejeNaPt(ZakladRezimu):
         self.assertEqual(flow.exit_reason, "PT+SL")
 
 
+class TestCastecnehoVyplneniZaBehu(ZakladRezimu):
+    """
+    Částečně vyplněný PT limit se musí promítnout do modelu ihned.
+    Jinak by úpravy množství (sloučení runneru, dorovnání nákupu) zadaly
+    do trhu víc kusů, než pozice drží.
+    """
+
+    async def zaloz_s_runnerem(self, mnozstvi: int = 4):
+        """Obchod na opci s runnerem 1 ks - hlavní část tedy kryje zbytek."""
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=mnozstvi)
+        await self.nakup(flow, mnozstvi, 3.00)
+        await self.engine.set_runner(flow.id, 2.0)
+        return flow
+
+    async def test_castecny_prodej_se_promitne_do_modelu(self):
+        flow = await self.zaloz_s_runnerem()
+        # PT limit hlavní části prodal 1 ze 3 ks a dál běží
+        self.ib.fill(flow.exit_trade, 1, 3.10, status="Submitted")
+
+        await self.engine._tick()
+
+        self.assertEqual(flow.main_sold_quantity, 1)
+        self.assertAlmostEqual(flow.main_sold_value, 3.10)
+        # Drženo 4 ks, jeden prodán -> otevřené jsou 3 ks
+        self.assertEqual(flow.open_quantity, 3)
+        self.assertIsNone(flow.exit_fill_price)
+
+    async def test_opakovany_pruchod_smyckou_neprodava_dvakrat(self):
+        flow = await self.zaloz_s_runnerem()
+        self.ib.fill(flow.exit_trade, 1, 3.10, status="Submitted")
+
+        for _ in range(3):
+            await self.engine._tick()
+
+        # Totéž vyplnění se smí započítat právě jednou
+        self.assertEqual(flow.main_sold_quantity, 1)
+        self.assertAlmostEqual(flow.main_sold_value, 3.10)
+        self.assertEqual(flow.open_quantity, 3)
+
+    async def test_zruseni_runneru_po_castecnem_prodeji_nezvetsi_prikazy(self):
+        flow = await self.zaloz_s_runnerem()
+        self.ib.fill(flow.exit_trade, 1, 3.10, status="Submitted")
+        await self.engine._tick()
+
+        await self.engine.cancel_runner(flow.id)
+
+        # Zbývá prodat 3 ks: PT má v TWS celkem 4 (z toho 1 už prodaný),
+        # SL zatím neprodal nic, takže celkem 3
+        self.assertEqual(int(flow.exit_trade.order.totalQuantity), 4)
+        self.assertEqual(int(flow.exit_sl_trade.order.totalQuantity), 3)
+        self.assertEqual(flow.open_quantity, 3)
+
+    async def test_uzavreni_po_castecnem_prodeji_zapocte_kusy_jednou(self):
+        flow = await self.zaloz_s_runnerem()
+        self.ib.fill(flow.exit_trade, 1, 3.10, status="Submitted")
+        await self.engine._tick()
+
+        # Ruční uzavření hlavní části: příkazy se zruší a trhem jde jen zbytek
+        await self.engine.close_main(flow.id)
+        await self.engine._tick()
+
+        self.assertEqual(flow.main_sold_quantity, 1)
+        trzni = [
+            t for t in self.ib.placed
+            if t.order.action == "SELL" and t.order.orderType == "MKT" and not t.order.conditions
+        ]
+        self.assertEqual(len(trzni), 1)
+        # Hlavní část drží 3 ks (runner 1 ks běží dál), jeden už je prodaný
+        self.assertEqual(int(trzni[0].order.totalQuantity), 2)
+
+    async def test_doprodani_zbytku_da_vazeny_prumer(self):
+        flow = await self.zaloz_s_runnerem()
+        self.ib.fill(flow.exit_trade, 1, 3.10, status="Submitted")
+        await self.engine._tick()
+        await self.engine.cancel_runner(flow.id)
+
+        # Zbylé 3 ks prodal stop (TWS jej po sloučení vede na 3 ks)
+        self.ib.fill(flow.exit_sl_trade, 3, 2.90)
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        # (3,10 + 3 × 2,90) / 4 = 2,95
+        self.assertAlmostEqual(flow.exit_fill_price, 2.95)
+        self.assertEqual(flow.exit_reason, "PT+SL")
+        self.assertAlmostEqual(flow.unrealized_pnl, -20.0)
+
+    async def test_castecny_prodej_runneru_zmensi_drzene_mnozstvi(self):
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=4)
+        await self.nakup(flow, 4, 3.00)
+        self.cfg.trading.runner_quantity = 2
+        await self.engine.set_runner(flow.id, 2.0)
+        # Runner prodal 1 ze 2 ks a dál běží
+        self.ib.fill(flow.runner_trade, 1, 3.30, status="Submitted")
+
+        await self.engine._tick()
+        await self.engine._tick()
+
+        self.assertTrue(flow.runner_active)
+        self.assertEqual(flow.runner_quantity, 1)
+        self.assertEqual(flow.runner_sold_quantity, 1)
+        self.assertAlmostEqual(flow.runner_realized_pnl, 30.0)
+        self.assertEqual(flow.held_quantity, 3)
+
+
 class TestNeznameNakupniCeny(ZakladRezimu):
     """Bez nákupní ceny z TWS se jako základ pro PT/SL na opci vezme aktuální cena."""
 

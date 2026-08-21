@@ -1246,7 +1246,7 @@ class TradingUI:
         # Zvýraznění tlačítek SL: 'be' při stopu na break even (na podkladu
         # vstupní cena, na opci nulová ztráta), 'puvodni' při stopu ze zadání;
         # jiná (ruční) hodnota nezvýrazní žádné
-        zaklad_sl = flow.original_stop_loss or flow.stop_loss
+        zaklad_sl = flow.original_stop_loss if flow.original_sl_known else flow.stop_loss
         be_sl = flow.break_even_sl
         aktivni_sl = None
         if abs(flow.stop_loss - be_sl) < 0.005:

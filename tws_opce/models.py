@@ -117,8 +117,10 @@ class Flow:
     original_profit_target: float = 0.0
 
     # SL zadaný při založení obchodu - tlačítko "Počáteční SL" se na něj
-    # vrací poté, co byl stop posunut na break even
-    original_stop_loss: float = 0.0
+    # vrací poté, co byl stop posunut na break even. None znamená "neznámý"
+    # (stav uložený starší verzí); nula je naopak platná hodnota - u SL
+    # na opci je to break even, proto se nesmí posuzovat pravdivostí čísla.
+    original_stop_loss: float | None = None
 
     # Vybraný opční kontrakt
     expiration: str = ""
@@ -156,11 +158,16 @@ class Flow:
     filled_quantity: int = 0
     exit_fill_price: float | None = None
     exit_reason: str = ""
-    # Kusy hlavní části prodané dosavadními příkazy ještě před jejich zrušením
-    # (částečné vyplnění), dokud se zbytek neprodá trhem; hodnota = součet
-    # cena × kusy pro vážený průměr výsledné prodejní ceny
+    # Kusy hlavní části prodané dosavadními příkazy (i částečným vyplněním),
+    # dokud se zbytek neprodá; hodnota = součet cena × kusy pro vážený průměr
+    # výsledné prodejní ceny
     main_sold_quantity: int = 0
     main_sold_value: float = 0.0
+    # Kolik z toho pochází z právě běžících prodejních příkazů. Účtuje se
+    # přírůstkově, aby opakovaný průchod smyčkou totéž vyplnění nezapočítal
+    # dvakrát; se zadáním nové generace příkazů se počitadlo vynuluje.
+    main_counted_quantity: int = 0
+    main_counted_value: float = 0.0
 
     # Runner - část pozice prodávaná samostatným příkazem s vlastním cílem.
     # None v runner_profit_target znamená, že runner není aktivní.
@@ -177,6 +184,10 @@ class Flow:
     # a jeho pole se uvolní, takže lze nastartovat další
     runner_sold_quantity: int = 0
     runner_realized_pnl: float = 0.0
+    # Kusy runneru už zúčtované z právě běžících příkazů (přírůstkové
+    # účtování stejně jako u hlavní části)
+    runner_counted_quantity: int = 0
+    runner_counted_value: float = 0.0
     # Vyžádané uzavření trhem - hlavní části, resp. runneru. Podmíněný příkaz
     # se nejprve ruší a tržní prodej se zadává až po potvrzení zrušení.
     main_close_requested: bool = False
@@ -208,6 +219,17 @@ class Flow:
     def right_label(self) -> str:
         """CALL / PUT pro zobrazení."""
         return RIGHT_LABELS.get(self.right, self.right)
+
+    @property
+    def original_sl_known(self) -> bool:
+        """
+        True, pokud obchod zná svůj počáteční SL.
+        Nula je platná hodnota jen u SL na opci (break even); u SL na podkladu
+        znamená chybějící údaj ve stavu uloženém starší verzí.
+        """
+        if self.original_stop_loss is None:
+            return False
+        return not (self.sl_on_underlying and self.original_stop_loss <= 0)
 
     @property
     def exit_split(self) -> bool:
@@ -243,26 +265,6 @@ class Flow:
             return abs(level - self.entry_price)
         return abs(level)
 
-    def pt_option_price(self, level: float | None = None) -> float | None:
-        """
-        Limitní cena opce pro PT zadané ziskem v USD na kontrakt (bez
-        zaokrouhlení na tik). Bez známé nákupní ceny None.
-        """
-        if self.pt_on_underlying or self.fill_price is None:
-            return None
-        cil = self.profit_target if level is None else level
-        return self.fill_price + cil / 100.0
-
-    def sl_option_price(self, level: float | None = None) -> float | None:
-        """
-        Stop cena opce pro SL zadaný ztrátou v USD na kontrakt (bez
-        zaokrouhlení na tik). Bez známé nákupní ceny None.
-        """
-        if self.sl_on_underlying or self.fill_price is None:
-            return None
-        stop = self.stop_loss if level is None else level
-        return self.fill_price - stop / 100.0
-
     @property
     def unrealized_pnl(self) -> float | None:
         """
@@ -280,7 +282,19 @@ class Flow:
         if self.option_bid is not None and self.option_ask is not None:
             mid = (self.option_bid + self.option_ask) / 2.0
 
-        casti: list[tuple[float | None, int]] = [(self.exit_fill_price, self.main_quantity)]
+        casti: list[tuple[float | None, int]] = []
+        if self.exit_fill_price is not None:
+            casti.append((self.exit_fill_price, self.main_quantity))
+        else:
+            # Část hlavní části už mohla být prodaná (částečné vyplnění příkazu) -
+            # ta se oceňuje dosaženou cenou, zbytek středem trhu
+            if self.main_sold_quantity > 0:
+                casti.append(
+                    (self.main_sold_value / self.main_sold_quantity, self.main_sold_quantity)
+                )
+            zbytek = self.main_quantity - self.main_sold_quantity
+            if zbytek > 0:
+                casti.append((None, zbytek))
         if self.runner_active and self.runner_quantity <= self.held_quantity:
             casti.append((self.runner_fill_price, self.runner_quantity))
 
