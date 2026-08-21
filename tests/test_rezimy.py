@@ -339,6 +339,25 @@ class TestVyplneniJednohoZDvojice(ZakladRezimu):
         await self.engine._tick()
         self.assertEqual(flow.state, FlowState.CLOSED)
 
+    async def test_nova_dvojice_varuje_znovu(self):
+        """Po založení nové dvojice se varování o ztraceném příkazu smí zopakovat."""
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=3)
+        await self.nakup(flow, 3, 3.00)
+        await self.engine.set_runner(flow.id, 2.0)
+        flow.runner_sl_trade.orderStatus.status = "Cancelled"
+        await self.engine._tick()
+
+        # Runner se zruší a hned zapne znovu - vznikne nová dvojice příkazů
+        await self.engine.cancel_runner(flow.id)
+        await self.engine.set_runner(flow.id, 2.0)
+        flow.runner_sl_trade.orderStatus.status = "Cancelled"
+        await self.engine._tick()
+
+        varovani = [
+            z for _, z in self.engine.events if "POZOR" in z and "runneru" in z
+        ]
+        self.assertEqual(len(varovani), 2)
+
     async def test_uzavreni_trhem_zrusi_oba_a_proda(self):
         flow = await self.zaloz(False, False, 10.0, 10.0, quantity=2)
         await self.nakup(flow, 2, 3.00)
@@ -421,6 +440,27 @@ class TestZmenyUrovniNaOpci(ZakladRezimu):
         self.ib.price_ask = 3.05
 
         await self.engine.set_stop_loss(flow.id, "be")
+
+        self.assertTrue(flow.main_close_requested)
+        self.assertIn(pt, self.ib.cancelled)
+        self.assertIn(sl, self.ib.cancelled)
+
+    async def test_prorazeni_se_meri_stop_cenou_prikazu(self):
+        """
+        Stop příkaz stojí na ceně zaokrouhlené na tik - proražení se musí
+        posuzovat proti ní, ne proti nezaokrouhlené hodnotě.
+        """
+        # Ztráta 12 USD = 0,12 pod nákupní cenou 3,00, po zaokrouhlení
+        # na tik 0,05 stojí stop na 2,90
+        flow = await self.zaloz(False, False, 20.0, 12.0)
+        await self.nakup(flow, 1, 3.00)
+        self.assertAlmostEqual(flow.exit_sl_trade.order.auxPrice, 2.90)
+        pt, sl = flow.exit_trade, flow.exit_sl_trade
+        # BID přesně na stop ceně příkazu - stop by se v TWS spustil
+        self.ib.price_bid = 2.90
+        self.ib.price_ask = 3.00
+
+        await self.engine.set_stop_loss(flow.id, "puvodni")
 
         self.assertTrue(flow.main_close_requested)
         self.assertIn(pt, self.ib.cancelled)
@@ -510,6 +550,25 @@ class TestRunnerNaOpci(ZakladRezimu):
         self.assertEqual(len(self.prodeje()), 4)
         self.assertAlmostEqual(flow.runner_trade.order.conditions[0].price, 238.0)
         self.assertEqual(flow.runner_sl_trade.order.orderType, "STP")
+
+    async def test_selhani_prikazu_runneru_nezmensi_hlavni_zajisteni(self):
+        """
+        Nelze-li příkazy runneru sestavit, hlavní zajištění musí zůstat
+        na celé pozici - jinak by část kusů zůstala nekrytá.
+        """
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=3)
+        await self.nakup(flow, 3, 3.00)
+        # Bez nákupní ceny nelze úrovně na opci spočítat
+        flow.fill_price = None
+
+        with self.assertRaises(ValueError):
+            await self.engine.set_runner(flow.id, 2.0)
+
+        self.assertEqual(int(flow.exit_trade.order.totalQuantity), 3)
+        self.assertEqual(int(flow.exit_sl_trade.order.totalQuantity), 3)
+        self.assertIsNone(flow.runner_trade)
+        # Runner nesmí zůstat zapnutý bez příkazů v trhu
+        self.assertFalse(flow.runner_active)
 
     async def test_doplneny_nakup_navysi_oba_prikazy(self):
         flow = await self.zaloz(False, False, 10.0, 10.0, quantity=3)

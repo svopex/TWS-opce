@@ -1778,6 +1778,8 @@ class FlowEngine:
 
         async with self._lock:
             byl_aktivni = flow.runner_active
+            # Dosavadní nastavení pro případ, že se runner nepodaří oddělit
+            puvodni = (flow.runner_profit_target, flow.runner_quantity, flow.runner_stop_loss)
             flow.runner_profit_target = novy_pt
             flow.runner_quantity = runner_q
             # Nově zapnutý runner přebírá aktuální SL obchodu;
@@ -1789,7 +1791,17 @@ class FlowEngine:
                 if byl_aktivni and flow.runner_trade is not None:
                     self._update_runner_levels(flow, "pt")
                 else:
-                    self._split_exit_for_runner(flow)
+                    try:
+                        self._split_exit_for_runner(flow)
+                    except Exception:
+                        # Bez příkazů v trhu by runner jen držel kusy hlavní
+                        # části mimo zajištění - zadání se proto vrací zpět
+                        (
+                            flow.runner_profit_target,
+                            flow.runner_quantity,
+                            flow.runner_stop_loss,
+                        ) = puvodni
+                        raise
 
             self.log_event(
                 f"{flow.id}: runner {runner_q} ks s cílem {self._level_text(flow, 'pt', novy_pt)} "
@@ -2044,7 +2056,13 @@ class FlowEngine:
         total = flow.held_quantity - flow.main_sold_quantity
         prikazy = self._build_part_orders(flow, "runner", flow.runner_quantity)
         self._resize_part(flow, "exit", total - flow.runner_quantity)
-        self._place_part(flow, "runner", flow.runner_quantity, prikazy)
+        try:
+            self._place_part(flow, "runner", flow.runner_quantity, prikazy)
+        except Exception:
+            # Zadání příkazů runneru selhalo - hlavní zajištění se vrací
+            # na celou pozici, aby žádné kusy nezůstaly nekryté
+            self._resize_part(flow, "exit", total)
+            raise
 
     def _update_runner_levels(self, flow: Flow, which: str | None = None) -> None:
         """Promítne cíl či SL runneru do jeho běžících příkazů; jinak vyhodí chybu."""
