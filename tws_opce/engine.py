@@ -1350,11 +1350,21 @@ class FlowEngine:
             limit = self._exit_limit(flow) if part == "exit" else None
             return [("pt", self.ib.build_exit_order(quantity, limit, podminky, ref_pt))]
 
-        # Úroveň na opci se odvíjí od nákupní ceny - bez ní příkaz sestavit nejde
+        # Úroveň na opci se odvíjí od nákupní ceny. Nepošle-li ji TWS (a nákup
+        # byl tržní, bez limitu), vezme se jako náhrada aktuální cena opce -
+        # pozice musí dostat zajištění, i když základ pro PT/SL je jen přibližný
         if flow.fill_price is None:
-            raise ValueError(
-                "Nákupní cena opce není známa - PT/SL zadané na cenu opce nelze zadat, "
-                "zkontrolujte pozici v TWS."
+            nahradni, zdroj = self.ib.option_price(flow.option_contract)
+            if nahradni is None:
+                raise ValueError(
+                    "Nákupní cena opce není známa a opce nemá žádnou cenu - PT/SL "
+                    "zadané na cenu opce nelze zadat, zkontrolujte pozici v TWS."
+                )
+            flow.fill_price = nahradni
+            self.log_event(
+                f"{flow.id}: POZOR - TWS neposlala nákupní cenu opce, jako základ pro "
+                f"PT/SL na cenu opce se bere aktuální cena {nahradni:g} ({zdroj}). "
+                f"Zkontrolujte skutečnou nákupní cenu v TWS."
             )
 
         oca = self._oca_group(flow, part)
@@ -2515,10 +2525,9 @@ class FlowEngine:
             return
 
         # Pozice není a prodejní příkaz byl vyplněn - obchod se uzavřel během výpadku
-        vyplneny = self._filled_leg(flow, "exit")
-        if vyplneny is not None:
-            flow.exit_fill_price = valid_price(vyplneny.orderStatus.avgFillPrice)
-            flow.exit_reason = self._leg_reason(flow, "exit", vyplneny)
+        if self._filled_leg(flow, "exit") is not None:
+            flow.exit_fill_price, _, vyplnene = self._part_fill_summary(flow, "exit")
+            flow.exit_reason = self._part_reason(flow, "exit", vyplnene)
             flow.set_state(FlowState.CLOSED, "Obnoveno: pozice byla uzavřena během výpadku.")
             self._release(flow)
             return
@@ -2963,10 +2972,12 @@ class FlowEngine:
             # do realizovaného výsledku a jeho pole se uvolní - z hlavní části
             # pak lze oddělit další runner
             self._cancel_other_legs(flow, "runner", vyplneny_runner)
-            cena = valid_price(vyplneny_runner.orderStatus.avgFillPrice)
+            # Cena je vážený průměr přes oba příkazy dvojice - část kusů se
+            # mohla prodat na PT a zbytek (po zmenšení OCA skupinou) na SL
+            cena, _, vyplnene = self._part_fill_summary(flow, "runner")
             duvod = (
                 "ručně" if flow.runner_close_requested
-                else self._leg_reason(flow, "runner", vyplneny_runner)
+                else self._part_reason(flow, "runner", vyplnene)
             )
             vysledek_text = ""
             if cena is not None and flow.fill_price is not None:
@@ -3043,10 +3054,12 @@ class FlowEngine:
             # Druhý příkaz dvojice musí z trhu okamžitě - TWS jej přes OCA
             # skupinu ruší také, ale na to se nečeká
             self._cancel_other_legs(flow, "exit", vyplneny)
-            flow.exit_fill_price = valid_price(vyplneny.orderStatus.avgFillPrice)
+            # Cena je vážený průměr přes oba příkazy dvojice - po částečném
+            # prodeji na PT TWS zmenší SL příkaz a zbytek se prodá na něm
+            flow.exit_fill_price, _, vyplnene = self._part_fill_summary(flow, "exit")
             flow.exit_reason = (
                 "ručně" if flow.main_close_requested
-                else self._leg_reason(flow, "exit", vyplneny)
+                else self._part_reason(flow, "exit", vyplnene)
             )
             cena = f"{flow.exit_fill_price:g}" if flow.exit_fill_price else "?"
             self.log_event(
@@ -3276,6 +3289,41 @@ class FlowEngine:
         # prodeje stihne pohnout, jednostranné porovnání s PT proto umělo
         # označit ziskový výstup těsně pod cílem jako SL.
         return "PT" if abs(price - profit_target) <= abs(price - stop_loss) else "SL"
+
+    def _part_fill_summary(self, flow: Flow, part: str) -> tuple[float | None, int, list[Any]]:
+        """
+        Souhrn prodeje části přes všechny její příkazy: vážená průměrná cena,
+        celkový počet prodaných kusů a příkazy, které se (byť zčásti) vyplnily.
+
+        U dvojice příkazů se může část kusů prodat na PT a zbytek - poté, co
+        TWS přes OCA skupinu zmenší druhý příkaz - na SL. Cena jediného
+        příkazu se stavem Filled by pak zkreslila výsledek celé části.
+        """
+        celkem = 0
+        hodnota = 0.0
+        vyplnene: list[Any] = []
+        for trade in self._legs(flow, part):
+            mnozstvi = int(trade.orderStatus.filled or 0)
+            cena = valid_price(trade.orderStatus.avgFillPrice)
+            if mnozstvi <= 0 or cena is None:
+                continue
+            celkem += mnozstvi
+            hodnota += cena * mnozstvi
+            vyplnene.append(trade)
+        if celkem == 0:
+            return None, 0, []
+        return hodnota / celkem, celkem, vyplnene
+
+    def _part_reason(self, flow: Flow, part: str, vyplnene: list[Any]) -> str:
+        """
+        Důvod prodeje části podle příkazů, které se vyplnily.
+        Prodaly-li se kusy na obou příkazech dvojice, je důvod 'PT+SL'.
+        """
+        if not vyplnene:
+            return "PT/SL"
+        if flow.exit_split and len(vyplnene) > 1:
+            return "PT+SL"
+        return self._leg_reason(flow, part, vyplnene[0])
 
     def _leg_reason(self, flow: Flow, part: str, trade: Any) -> str:
         """

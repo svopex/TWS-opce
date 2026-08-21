@@ -188,7 +188,11 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    Dvojice je v TWS svázaná OCA skupinou (po vyplnění jednoho příkazu TWS
    druhý úměrně zmenší, resp. zruší — funguje to i ve chvíli, kdy aplikace
    neběží) a navíc ji hlídá aplikace sama: jakmile se jeden příkaz vyplní,
-   druhý ihned ruší, aby se opce neprodala dvakrát. Runner má vlastní
+   druhý ihned ruší, aby se opce neprodala dvakrát. Prodá-li se část kusů
+   na PT a zbytek po zmenšení na SL, je prodejní cenou vážený průměr obou
+   a důvod výstupu „PT+SL“. Nepošle-li TWS nákupní cenu opce (tržní nákup
+   bez limitu), vezme se jako základ pro úrovně na opci aktuální cena opce
+   a aplikace na to upozorní v průběhu. Runner má vlastní
    dvojici ve vlastní OCA skupině. Zmizí-li z dvojice jeden příkaz bez
    vyplnění (například ručním zrušením v TWS), aplikace na to upozorní
    v průběhu, ale nenahrazuje jej naslepo — TWS ruší druhý příkaz i ve

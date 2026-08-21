@@ -839,5 +839,87 @@ class TestObnovaSlBeNaOpci(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(obnovene.original_stop_loss, 10.0)
 
 
+
+class TestCastecnehoProdejeNaPt(ZakladRezimu):
+    """Část kusů se prodá na PT, zbytek po zmenšení OCA skupinou na SL."""
+
+    async def test_prodejni_cena_je_vazeny_prumer_obou_prikazu(self):
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=2)
+        await self.nakup(flow, 2, 3.00)
+        # PT limit se vyplnil jen z poloviny, zbylý kus prodal stop
+        self.ib.fill(flow.exit_trade, 1, 3.10, status="Submitted")
+        self.ib.fill(flow.exit_sl_trade, 1, 2.85)
+
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        # (3,10 + 2,85) / 2 = 2,975 -> výsledek (2,975 - 3,00) * 2 * 100 = -5 USD
+        self.assertAlmostEqual(flow.exit_fill_price, 2.975)
+        self.assertAlmostEqual(flow.unrealized_pnl, -5.0)
+        self.assertEqual(flow.exit_reason, "PT+SL")
+
+    async def test_castecny_prodej_runneru(self):
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=3)
+        await self.nakup(flow, 3, 3.00)
+        self.cfg.trading.runner_quantity = 2
+        # Runner o 2 ks lze oddělit jen z pozice 3 ks - zbude 1 ks v hlavní části
+        await self.engine.set_runner(flow.id, 2.0)
+        self.ib.fill(flow.runner_trade, 1, 3.20, status="Submitted")
+        self.ib.fill(flow.runner_sl_trade, 1, 2.90)
+
+        await self.engine._tick()
+
+        # (0,20 - 0,10) * 100 = +10 USD za oba kusy dohromady
+        self.assertAlmostEqual(flow.runner_realized_pnl, 10.0)
+        self.assertEqual(flow.runner_sold_quantity, 2)
+
+    async def test_obnova_po_vypadku_pocita_oba_prikazy(self):
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=2)
+        await self.nakup(flow, 2, 3.00)
+        self.ib.fill(flow.exit_trade, 1, 3.10, status="Cancelled")
+        self.ib.fill(flow.exit_sl_trade, 1, 2.85)
+
+        novy = FlowEngine(self.cfg, self.ib)
+        novy.flows[flow.id] = flow
+        await novy.restore()
+
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        self.assertAlmostEqual(flow.exit_fill_price, 2.975)
+        self.assertEqual(flow.exit_reason, "PT+SL")
+
+
+class TestNeznameNakupniCeny(ZakladRezimu):
+    """Bez nákupní ceny z TWS se jako základ pro PT/SL na opci vezme aktuální cena."""
+
+    async def test_nahradni_zaklad_z_aktualni_ceny(self):
+        self.cfg.trading.entry_order_type = "MKT"
+        flow = await self.zaloz(False, False, 10.0, 10.0)
+        # TWS vrátila vyplnění bez platné průměrné ceny a nákup byl tržní
+        self.ib.fill(flow.entry_trade, 1, 0.0)
+        await self.engine._tick()
+        self.assertIsNone(flow.fill_price)
+
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.EXIT_ARMED)
+        # Střed kotace 3,05 je náhradní základ: limit 3,15, stop 2,95
+        self.assertAlmostEqual(flow.fill_price, 3.05)
+        self.assertAlmostEqual(flow.exit_trade.order.lmtPrice, 3.15)
+        self.assertAlmostEqual(flow.exit_sl_trade.order.auxPrice, 2.95)
+        self.assertTrue(any("neposlala nákupní cenu" in z for _, z in self.engine.events))
+
+    async def test_bez_jakekoliv_ceny_zustava_chyba(self):
+        self.cfg.trading.entry_order_type = "MKT"
+        flow = await self.zaloz(False, False, 10.0, 10.0)
+        self.ib.fill(flow.entry_trade, 1, 0.0)
+        await self.engine._tick()
+        self.ib.price_bid = None
+        self.ib.price_ask = None
+
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.ERROR)
+
+
 if __name__ == "__main__":
     unittest.main()
