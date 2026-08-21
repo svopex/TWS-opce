@@ -101,8 +101,25 @@ trading:
   # Poměr vzdálenosti SL vůči PT, když uživatel SL ve formuláři nevyplní.
   #   1.0 = SL je od vstupu stejně daleko jako PT (poměr 1:1)
   #   0.5 = SL je na poloviční vzdálenosti (rizikovější, ale těsnější stop)
-  # SL se vždy umístí na opačnou stranu vstupu než PT.
+  # SL se vždy umístí na opačnou stranu vstupu než PT. Stejný poměr platí
+  # i pro úrovně zadané na opci (SL v USD = PT v USD × poměr); při smíšeném
+  # režimu se zisk na PT převádí mezi podkladem a cenou opce modelem
+  # z implikované volatility (stejně jako sloupec "Zisk na PT").
   sl_to_pt_ratio: 1.0
+
+  # Výchozí stav zaškrtávátek "na podkladu" před poli PT a SL ve formuláři
+  # (pro každý obchod je lze přepnout):
+  #   true  = hodnota je cena podkladu a hlídá ji podmíněný příkaz (jako dosud)
+  #   false = hodnota je zisk (PT), resp. ztráta (SL) v USD na JEDEN KONTRAKT;
+  #           10 USD znamená posun ceny opce o 0,10. PT se pak realizuje
+  #           limitním příkazem přímo na cenu opce, SL stop-market příkazem
+  #           na cenu opce.
+  # Jakmile je aspoň jedna úroveň na opci, vzniknou po nákupu dva prodejní
+  # příkazy svázané OCA skupinou: po vyplnění jednoho druhý zruší TWS i aplikace.
+  # Při PT na opci se strike vybírá k úrovni podkladu odvozené z ceny opce
+  # (cena opce při vstupu + zisk -> kde ji opce dosáhne).
+  pt_on_underlying: true
+  sl_on_underlying: true
 
   # Maximální povolený spread opce v procentech, počítaný ze středu trhu:
   #   spread [%] = (ASK − BID) / ((ASK + BID) / 2) * 100
@@ -122,10 +139,12 @@ trading:
   # Vyšší hodnota = jistější vyplnění, ale horší nákupní cena.
   ask_tolerance_pct: 2.0
 
-  # Typ prodejního příkazu pro PT i SL (jde o jediný příkaz se dvěma
-  # cenovými podmínkami spojenými logickým OR):
+  # Typ prodejního příkazu při PT i SL na podkladu (jde o jediný příkaz
+  # se dvěma cenovými podmínkami spojenými logickým OR):
   #   MKT = tržní příkaz — po splnění podmínky se vyplní jistě (výchozí)
   #   LMT = limitní příkaz na BID snížený o bid_tolerance_pct
+  # Při oddělených příkazech (PT nebo SL na opci) je podmíněný příkaz
+  # na podkladu vždy MKT; příkazy na cenu opce jsou LMT (PT) a STP (SL).
   exit_order_type: MKT
 
   # O kolik procent pod BID se u výstupního typu LMT umístí limitní cena.
@@ -287,8 +306,8 @@ engine:
 #     a vyžaduje ruční kontrolu účtu
 #
 # Aby aplikace své příkazy po restartu poznala, označuje je v poli orderRef
-# značkou "TWSOPCE:<obchod>:entry" resp. ":exit". Cizích příkazů na účtu
-# si nevšímá.
+# značkou "TWSOPCE:<obchod>:entry", ":exit", ":exitsl", ":runner"
+# a ":runnersl". Cizích příkazů na účtu si nevšímá.
 # -----------------------------------------------------------------------------
 state:
   # false = stav se neukládá a po restartu aplikace o dřívějších obchodech neví

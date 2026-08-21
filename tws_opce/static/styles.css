@@ -542,3 +542,23 @@ body.body--dark .ztrata {
 body.body--dark .log-radek {
   color: #cbd5e1;
 }
+
+/* --- Přepínač režimu PT / SL (na podkladu vs. na opci) --- */
+/* Zaškrtávátko stojí těsně před polem a společně zabírají jeden slot řádku;
+   slot je o něco širší, aby se vešel delší popisek pole i se zaškrtávátkem */
+.pole-prepinac {
+  align-items: center;
+  flex: 1 1 50%;
+  flex-wrap: nowrap;
+  gap: 2px;
+}
+
+.pole-prepinac .prepinac-rezimu {
+  flex: 0 0 auto;
+  margin-left: -6px;
+}
+
+.pole-prepinac .pole-vnitrni {
+  flex: 1 1 auto;
+  min-width: 0;
+}

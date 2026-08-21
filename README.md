@@ -94,6 +94,27 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
      vychází z velikosti účtu — buď z pevné hodnoty v konfiguraci, nebo
      ze skutečného stavu účtu, je-li `account.size: 0`.
 
+   **PT a SL na podkladu, nebo na opci.** Před poli PT a SL je zaškrtávátko
+   *na podkladu* (výchozí stav určuje `trading.pt_on_underlying`
+   a `trading.sl_on_underlying`). Zaškrtnuté pole je cena podkladu a hlídá
+   ji podmíněný příkaz, jak je popsáno výše. Odškrtnuté pole je **zisk
+   (PT), resp. ztráta (SL) v USD na jeden kontrakt** — 10 znamená posun
+   ceny opce o 0,10 (nákup 3,00 → PT limit 3,10, SL stop 2,90). PT na opci
+   se po nákupu realizuje limitním příkazem přímo na cenu opce, SL na opci
+   stop-market příkazem. Oba režimy lze libovolně kombinovat.
+   Při PT na opci se strike vybírá k úrovni podkladu, kterou aplikace
+   odvodí z ceny opce: z aktuální kotace opce se strikem u vstupu zjistí
+   implikovanou volatilitu, spočítá cenu opce v okamžiku vstupu, přičte
+   požadovaný zisk a najde úroveň podkladu, kde opce této ceny dosáhne —
+   strike tedy i tady leží na cílové úrovni. Bez kotací se použije delta,
+   bez delty vstupní cena; zvolená úroveň je vidět v náhledu formuláře.
+   SL se bez zadání dopočítá stejným poměrem jako dosud (na opci
+   `PT × poměr`); při smíšeném režimu se zisk na PT převede mezi podkladem
+   a cenou opce stejným modelem, jakým se počítá sloupec *Zisk na PT*.
+   Množství při SL na opci vychází přímo ze zadané ztráty:
+   `riskovaná částka / SL v USD`. Přepnutí zaškrtávátka pole vyprázdní,
+   protože hodnota by v novém režimu znamenala něco jiného.
+
    TWS model greeks u opcí neposílá spolehlivě — závisí to na účtu
    a předplatném dat. Chybí-li delta, aplikace ji dopočítá z tržní ceny opce
    (implikovaná volatilita a z ní delta podle Black-Scholes) a ve formuláři
@@ -134,6 +155,28 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    Vyplnil-li se nákup jen částečně, aplikace nejprve zruší jeho nevyplněný
    zbytek a zajistí skutečně nakoupené množství — TWS totiž nepovolí mít
    na jednom opčním kontraktu současně nákupní i prodejní příkaz.
+
+   Je-li PT nebo SL zadané na opci, nahradí jediný podmíněný příkaz
+   **dvojice příkazů**:
+
+   | PT | SL | Příkazy po nákupu |
+   | --- | --- | --- |
+   | podklad | podklad | jeden MKT (příp. LMT) s podmínkami PT OR SL — beze změny |
+   | podklad | opce | MKT s podmínkou PT + stop-market na cenu opce |
+   | opce | podklad | limit na cenu opce + MKT s podmínkou SL |
+   | opce | opce | limit na cenu opce + stop-market na cenu opce |
+
+   Dvojice je v TWS svázaná OCA skupinou (po vyplnění jednoho příkazu TWS
+   druhý úměrně zmenší, resp. zruší — funguje to i ve chvíli, kdy aplikace
+   neběží) a navíc ji hlídá aplikace sama: jakmile se jeden příkaz vyplní,
+   druhý ihned ruší, aby se opce neprodala dvakrát. Runner má vlastní
+   dvojici ve vlastní OCA skupině. Zmizí-li z dvojice jeden příkaz bez
+   vyplnění (například ručním zrušením v TWS), aplikace na to upozorní
+   v průběhu, ale nenahrazuje jej naslepo — TWS ruší druhý příkaz i ve
+   chvíli, kdy se první teprve vyplňuje, a nový příkaz by opci prodal
+   podruhé. Zmizí-li oba, obchod skončí ve stavu *Chyba* jako dosud.
+   Nastavení `trading.exit_order_type` se týká jen společného podmíněného
+   příkazu; podmíněný příkaz v dvojici je vždy MKT.
 5. **Monitoring** — tabulka ukazuje všechny obchody, jejich ceny a stav.
    Sloupec *Ks* ukazuje zadané množství a za lomítkem počet kontraktů právě
    otevřených v trhu: před nákupem `4/0`, po částečném vyplnění tří ze čtyř
@@ -155,6 +198,11 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    ve formuláři. Je-li cena podkladu ve chvíli přepnutí už na zvolené úrovni
    SL, nebo za ní, nemá smysl čekat na podmínku: aplikace podmíněný příkaz
    rovnou zruší a příslušnou část pozice prodá trhem.
+   U úrovní zadaných na opci fungují tlačítka obdobně: násobky cíle násobí
+   zisk v USD (2× z 10 USD je 20 USD, limit se posune na 3,20), *SL BE* je
+   stop na nákupní ceně opce (ztráta 0 USD) a proražení se měří BIDem opce.
+   Ve sloupcích *PT* a *SL* se taková úroveň ukazuje jako částka v USD
+   a po nákupu i s cenou opce, na kterou příkaz míří, např. `3,10 (+10,00 USD)`.
 
    U obchodů, které drží více kontraktů, než kolik jich zabírá runner
    (`trading.runner_quantity`, výchozí 1), je vedle tlačítek cíle i sekce
@@ -203,7 +251,9 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    stejně jako se u nákupu půl spreadu přičítá. Opce se přecení z implikované
    volatility odvozené z její aktuální ceny. Po nákupu se počítá ze skutečně
    dosažené ceny, před nákupem z ceny, na kterou opce vyjde **až podklad
-   dosáhne vstupní úrovně** — tam se totiž bude kupovat.
+   dosáhne vstupní úrovně** — tam se totiž bude kupovat. Úroveň zadaná
+   na opci žádný model nepotřebuje: zisk, resp. ztráta je rovnou zadaná
+   částka krát počet otevřených kontraktů.
    Hodnoty se přepočítávají s pohybem trhu. Předpokládá se, že podklad
    úrovně dosáhne brzy a volatilita zůstane stejná — při pozdějším pohybu
    bude výsledek nižší o časový rozpad.
@@ -300,7 +350,7 @@ pochází — `(config)`, nebo `(z TWS)`.
 Vše podstatné je v `config.yaml` (podrobné komentáře u každé položky):
 spojení s TWS, velikost účtu a risk, typ nákupního příkazu
 (`LMT_ASK` / `MKT` / `LMT_MID`), typ prodejního příkazu, limit spreadu,
-poměr SL:PT a výběr expirace.
+poměr SL:PT, výchozí režim PT a SL (na podkladu / na opci) a výběr expirace.
 
 ## Testy
 
@@ -310,7 +360,8 @@ python -m unittest discover -s . -p "test_*.py"
 
 Testy běží proti náhradě TWS (`tests/fake_ib.py`) — pokrývají výpočty,
 čtení tržních dat i celý průběh obchodu včetně příkazů, jejich podmínek,
-runneru a obnovy po restartu. Spojení s TWS není potřeba.
+runneru, režimů PT/SL na opci (`tests/test_rezimy.py`) a obnovy po
+restartu. Spojení s TWS není potřeba.
 
 ## Struktura
 
@@ -347,14 +398,20 @@ v souboru:
 | nakoupený obchod bez pozice i příkazu | označí jako chybu k ruční kontrole |
 
 Aby aplikace své příkazy poznala, značkuje je v poli `orderRef` zápisem
-`TWSOPCE:<obchod>:entry`, `:exit`, resp. `:runner`. Cizích příkazů na účtu
-si nevšímá,
+`TWSOPCE:<obchod>:entry`, `:exit`, resp. `:runner`; druhý příkaz dvojice
+(SL na opci nebo na podkladu při odděleném výstupu) nese `:exitsl`,
+resp. `:runnersl`. Cizích příkazů na účtu si nevšímá,
 takže vedle ní můžete obchodovat i ručně.
+
+Drží-li účet pozici a z dvojice prodejních příkazů přežil jen jeden,
+aplikace jej zruší, počká na potvrzení a zajištění založí znovu celé.
 
 Ztratí-li se soubor se stavem, aplikace podle těchto značek dohledá alespoň
 **čekající příkazy** a obchody z nich sestaví — vstupní cenu z cenové podmínky
-příkazu, PT a SL z podmínek zajišťovacího příkazu. Chybí-li zajišťovací příkaz,
-odvodí PT ze strike a SL z poměru v konfiguraci a obchod označí za dopočítaný.
+příkazu, PT a SL z podmínek zajišťovacího příkazu; u příkazů na cenu opce
+odvodí zisk a ztrátu v USD z limitní, resp. stop ceny proti nákupní ceně.
+Chybí-li zajišťovací příkaz, odvodí PT ze strike a SL z poměru v konfiguraci
+a obchod označí za dopočítaný.
 
 Co takto zachránit nelze, je **už nakoupená pozice bez zajišťovacího příkazu**:
 vyplněné příkazy TWS vrací bez `orderRef`, takže je k obchodu přiřadit nejde.

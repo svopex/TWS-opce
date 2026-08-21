@@ -69,7 +69,13 @@ class FlowState(str, Enum):
 
 @dataclass
 class FlowRequest:
-    """Zadání obchodu z formuláře."""
+    """
+    Zadání obchodu z formuláře.
+
+    PT a SL se zadávají buď jako cena podkladu (výchozí), nebo jako zisk,
+    resp. ztráta v USD na jeden opční kontrakt - o tom rozhodují přepínače
+    pt_on_underlying a sl_on_underlying.
+    """
 
     symbol: str
     entry_price: float
@@ -77,6 +83,8 @@ class FlowRequest:
     stop_loss: float | None = None
     quantity: int | None = None
     max_spread_pct: float | None = None
+    pt_on_underlying: bool = True
+    sl_on_underlying: bool = True
 
 
 @dataclass
@@ -94,6 +102,14 @@ class Flow:
     quantity: int
     max_spread_pct: float
     right: str = "C"
+
+    # Režim PT a SL: True = úroveň je cena podkladu a hlídá ji podmíněný
+    # příkaz; False = hodnota je zisk, resp. ztráta v USD na jeden kontrakt
+    # a prodává se příkazem přímo na cenu opce (PT limitem, SL stop-marketem).
+    # Jsou-li oba na podkladu, stačí jediný příkaz s podmínkami PT OR SL;
+    # jinak vznikají dva příkazy a po vyplnění jednoho se druhý ruší.
+    pt_on_underlying: bool = True
+    sl_on_underlying: bool = True
 
     # PT zadané při založení obchodu; násobky cíle se počítají z něj,
     # aby opakovaná změna nevycházela z už posunuté hodnoty
@@ -130,6 +146,9 @@ class Flow:
     # Kdy byl příkaz naposledy odstraněn z trhu kvůli spreadu
     blocked_since: datetime | None = None
     exit_order_id: int | None = None
+    # Druhý prodejní příkaz hlavní části (SL), když se PT a SL realizují
+    # odděleně; při obou úrovních na podkladu zůstává None
+    exit_sl_order_id: int | None = None
     fill_price: float | None = None
     fill_time: datetime | None = None
     # Skutečně nakoupené množství - při částečném plnění je nižší než zadané
@@ -145,6 +164,8 @@ class Flow:
     # nezávisle na hlavní části (počáteční SL / break even)
     runner_stop_loss: float | None = None
     runner_order_id: int | None = None
+    # Druhý prodejní příkaz runneru (SL) při odděleném PT a SL
+    runner_sl_order_id: int | None = None
     runner_fill_price: float | None = None
     # Souhrn dříve prodaných runnerů - po prodeji se runner zúčtuje sem
     # a jeho pole se uvolní, takže lze nastartovat další
@@ -173,12 +194,68 @@ class Flow:
     underlying_contract: Any = field(default=None, repr=False, compare=False)
     entry_trade: Any = field(default=None, repr=False, compare=False)
     exit_trade: Any = field(default=None, repr=False, compare=False)
+    exit_sl_trade: Any = field(default=None, repr=False, compare=False)
     runner_trade: Any = field(default=None, repr=False, compare=False)
+    runner_sl_trade: Any = field(default=None, repr=False, compare=False)
 
     @property
     def right_label(self) -> str:
         """CALL / PUT pro zobrazení."""
         return RIGHT_LABELS.get(self.right, self.right)
+
+    @property
+    def exit_split(self) -> bool:
+        """
+        True, pokud se PT a SL realizují dvěma samostatnými příkazy.
+        Jediný podmíněný příkaz (PT OR SL) stačí jen tehdy, když jsou
+        obě úrovně zadané na podkladu.
+        """
+        return not (self.pt_on_underlying and self.sl_on_underlying)
+
+    @property
+    def break_even_sl(self) -> float:
+        """
+        Hodnota SL odpovídající break even: na podkladu vstupní cena,
+        na opci nulová ztráta (stop na nákupní ceně opce).
+        """
+        return self.entry_price if self.sl_on_underlying else 0.0
+
+    def scaled_target(self, multiple: float) -> float:
+        """
+        Cíl na násobku původní vzdálenosti od vstupu.
+        Na podkladu se násobí vzdálenost od vstupní ceny, na opci přímo
+        zisk v USD (jeho „vstupem" je nula).
+        """
+        zaklad = self.original_profit_target or self.profit_target
+        if self.pt_on_underlying:
+            return round(self.entry_price + (zaklad - self.entry_price) * multiple, 2)
+        return round(zaklad * multiple, 2)
+
+    def pt_distance(self, level: float) -> float:
+        """Vzdálenost cílové úrovně od vstupu v jednotkách daného režimu PT."""
+        if self.pt_on_underlying:
+            return abs(level - self.entry_price)
+        return abs(level)
+
+    def pt_option_price(self, level: float | None = None) -> float | None:
+        """
+        Limitní cena opce pro PT zadané ziskem v USD na kontrakt (bez
+        zaokrouhlení na tik). Bez známé nákupní ceny None.
+        """
+        if self.pt_on_underlying or self.fill_price is None:
+            return None
+        cil = self.profit_target if level is None else level
+        return self.fill_price + cil / 100.0
+
+    def sl_option_price(self, level: float | None = None) -> float | None:
+        """
+        Stop cena opce pro SL zadaný ztrátou v USD na kontrakt (bez
+        zaokrouhlení na tik). Bez známé nákupní ceny None.
+        """
+        if self.sl_on_underlying or self.fill_price is None:
+            return None
+        stop = self.stop_loss if level is None else level
+        return self.fill_price - stop / 100.0
 
     @property
     def unrealized_pnl(self) -> float | None:
@@ -302,19 +379,19 @@ class Flow:
         if not self.runner_active:
             return None
         zaklad = self.original_profit_target or self.profit_target
-        puvodni_vzdalenost = abs(zaklad - self.entry_price)
+        puvodni_vzdalenost = self.pt_distance(zaklad)
         if puvodni_vzdalenost <= 0:
             return None
-        return abs(self.runner_profit_target - self.entry_price) / puvodni_vzdalenost
+        return self.pt_distance(self.runner_profit_target) / puvodni_vzdalenost
 
     @property
     def pt_multiple(self) -> float | None:
         """Kolikanásobek původní vzdálenosti cíle od vstupu je aktuální PT."""
         zaklad = self.original_profit_target or self.profit_target
-        puvodni_vzdalenost = abs(zaklad - self.entry_price)
+        puvodni_vzdalenost = self.pt_distance(zaklad)
         if puvodni_vzdalenost <= 0:
             return None
-        return abs(self.profit_target - self.entry_price) / puvodni_vzdalenost
+        return self.pt_distance(self.profit_target) / puvodni_vzdalenost
 
     def option_label(self) -> str:
         """Popis opčního kontraktu pro tabulku, například 'AAPL 20260828 C 230'."""

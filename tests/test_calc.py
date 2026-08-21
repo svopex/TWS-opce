@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -267,3 +267,80 @@ class TestSmysluplnostiUrovni(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestUrovneNaOpci(unittest.TestCase):
+    """Výpočty pro PT a SL zadané ziskem / ztrátou v USD na kontrakt."""
+
+    def test_limit_pro_zisk_na_kontrakt(self):
+        # 10 USD na kontraktu o 100 kusech = posun ceny opce o 0,10
+        self.assertAlmostEqual(calc.option_profit_limit(3.00, 10.0, 0.01), 3.10)
+
+    def test_limit_se_zaokrouhli_na_tik(self):
+        self.assertAlmostEqual(calc.option_profit_limit(3.00, 7.0, 0.05), 3.05)
+
+    def test_stop_pro_ztratu_na_kontrakt(self):
+        self.assertAlmostEqual(calc.option_loss_stop(3.00, 10.0, 0.01), 2.90)
+
+    def test_stop_neklesne_pod_jeden_tik(self):
+        # Ztráta větší než celá prémie - stop stojí na nejnižší možné ceně
+        self.assertAlmostEqual(calc.option_loss_stop(3.00, 500.0, 0.05), 0.05)
+
+    def test_mnozstvi_ze_ztraty_na_kontrakt(self):
+        self.assertEqual(calc.suggest_quantity_for_loss(50.0, 10.0), 5)
+        self.assertEqual(calc.suggest_quantity_for_loss(50.0, 12.0), 4)
+
+    def test_mnozstvi_ze_ztraty_dodrzi_meze(self):
+        self.assertEqual(calc.suggest_quantity_for_loss(50.0, 1000.0), 1)
+        self.assertEqual(calc.suggest_quantity_for_loss(50.0, 0.0), 1)
+        self.assertEqual(calc.suggest_quantity_for_loss(5000.0, 1.0, max_quantity=100), 100)
+
+    def test_mnozstvi_pres_deltu_odpovida_obecnemu_vzorci(self):
+        # Pohyb 3 body * delta 0,5 * 100 = 150 USD na kontrakt
+        self.assertEqual(
+            calc.suggest_quantity(600.0, 232.0, 229.0, 0.5),
+            calc.suggest_quantity_for_loss(600.0, 150.0),
+        )
+
+    def test_inverze_ceny_opce_vrati_puvodni_podklad(self):
+        # Cena opce při podkladu S* a zpět musí dát S*
+        years, rate, sigma = 30 / 365, 0.04, 0.3
+        cena = calc.black_scholes_price(236.0, 235.0, years, rate, sigma, "C")
+        uroven = calc.level_for_option_price(cena, 230.0, 235.0, years, rate, sigma, "C")
+        self.assertAlmostEqual(uroven, 236.0, places=4)
+
+    def test_inverze_pro_put_klesa(self):
+        years, rate, sigma = 30 / 365, 0.04, 0.3
+        cena = calc.black_scholes_price(224.0, 226.0, years, rate, sigma, "P")
+        uroven = calc.level_for_option_price(cena, 230.0, 226.0, years, rate, sigma, "P")
+        self.assertAlmostEqual(uroven, 224.0, places=4)
+
+    def test_nedosazitelna_cena_vraci_none(self):
+        years, rate, sigma = 30 / 365, 0.04, 0.3
+        self.assertIsNone(calc.level_for_option_price(10000.0, 230.0, 235.0, years, rate, sigma, "C"))
+        self.assertIsNone(calc.level_for_option_price(0.0, 230.0, 235.0, years, rate, sigma, "C"))
+
+    def test_projekce_urovne_podkladu_je_inverzi_projekce_ceny(self):
+        expirace = (date.today() + timedelta(days=30)).strftime("%Y%m%d")
+        cena_na_cili = calc.project_option_price(3.0, 230.0, 234.0, 232.5, expirace, 4.0, "C")
+        uroven = calc.project_underlying_level(3.0, 230.0, cena_na_cili, 232.5, expirace, 4.0, "C")
+        self.assertAlmostEqual(uroven, 234.0, places=3)
+
+    def test_smer_z_pt_na_podkladu(self):
+        self.assertEqual(calc.intended_right(232.0, 235.0, None), "C")
+        self.assertEqual(calc.intended_right(232.0, 229.0, None), "P")
+
+    def test_smer_ze_sl_kdyz_pt_je_na_opci(self):
+        self.assertEqual(calc.intended_right(232.0, 10.0, 229.0, pt_on_underlying=False), "C")
+        self.assertEqual(calc.intended_right(232.0, 10.0, 235.0, pt_on_underlying=False), "P")
+
+    def test_smer_bez_urovni_na_podkladu_nelze_urcit(self):
+        self.assertIsNone(calc.intended_right(232.0, 10.0, 10.0, False, False))
+        self.assertIsNone(calc.intended_right(232.0, 10.0, None, False, True))
+
+    def test_kontrola_urovni_na_opci(self):
+        # Částka v USD nemá ke vstupu vztah - stačí, že je kladná
+        self.assertTrue(calc.levels_sane(232.0, 10.0, 10.0, pt_on_underlying=False, sl_on_underlying=False))
+        self.assertFalse(calc.levels_sane(232.0, 0.0, 10.0, pt_on_underlying=False, sl_on_underlying=False))
+        # Úroveň na podkladu se kontroluje dál
+        self.assertFalse(calc.levels_sane(232.0, 10.0, 9999.0, pt_on_underlying=False, sl_on_underlying=True))

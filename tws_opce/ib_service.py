@@ -22,6 +22,7 @@ from ib_async import (
     PriceCondition,
     OrderStatus,
     Stock,
+    StopOrder,
     Ticker,
     Trade,
 )
@@ -33,6 +34,12 @@ log = logging.getLogger(__name__)
 # Předpona značky, kterou aplikace označuje své příkazy v poli orderRef.
 # Podle ní je po restartu pozná i bez uloženého stavu.
 ORDER_REF_PREFIX = "TWSOPCE"
+
+# Typ OCA skupiny: 2 = po (i částečném) vyplnění jednoho příkazu TWS
+# ostatní příkazy ve skupině úměrně zmenší, při úplném vyplnění zruší,
+# a po dobu zpracování je blokuje proti přeplnění. Oproti typu 1 (zrušit
+# vše) tak po částečném prodeji na PT zůstává zbytek pozice dál krytý SL.
+OCA_TYPE_REDUCE_WITH_BLOCK = 2
 
 
 def order_ref(flow_id: str, druh: str) -> str:
@@ -405,15 +412,38 @@ class IBService:
             order.account = self.account
         return order
 
+    def _finish_sell_order(self, order: Order, ref: str, oca_group: str) -> Order:
+        """
+        Doplní prodejnímu příkazu společné atributy: platnost, účet, značku
+        a případnou OCA skupinu. Příkazy ve stejné OCA skupině TWS sama
+        váže dohromady - vyplnění jednoho zmenší či zruší ostatní, a to
+        i kdyby aplikace zrovna neběžela.
+        """
+        trading = self.cfg.trading
+        order.tif = trading.tif
+        order.outsideRth = trading.outside_rth
+        if ref:
+            order.orderRef = ref
+        if oca_group:
+            order.ocaGroup = oca_group
+            order.ocaType = OCA_TYPE_REDUCE_WITH_BLOCK
+        if self.account:
+            order.account = self.account
+        return order
+
     def build_exit_order(
         self,
         quantity: int,
         limit_price: float | None,
         conditions: list[PriceCondition],
         ref: str = "",
+        oca_group: str = "",
     ) -> Order:
         """
-        Sestaví jediný prodejní příkaz pokrývající PT i SL.
+        Sestaví prodejní příkaz s cenovými podmínkami na podkladu.
+        S oběma podmínkami (PT i SL) jde o jediný příkaz pokrývající celý
+        výstup; s jedinou podmínkou o jednu ze dvou částí výstupu, kdy
+        druhou hlídá příkaz přímo na cenu opce.
         Podmínky jsou spojeny logickým OR - stačí splnit jednu z nich.
         """
         trading = self.cfg.trading
@@ -422,25 +452,47 @@ class IBService:
         else:
             order = LimitOrder("SELL", quantity, limit_price)
 
-        order.tif = trading.tif
-        order.outsideRth = trading.outside_rth
-        # Spojka uložená v podmínce ji váže k NÁSLEDUJÍCÍ podmínce, nikoliv
-        # k předchozí. Aby stačilo splnit kteroukoliv z nich, nesou všechny
-        # kromě poslední 'o' (OR); u poslední se spojka již neuplatní.
-        # Ověřeno proti TWS: opačné pořadí vede k AND a příkaz se nikdy nespustí.
+        order.conditions = self.prepare_conditions(conditions)
+        order.conditionsCancelOrder = False
+        order.conditionsIgnoreRth = trading.outside_rth
+        return self._finish_sell_order(order, ref, oca_group)
+
+    @staticmethod
+    def prepare_conditions(conditions: list[PriceCondition]) -> list[PriceCondition]:
+        """
+        Nastaví spojky podmínek tak, aby stačilo splnit kteroukoliv z nich.
+
+        Spojka uložená v podmínce ji váže k NÁSLEDUJÍCÍ podmínce, nikoliv
+        k předchozí. Proto nesou všechny kromě poslední 'o' (OR); u poslední
+        se spojka již neuplatní. Ověřeno proti TWS: opačné pořadí vede
+        k AND a příkaz se nikdy nespustí.
+        """
         prepared: list[PriceCondition] = []
         posledni = len(conditions) - 1
         for index, cond in enumerate(conditions):
             cond.conjunction = "a" if index == posledni else "o"
             prepared.append(cond)
-        order.conditions = prepared
-        order.conditionsCancelOrder = False
-        order.conditionsIgnoreRth = trading.outside_rth
-        if ref:
-            order.orderRef = ref
-        if self.account:
-            order.account = self.account
-        return order
+        return prepared
+
+    def build_limit_sell_order(
+        self, quantity: int, limit_price: float, ref: str = "", oca_group: str = ""
+    ) -> Order:
+        """
+        Limitní prodejní příkaz přímo na cenu opce - realizuje PT zadané
+        ziskem v USD na kontrakt. Bez podmínek na podkladu.
+        """
+        order = LimitOrder("SELL", quantity, limit_price)
+        return self._finish_sell_order(order, ref, oca_group)
+
+    def build_stop_sell_order(
+        self, quantity: int, stop_price: float, ref: str = "", oca_group: str = ""
+    ) -> Order:
+        """
+        Stop-market prodejní příkaz přímo na cenu opce - realizuje SL zadaný
+        ztrátou v USD na kontrakt. Po dosažení stop ceny se prodá trhem.
+        """
+        order = StopOrder("SELL", quantity, stop_price)
+        return self._finish_sell_order(order, ref, oca_group)
 
     async def app_trades(self) -> dict[str, Trade]:
         """

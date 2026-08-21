@@ -55,6 +55,12 @@ class TradingConfig:
 
     # Výchozí poměr SL vůči PT, pokud uživatel SL nezadá (1.0 = 1:1)
     sl_to_pt_ratio: float = 1.0
+    # Výchozí stav zaškrtávátek "na podkladu" ve formuláři:
+    #   true  = PT / SL se zadává jako cena podkladu (podmíněný příkaz)
+    #   false = PT / SL se zadává jako zisk / ztráta v USD na jeden kontrakt
+    #           a realizuje se příkazem přímo na cenu opce (LMT, resp. STP)
+    pt_on_underlying: bool = True
+    sl_on_underlying: bool = True
     max_spread_pct: float = 7.0
     entry_order_type: str = "LMT_ASK"
     # Tolerance nad ASK v procentech pro typ příkazu LMT_ASK
@@ -302,6 +308,11 @@ def validate_config(cfg: AppConfig) -> None:
         problems.append("account.risk_pct musí být v intervalu (0, 100]")
     if cfg.trading.sl_to_pt_ratio <= 0:
         problems.append("trading.sl_to_pt_ratio musí být kladné číslo")
+    # Přepínače režimu PT/SL musí být skutečné pravdivostní hodnoty - YAML
+    # řetězec "false" by se jinak vyhodnotil jako pravda
+    for nazev in ("pt_on_underlying", "sl_on_underlying"):
+        if not isinstance(getattr(cfg.trading, nazev), bool):
+            problems.append(f"trading.{nazev} musí být true nebo false")
     if cfg.trading.max_spread_pct <= 0:
         problems.append("trading.max_spread_pct musí být kladné číslo")
     if cfg.trading.risk_free_rate_pct < 0:

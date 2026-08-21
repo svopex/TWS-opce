@@ -53,6 +53,24 @@ def spread_pct(bid: float | None, ask: float | None) -> float | None:
     return (ask - bid) / mid * 100.0
 
 
+def suggest_quantity_for_loss(
+    risk_amount: float,
+    loss_per_contract: float,
+    min_quantity: int = 1,
+    max_quantity: int = 100,
+) -> int:
+    """
+    Doporučené množství kontraktů ze známé ztráty na jeden kontrakt v USD.
+    Množství = riskovaná částka / ztráta na kontrakt, zaokrouhleno dolů
+    a oříznuto do povoleného rozsahu z konfigurace.
+    """
+    if risk_amount <= 0 or loss_per_contract <= 0 or not math.isfinite(loss_per_contract):
+        return min_quantity
+
+    qty = int(math.floor(risk_amount / loss_per_contract))
+    return max(min_quantity, min(qty, max_quantity))
+
+
 def suggest_quantity(
     risk_amount: float,
     entry_price: float,
@@ -62,22 +80,36 @@ def suggest_quantity(
     max_quantity: int = 100,
 ) -> int:
     """
-    Doporučené množství opčních kontraktů.
+    Doporučené množství opčních kontraktů při SL zadaném na podkladu.
     Odhadovaná ztráta na 1 kontrakt = pohyb podkladu ke SL * |delta| * multiplikátor.
-    Množství = riskovaná částka / ztráta na kontrakt, zaokrouhleno dolů.
     """
     move = abs(entry_price - stop_loss)
     d = abs(delta)
-    if move <= 0 or d <= 0 or risk_amount <= 0:
+    if move <= 0 or d <= 0:
         return min_quantity
 
-    loss_per_contract = move * d * OPTION_MULTIPLIER
-    if loss_per_contract <= 0:
-        return min_quantity
+    return suggest_quantity_for_loss(
+        risk_amount, move * d * OPTION_MULTIPLIER, min_quantity, max_quantity
+    )
 
-    qty = int(math.floor(risk_amount / loss_per_contract))
-    # Výsledek se ořízne do povoleného rozsahu z konfigurace
-    return max(min_quantity, min(qty, max_quantity))
+
+def option_profit_limit(fill_price: float, profit_usd: float, min_tick: float) -> float:
+    """
+    Limitní cena prodeje opce pro zisk zadaný v USD na jeden kontrakt.
+    Zisk 10 USD na kontraktu o 100 kusech = posun ceny opce o 0,10.
+    """
+    return round_to_tick(fill_price + profit_usd / OPTION_MULTIPLIER, min_tick)
+
+
+def option_loss_stop(fill_price: float, loss_usd: float, min_tick: float) -> float:
+    """
+    Stop cena prodeje opce pro ztrátu zadanou v USD na jeden kontrakt.
+    Nemůže klesnout pod jeden tik - opce nemá zápornou cenu; je-li povolená
+    ztráta větší než celá zaplacená prémie, stop stojí na nejnižší možné ceně.
+    """
+    tick = min_tick if min_tick and min_tick > 0 else 0.01
+    stop = round_to_tick(fill_price - loss_usd / OPTION_MULTIPLIER, min_tick)
+    return max(stop, tick)
 
 
 def entry_limit_price(
@@ -168,19 +200,29 @@ def select_expiration(
     return available[-1]
 
 
-def levels_sane(entry_price: float, profit_target: float, stop_loss: float,
-                max_distance_pct: float = 50.0) -> bool:
+def levels_sane(
+    entry_price: float,
+    profit_target: float,
+    stop_loss: float,
+    max_distance_pct: float = 50.0,
+    pt_on_underlying: bool = True,
+    sl_on_underlying: bool = True,
+) -> bool:
     """
     Ověří, že cíl a stop leží v rozumné vzdálenosti od vstupní ceny.
 
     Chrání před obchodem s poškozenými úrovněmi - například z dřívější
     chyby ve výpočtu, kdy se cíl opakovaným násobením vyšplhal do milionů.
+    Úroveň zadaná na opci (USD na kontrakt) nemá ke vstupní ceně podkladu
+    vztah - u ní se kontroluje jen, že je kladná a konečná.
     """
     if entry_price <= 0:
         return False
-    for uroven in (profit_target, stop_loss):
+    for uroven, na_podkladu in ((profit_target, pt_on_underlying), (stop_loss, sl_on_underlying)):
         if uroven <= 0 or not math.isfinite(uroven):
             return False
+        if not na_podkladu:
+            continue
         odchylka = abs(uroven - entry_price) / entry_price * 100.0
         if odchylka > max_distance_pct:
             return False
@@ -362,3 +404,96 @@ def project_option_price(
         return None
 
     return black_scholes_price(target_spot, strike, years, rate, sigma, right)
+
+
+def level_for_option_price(
+    target_price: float,
+    spot: float,
+    strike: float,
+    years: float,
+    rate: float,
+    sigma: float,
+    right: str,
+) -> float | None:
+    """
+    Cena podkladu, při které má opce s danou volatilitou zadanou cenu.
+
+    Obrácený výpočet k black_scholes_price: cena CALL s podkladem roste,
+    cena PUT klesá, takže stačí půlení intervalu kolem dnešní ceny podkladu.
+    Vrací None, pokud cílové ceny v prohledávaném rozsahu nelze dosáhnout.
+    """
+    if target_price <= 0 or spot <= 0 or strike <= 0 or years <= 0 or sigma <= 0:
+        return None
+
+    # Rozsah desetina až desetinásobek dnešní ceny pokrývá každý rozumný pohyb
+    low, high = spot / 10.0, spot * 10.0
+    cena_low = black_scholes_price(low, strike, years, rate, sigma, right)
+    cena_high = black_scholes_price(high, strike, years, rate, sigma, right)
+    if not (min(cena_low, cena_high) <= target_price <= max(cena_low, cena_high)):
+        return None
+
+    # U CALL cena s podkladem roste, u PUT klesá - podle toho se volí polovina
+    roste = right == "C"
+    for _ in range(80):
+        mid = (low + high) / 2.0
+        cena = black_scholes_price(mid, strike, years, rate, sigma, right)
+        if (cena < target_price) == roste:
+            low = mid
+        else:
+            high = mid
+
+    return (low + high) / 2.0
+
+
+def project_underlying_level(
+    option_price: float,
+    spot: float,
+    target_option_price: float,
+    strike: float,
+    expiration: str,
+    rate_pct: float,
+    right: str,
+    today: date | None = None,
+) -> float | None:
+    """
+    Odhadne cenu podkladu, při které opce dosáhne cílové ceny.
+
+    Z aktuální ceny opce se odvodí implikovaná volatilita a s ní se hledá
+    úroveň podkladu, na které má opce cílovou cenu. Protějšek funkce
+    project_option_price - ta z úrovně podkladu počítá cenu opce, tato
+    z ceny opce úroveň podkladu. Platí stejný předpoklad: pohyb nastane
+    brzy a volatilita se nezmění.
+    """
+    if option_price is None or spot is None or option_price <= 0 or spot <= 0:
+        return None
+    if target_option_price is None or target_option_price <= 0:
+        return None
+
+    years = years_to_expiry(expiration, today)
+    rate = rate_pct / 100.0
+
+    sigma = implied_volatility(option_price, spot, strike, years, rate, right)
+    if sigma is None:
+        return None
+
+    return level_for_option_price(target_option_price, spot, strike, years, rate, sigma, right)
+
+
+def intended_right(
+    entry_price: float,
+    profit_target: float | None,
+    stop_loss: float | None,
+    pt_on_underlying: bool = True,
+    sl_on_underlying: bool = True,
+) -> str | None:
+    """
+    Zamýšlený směr obchodu podle polohy úrovní na podkladu vůči vstupu.
+    PT nad vstupem (nebo SL pod ním) znamená průraz nahoru = CALL, opačně PUT.
+    Jsou-li PT i SL zadané na opci (v USD), směr z nich určit nelze a vrací
+    se None - rozhodne pak poloha vstupu vůči aktuální ceně podkladu.
+    """
+    if pt_on_underlying and profit_target is not None and profit_target != entry_price:
+        return "C" if profit_target > entry_price else "P"
+    if sl_on_underlying and stop_loss is not None and stop_loss != entry_price:
+        return "C" if stop_loss < entry_price else "P"
+    return None

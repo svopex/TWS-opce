@@ -7,8 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from nicegui import app, ui
+from nicegui import app, background_tasks, ui
 
+from . import calc
 from .config import AppConfig
 from .engine import FlowEngine, Preview
 from .ib_service import IBService
@@ -170,6 +171,34 @@ def fmt(value: float | None, digits: int = 2, suffix: str = "") -> str:
     return f"{value:,.{digits}f}{suffix}".replace(",", " ")
 
 
+# Popisky polí PT a SL podle režimu zadání (na podkladu / na opci)
+PT_LABELS = {True: "PT na podkladu", False: "PT na opci [USD/ks]"}
+SL_LABELS = {True: "SL na podkladu (nepovinné)", False: "SL na opci [USD/ks]"}
+
+
+def uroven_text(flow: Flow, druh: str, hodnota: float | None = None) -> str:
+    """
+    Úroveň PT ('pt') nebo SL ('sl') pro tabulku.
+    Na podkladu cena; na opci zisk/ztráta v USD na kontrakt a po nákupu
+    i odpovídající cena opce, na kterou příkaz míří.
+    """
+    na_podkladu = flow.pt_on_underlying if druh == "pt" else flow.sl_on_underlying
+    if hodnota is None:
+        hodnota = flow.profit_target if druh == "pt" else flow.stop_loss
+    if na_podkladu:
+        return fmt(hodnota)
+
+    znamenko = "+" if druh == "pt" else "-"
+    castka = f"{znamenko}{fmt(hodnota)} USD"
+    if flow.fill_price is None:
+        return castka
+    if druh == "pt":
+        cena = calc.option_profit_limit(flow.fill_price, hodnota, flow.min_tick)
+    else:
+        cena = calc.option_loss_stop(flow.fill_price, hodnota, flow.min_tick)
+    return f"{fmt(cena)} ({castka})"
+
+
 class TradingUI:
     """Sestavuje a obsluhuje uživatelské rozhraní nad obchodním enginem."""
 
@@ -199,6 +228,8 @@ class TradingUI:
         # Naposledy zobrazené pozice bez dozoru; None znamená, že pruh ještě nebyl
         # vykreslen - prázdná množina je platný stav a nesmí se s tím zaměnit
         self.last_unmanaged: set[int] | None = None
+        # Zámek proti mazání polí při programovém nastavení režimu PT/SL
+        self._modes_locked: bool = False
 
         self._build_header()
 
@@ -273,18 +304,52 @@ class TradingUI:
                     .classes("pole")
                     .props("outlined dense step=any")
                 )
-                self.pt_input = (
-                    ui.number("PT na podkladu", format="%.2f")
-                    .classes("pole")
-                    .props("outlined dense step=any")
-                )
+                # Zaškrtávátko před polem přepíná, zda je PT cena podkladu
+                # (zaškrtnuto), nebo zisk v USD na jeden kontrakt realizovaný
+                # limitním příkazem přímo na cenu opce
+                with ui.row().classes("pole pole-prepinac"):
+                    self.pt_on_underlying = (
+                        ui.checkbox(value=self.cfg.trading.pt_on_underlying)
+                        .props("dense")
+                        .classes("prepinac-rezimu")
+                        .tooltip(
+                            "Zaškrtnuto: PT je cena podkladu (podmíněný příkaz). "
+                            "Odškrtnuto: PT je zisk na jedné opci v USD, prodá se "
+                            "limitním příkazem na cenu opce."
+                        )
+                    )
+                    self.pt_input = (
+                        ui.number(PT_LABELS[self.cfg.trading.pt_on_underlying], format="%.2f")
+                        .classes("pole-vnitrni")
+                        .props("outlined dense step=any")
+                    )
+                    self.pt_on_underlying.on_value_change(
+                        lambda e: self._on_mode_change("pt", bool(e.value))
+                    )
 
             with ui.row().classes("radek"):
-                self.sl_input = (
-                    ui.number("SL na podkladu (nepovinné)", format="%.2f")
-                    .classes("pole")
-                    .props("outlined dense step=any")
-                )
+                # Totéž pro SL: odškrtnuto = ztráta v USD na kontrakt, realizuje
+                # se stop-market příkazem přímo na cenu opce
+                with ui.row().classes("pole pole-prepinac"):
+                    self.sl_on_underlying = (
+                        ui.checkbox(value=self.cfg.trading.sl_on_underlying)
+                        .props("dense")
+                        .classes("prepinac-rezimu")
+                        .tooltip(
+                            "Zaškrtnuto: SL je cena podkladu (podmíněný příkaz). "
+                            "Odškrtnuto: SL je ztráta na jedné opci v USD, prodá se "
+                            "stop-market příkazem na cenu opce. V obou režimech je SL "
+                            "nepovinný - dopočítá se z PT podle poměru v konfiguraci."
+                        )
+                    )
+                    self.sl_input = (
+                        ui.number(SL_LABELS[self.cfg.trading.sl_on_underlying], format="%.2f")
+                        .classes("pole-vnitrni")
+                        .props("outlined dense step=any")
+                    )
+                    self.sl_on_underlying.on_value_change(
+                        lambda e: self._on_mode_change("sl", bool(e.value))
+                    )
                 self.spread_input = (
                     ui.number(
                         "Max. spread [%]",
@@ -410,19 +475,62 @@ class TradingUI:
         sl = float(self.sl_input.value) if self.sl_input.value not in (None, "") else None
         return symbol, entry, pt, sl
 
+    def _form_modes(self) -> tuple[bool, bool]:
+        """Režimy PT a SL ze zaškrtávátek: True = na podkladu, False = na opci."""
+        return bool(self.pt_on_underlying.value), bool(self.sl_on_underlying.value)
+
+    def _set_modes(self, pt_on_underlying: bool, sl_on_underlying: bool) -> None:
+        """
+        Nastaví zaškrtávátka režimu bez vedlejších účinků jejich obsluhy -
+        při programovém nastavení se hodnoty polí nesmí mazat.
+        """
+        self._modes_locked = True
+        try:
+            self.pt_on_underlying.set_value(pt_on_underlying)
+            self.sl_on_underlying.set_value(sl_on_underlying)
+        finally:
+            self._modes_locked = False
+        self._refresh_mode_labels()
+
+    def _refresh_mode_labels(self) -> None:
+        """Popisky polí PT a SL odpovídají zvolenému režimu."""
+        pt_on, sl_on = self._form_modes()
+        self.pt_input.props(f'label="{PT_LABELS[pt_on]}"')
+        self.sl_input.props(f'label="{SL_LABELS[sl_on]}"')
+
+    def _on_mode_change(self, druh: str, na_podkladu: bool) -> None:
+        """
+        Přepnutí režimu PT nebo SL obchodníkem.
+        Hodnota v poli má v novém režimu jiný význam (cena podkladu vs. USD),
+        proto se pole vyprázdní; SL se navíc znovu dopočítá podle PT.
+
+        Obsluha je synchronní záměrně: programové nastavení zaškrtávátek
+        (_set_modes) ji volá pod zámkem, a asynchronní obsluha by se spustila
+        až po jeho uvolnění a právě naplněná pole by smazala.
+        """
+        self._refresh_mode_labels()
+        if self._modes_locked:
+            return
+        if druh == "pt":
+            self.pt_input.set_value(None)
+        self.sl_input.set_value(None)
+        background_tasks.create(self._load_preview("auto"), name="nahled po zmene rezimu")
+
     def _bezici_pro_formular(
-        self, symbol: str, entry: float | None, pt: float | None
+        self, symbol: str, entry: float | None, pt: float | None, sl: float | None = None
     ) -> Flow | None:
         """
         Najde běžící obchod, ke kterému se vztahuje formulář.
 
         Na tickeru může běžet long i short zároveň; směr určují vyplněné ceny
-        (PT nad vstupem = long/CALL, pod vstupem = short/PUT). Bez cen se
-        vrací jediný běžící obchod tickeru - při dvou je výběr nejednoznačný.
+        na podkladu (PT nad vstupem = long/CALL, pod vstupem = short/PUT).
+        Bez nich se vrací jediný běžící obchod tickeru - při dvou je výběr
+        nejednoznačný.
         """
         flows = self.engine.active_flows_for(symbol)
-        if entry is not None and pt is not None and entry != pt:
-            zamer = "C" if pt > entry else "P"
+        pt_on, sl_on = self._form_modes()
+        zamer = calc.intended_right(entry, pt, sl, pt_on, sl_on) if entry is not None else None
+        if zamer is not None:
             return next((flow for flow in flows if flow.right == zamer), None)
         if len(flows) == 1:
             return flows[0]
@@ -433,6 +541,8 @@ class TradingUI:
         self.last_symbol = flow.symbol
         self.form_flow_id = flow.id
         self.symbol_input.set_value(flow.symbol)
+        # Režimy se nastavují před hodnotami - jejich změna pole maže
+        self._set_modes(flow.pt_on_underlying, flow.sl_on_underlying)
         self.entry_input.set_value(round(flow.entry_price, 2))
         self.pt_input.set_value(round(flow.profit_target, 2))
         self.sl_input.set_value(round(flow.stop_loss, 2))
@@ -447,8 +557,9 @@ class TradingUI:
         """
         for pole in (self.entry_input, self.pt_input, self.sl_input, self.qty_input):
             pole.set_value(None)
-        # Limit spreadu se vrací na hodnotu z konfigurace
+        # Limit spreadu a režimy PT/SL se vrací na hodnoty z konfigurace
         self.spread_input.set_value(self.cfg.trading.max_spread_pct)
+        self._set_modes(self.cfg.trading.pt_on_underlying, self.cfg.trading.sl_on_underlying)
 
         # Formulář už nedrží žádný načtený obchod
         self.form_flow_id = None
@@ -473,7 +584,7 @@ class TradingUI:
         if not symbol:
             return
 
-        bezici = self._bezici_pro_formular(symbol, entry, pt)
+        bezici = self._bezici_pro_formular(symbol, entry, pt, sl)
         zmena_tickeru = symbol != self.last_symbol
 
         # Načtení se vyžaduje buď tlačítkem, nebo přechodem na jiný ticker
@@ -510,9 +621,10 @@ class TradingUI:
         pozadavek = self.preview_seq
         self._set_loading(True)
 
+        pt_on, sl_on = self._form_modes()
         try:
             preview = await self.engine.prepare(
-                symbol, entry, pt, None if rezim == "prepocitat" else sl
+                symbol, entry, pt, None if rezim == "prepocitat" else sl, pt_on, sl_on
             )
         except Exception as exc:
             # Indikaci zhasíná až poslední rozběhnutý požadavek
@@ -569,7 +681,18 @@ class TradingUI:
             if preview.delta_estimated:
                 delta_text += " (dopočet)"
             detail_parts.append(f"delta {delta_text}")
-            detail_parts.append(f"doporučeno: SL {fmt(preview.stop_loss)}, {preview.quantity} ks")
+            # Při PT na opci se uvede, ke které úrovni podkladu se strike vybíral
+            if preview.target_level is not None:
+                detail_parts.append(
+                    f"cíl na podkladu ≈ {fmt(preview.target_level)} "
+                    f"({preview.target_level_source})"
+                )
+            sl_text = (
+                fmt(preview.stop_loss)
+                if preview.sl_on_underlying
+                else f"-{fmt(preview.stop_loss)} USD/ks"
+            )
+            detail_parts.append(f"doporučeno: SL {sl_text}, {preview.quantity} ks")
             detail_parts.append(
                 f"risk {fmt(preview.risk_amount)} USD z účtu {fmt(preview.account_size)} USD"
             )
@@ -606,8 +729,7 @@ class TradingUI:
         # Chybí-li (obchod z dřívější verze), stane se jím aktuální cíl.
         if not flow.original_profit_target:
             flow.original_profit_target = flow.profit_target
-        zaklad = flow.original_profit_target
-        novy_pt = round(flow.entry_price + (zaklad - flow.entry_price) * float(nasobek), 2)
+        novy_pt = flow.scaled_target(float(nasobek))
 
         try:
             await self.engine.change_profit_target(flow.id, novy_pt)
@@ -615,7 +737,10 @@ class TradingUI:
             ui.notify(str(exc), type="negative")
             return
 
-        ui.notify(f"{flow.id}: cíl {fmt(novy_pt)} ({nasobek:g}× původní).", type="positive")
+        ui.notify(
+            f"{flow.id}: cíl {uroven_text(flow, 'pt', novy_pt)} ({nasobek:g}× původní).",
+            type="positive",
+        )
         # Formulář může ukazovat tento obchod, hodnotu je třeba srovnat
         if self.form_flow_id == flow.id:
             self.pt_input.set_value(novy_pt)
@@ -643,7 +768,7 @@ class TradingUI:
             ui.notify(f"{flow.id}: {flow.message}", type="warning")
         else:
             popis = "break even" if rezim == "be" else "počáteční"
-            ui.notify(f"{flow.id}: SL {fmt(flow.stop_loss)} ({popis}).", type="positive")
+            ui.notify(f"{flow.id}: SL {uroven_text(flow, 'sl')} ({popis}).", type="positive")
         # Formulář může ukazovat tento obchod, hodnotu je třeba srovnat
         if self.form_flow_id == flow.id:
             self.sl_input.set_value(round(flow.stop_loss, 2))
@@ -667,7 +792,10 @@ class TradingUI:
             ui.notify(f"{flow.id}: {flow.message}", type="warning")
         else:
             popis = "break even" if rezim == "be" else "počáteční"
-            ui.notify(f"{flow.id}: SL runneru {fmt(flow.runner_sl)} ({popis}).", type="positive")
+            ui.notify(
+                f"{flow.id}: SL runneru {uroven_text(flow, 'sl', flow.runner_sl)} ({popis}).",
+                type="positive",
+            )
         self._refresh()
 
     async def _on_runner_multiple(self, event: Any) -> None:
@@ -686,7 +814,7 @@ class TradingUI:
 
         ui.notify(
             f"{flow.id}: runner {flow.runner_quantity} ks s cílem "
-            f"{fmt(flow.runner_profit_target)} ({nasobek:g}×).",
+            f"{uroven_text(flow, 'pt', flow.runner_profit_target)} ({nasobek:g}×).",
             type="positive",
         )
         self._refresh()
@@ -752,6 +880,7 @@ class TradingUI:
 
         quantity = int(self.qty_input.value) if self.qty_input.value else None
         max_spread = float(self.spread_input.value) if self.spread_input.value else None
+        pt_on, sl_on = self._form_modes()
 
         request = FlowRequest(
             symbol=symbol,
@@ -760,6 +889,8 @@ class TradingUI:
             stop_loss=sl,
             quantity=quantity,
             max_spread_pct=max_spread,
+            pt_on_underlying=pt_on,
+            sl_on_underlying=sl_on,
         )
 
         # Založení obchodu si znovu načítá data z TWS, indikace platí i zde
@@ -833,7 +964,8 @@ class TradingUI:
             return
         # Směr rušeného obchodu určují ceny ve formuláři; long i short zároveň
         # bez vyplněných cen je nejednoznačný výběr
-        flow = self._bezici_pro_formular(symbol, entry, pt)
+        _, _, _, sl = self._form_values()
+        flow = self._bezici_pro_formular(symbol, entry, pt, sl)
         if flow is None:
             ui.notify(
                 f"Na tickeru {symbol} běží long i short obchod - zrušte jej "
@@ -991,17 +1123,19 @@ class TradingUI:
             and flow.runner_fill_price is None
             and not flow.runner_close_requested
         )
-        # Zvýraznění tlačítek SL: 'be' při stopu na vstupu, 'puvodni' při stopu
-        # ze zadání; jiná (ruční) hodnota nezvýrazní žádné
+        # Zvýraznění tlačítek SL: 'be' při stopu na break even (na podkladu
+        # vstupní cena, na opci nulová ztráta), 'puvodni' při stopu ze zadání;
+        # jiná (ruční) hodnota nezvýrazní žádné
         zaklad_sl = flow.original_stop_loss or flow.stop_loss
+        be_sl = flow.break_even_sl
         aktivni_sl = None
-        if abs(flow.stop_loss - flow.entry_price) < 0.005:
+        if abs(flow.stop_loss - be_sl) < 0.005:
             aktivni_sl = "be"
         elif abs(flow.stop_loss - zaklad_sl) < 0.005:
             aktivni_sl = "puvodni"
         aktivni_runner_sl = None
         if flow.runner_active:
-            if abs(flow.runner_sl - flow.entry_price) < 0.005:
+            if abs(flow.runner_sl - be_sl) < 0.005:
                 aktivni_runner_sl = "be"
             elif abs(flow.runner_sl - zaklad_sl) < 0.005:
                 aktivni_runner_sl = "puvodni"
@@ -1055,19 +1189,20 @@ class TradingUI:
             "qty": f"{flow.quantity}/{flow.open_quantity}",
             "entry": fmt(flow.entry_price),
             "fill": fmt(flow.fill_price),
-            # Liší-li se cíl runneru od hlavního, ukazují se oba (stejně jako u SL)
-            "pt": fmt(flow.profit_target)
+            # Liší-li se cíl runneru od hlavního, ukazují se oba (stejně jako u SL).
+            # Úroveň na opci se ukazuje jako zisk/ztráta v USD, po nákupu i cena opce
+            "pt": uroven_text(flow, "pt")
             + (
-                f" · R {fmt(flow.runner_profit_target)}"
+                f" · R {uroven_text(flow, 'pt', flow.runner_profit_target)}"
                 if flow.runner_active
                 and flow.runner_fill_price is None
                 and abs(flow.runner_profit_target - flow.profit_target) >= 0.005
                 else ""
             ),
             # Liší-li se SL runneru od hlavního, ukazují se oba
-            "sl": fmt(flow.stop_loss)
+            "sl": uroven_text(flow, "sl")
             + (
-                f" · R {fmt(flow.runner_sl)}"
+                f" · R {uroven_text(flow, 'sl', flow.runner_sl)}"
                 if flow.runner_active
                 and flow.runner_fill_price is None
                 and abs(flow.runner_sl - flow.stop_loss) >= 0.005
@@ -1120,13 +1255,17 @@ class TradingUI:
         else:
             ucet = "čeká se na hodnotu z TWS"
 
+        # Výchozí režim PT a SL ze zaškrtávátek formuláře
+        rezim_pt = "podklad" if t.pt_on_underlying else "opce (USD/ks)"
+        rezim_sl = "podklad" if t.sl_on_underlying else "opce (USD/ks)"
         self.config_label.set_text(
             f"Účet {ucet} | risk {self.cfg.account.risk_pct:g} % "
             f"= {fmt(self.engine.risk_amount)} USD\n"
             f"Nákup: {t.entry_order_type} (tolerance {t.ask_tolerance_pct:g} %) | "
             f"prodej: {t.exit_order_type}\n"
             f"Max. spread {t.max_spread_pct:g} % | SL:PT {t.sl_to_pt_ratio:g} | "
-            f"expirace {expiration_text}"
+            f"expirace {expiration_text}\n"
+            f"Výchozí PT: {rezim_pt} | výchozí SL: {rezim_sl}"
         )
 
 
