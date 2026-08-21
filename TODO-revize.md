@@ -118,3 +118,9 @@ Testy režimů: `tests/test_rezimy.py` (základ `ZakladRezimu`, helpery `zaloz`,
 3. C podle chuti.
 Commit message česky, přítomný čas, tečka na konci, bez Co-Authored-By; pak push na
 `origin Rozsireni-moznosti-zadani-PT-a-SL`.
+
+## Poznamky, na co prisel dalsi agent
+Co ale riziko nese nezávisle na modelu
+- A2 a A3 se protínají – obnova po restartu i _resize_part sahají na stejné veličiny (main_sold_quantity, filled_quantity, held_quantity). Dělal bych A3 první (zavedení „průběžně promítat částečné prodeje"), pak A2 nad už opraveným modelem, jinak si to model bude dvakrát přepisovat.
+- Dvojí započtení po _clear_part zmiňované v A3 je klasické místo, kde agent udělá tiše chybu, kterou testy nechytí. Stojí za to na to napsat test explicitně, ne se spolehnout na „345 zelených".
+- Body B4, B9 a float | None v B3 jsou rozhodnutí o chování, ne implementace – ta si rozhodni sám dopředu a dej je do zadání, ať to model neřeší za tebe. At se mne zepta a da mi moznosti.
