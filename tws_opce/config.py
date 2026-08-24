@@ -63,6 +63,9 @@ class TradingConfig:
     #           a realizuje se příkazem přímo na cenu opce (LMT, resp. STP)
     pt_on_underlying: bool = True
     sl_on_underlying: bool = True
+    # Výchozí stav zaškrtávátka "SL o zaplacený spread dál" - uplatní se jen
+    # u SL zadaného na opci (sl_on_underlying = false)
+    sl_spread_compensated: bool = False
     # Která úroveň se ve formuláři zadává jako prvotní; druhá se dopočítá
     # podle sl_to_pt_ratio: "sl" = zadává se SL a PT se dopočte (výchozí),
     # "pt" = zadává se PT a SL se dopočte. Určuje výchozí stav zaškrtávátka.
@@ -319,7 +322,7 @@ def validate_config(cfg: AppConfig) -> None:
         problems.append("trading.sl_to_pt_ratio musí být kladné číslo")
     # Přepínače režimu PT/SL musí být skutečné pravdivostní hodnoty - YAML
     # řetězec "false" by se jinak vyhodnotil jako pravda
-    for nazev in ("pt_on_underlying", "sl_on_underlying"):
+    for nazev in ("pt_on_underlying", "sl_on_underlying", "sl_spread_compensated"):
         if not isinstance(getattr(cfg.trading, nazev), bool):
             problems.append(f"trading.{nazev} musí být true nebo false")
     if cfg.trading.primary_level not in PRIMARY_LEVELS:

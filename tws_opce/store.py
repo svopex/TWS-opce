@@ -38,6 +38,8 @@ SAVED_FIELDS = (
     "right",
     "pt_on_underlying",
     "sl_on_underlying",
+    "sl_spread_compensated",
+    "sl_spread_usd",
     "expiration",
     "strike",
     "option_conid",

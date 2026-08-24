@@ -140,6 +140,27 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    znovu průběh (ze skutečné nákupní ceny), včetně skutečného stropu ztráty. Přepnutí zaškrtávátka pole vyprázdní,
    protože hodnota by v novém režimu znamenala něco jiného.
 
+   **SL o zaplacený spread dál.** Zaškrtávátko pod přepínačem *SL na
+   podkladu* (výchozí stav `trading.sl_spread_compensated`), aktivní jen
+   při SL zadaném na opci. Řeší to, že opce se kupuje u ASKu, ale stop
+   se spouští BIDem: pozice je hned po nákupu v mínusu o celý spread,
+   takže SL je ve skutečnosti blíž, než odpovídá zadané ztrátě. Při
+   kotaci 3,85 / 3,95 a nákupu za 3,95 stojí SL 30 na 3,65 — stačí pokles
+   BIDu o 0,20, ne o 0,30. Se zaškrtnutým přepínačem se k SL při nákupu
+   připočte **skutečně zaplacený spread** (nákupní cena minus BID), takže
+   zadaná hodnota odpovídá potřebnému pohybu ceny opce: stop klesne
+   na 3,55. Ztráta na kontrakt o tentýž spread naroste (30 → 40 USD),
+   proto s ní počítá i doporučené množství — náhled používá spread
+   z aktuální kotace a uvádí jej jako `+ spread ≈ 10,00 USD`, skutečnou
+   hodnotu určí až nákup a zapíše ji do průběhu. Připočtený spread nese
+   obchod v poli `sl_spread_usd`, takže *Načíst* vrátí do formuláře
+   původně zadanou hodnotu a kompenzace se při dalším zadání neřetězí.
+   Break even se nekompenzuje — jeho stop má stát na zaplacené ceně;
+   tlačítko *Počáteční SL* se naopak vrací na úroveň včetně spreadu.
+   Bez známého BIDu (chybí kotace) se kompenzace neuplatní a průběh
+   to zaznamená. PT se nekompenzuje: dráha k němu je o spread naopak
+   delší, protože limitní prodej se vyplní, až na jeho cenu dosáhne BID.
+
    **Která úroveň je prvotní.** Oranžové zaškrtávátko *Zadává se SL, PT se
    dopočítá podle poměru SL:PT* pod polem *Množství* (výchozí stav
    `trading.primary_level`, standardně `sl`)

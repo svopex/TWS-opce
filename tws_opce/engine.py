@@ -75,6 +75,11 @@ class Preview:
     # Režim zadání PT a SL (cena podkladu, nebo USD na kontrakt)
     pt_on_underlying: bool = True
     sl_on_underlying: bool = True
+    # Kompenzace spreadu u SL na opci a její odhadovaná velikost v USD
+    # na kontrakt. Skutečná hodnota se určí až ze spreadu při nákupu,
+    # náhled s odhadem počítá množství a hlídá strop prémie.
+    sl_spread_compensated: bool = False
+    sl_spread_usd: float = 0.0
     # Úroveň podkladu, ke které se vybíral strike při PT zadaném ziskem na
     # opci, a z čeho byla odvozena (cena opce / delta / vstupní cena)
     target_level: float | None = None
@@ -289,6 +294,7 @@ class FlowEngine:
         stop_loss: float | None = None,
         pt_on_underlying: bool = True,
         sl_on_underlying: bool = True,
+        sl_spread_compensated: bool = False,
     ) -> Preview:
         """
         Připraví zadání obchodu: načte cenu podkladu, určí typ opce, expiraci,
@@ -299,6 +305,10 @@ class FlowEngine:
         "na podkladu" - zisk, resp. ztráta v USD na jeden kontrakt. Stačí
         zadat jednu z úrovní: chybějící se dopočítá z poměru SL:PT
         v konfiguraci (SL z PT, nebo PT ze SL).
+
+        sl_spread_compensated připočte k SL na opci spread opce, aby zadaná
+        hodnota odpovídala potřebnému pohybu trhu; náhled používá spread
+        z aktuální kotace, skutečný obchod ten zaplacený při nákupu.
         """
         if not self.ib.connected:
             raise RuntimeError("Není navázáno spojení s TWS.")
@@ -313,6 +323,8 @@ class FlowEngine:
             risk_amount=self.risk_amount,
             pt_on_underlying=pt_on_underlying,
             sl_on_underlying=sl_on_underlying,
+            # Kompenzace má smysl jen u SL zadaného na opci
+            sl_spread_compensated=sl_spread_compensated and not sl_on_underlying,
         )
 
         # Odběry tržních dat zakládá příprava sama; nedoběhne-li (chyba,
@@ -420,6 +432,10 @@ class FlowEngine:
             preview.option_price, preview.option_price_source = self.ib.option_price(option)
             preview.spread_pct = calc.spread_pct(bid, ask)
             preview.delta = delta
+            # Odhad kompenzace SL: spread vybrané opce v USD na kontrakt.
+            # Skutečně se připočte až spread zaplacený při nákupu
+            if preview.sl_spread_compensated:
+                preview.sl_spread_usd = calc.spread_usd(bid, ask)
 
             # TWS model greeks u opcí neposílá spolehlivě, proto se delta v takovém
             # případě dopočítá z tržní ceny opce; teprve pak se sáhne po náhradní hodnotě
@@ -461,7 +477,9 @@ class FlowEngine:
                 # znamená stop na nejnižší možné ceně, který pozici prakticky
                 # nechrání - na to se musí upozornit už v náhledu, sám příkaz
                 # by později vypadal v pořádku
-                ztrata = preview.stop_loss
+                # Kompenzovaný SL zvětšuje ztrátu na kontrakt, takže se musí
+                # promítnout i do množství a do kontroly stropu prémie
+                ztrata = preview.stop_loss + preview.sl_spread_usd
                 cena = self._expected_fill_price(preview, entry_price)
                 if cena is not None:
                     varovani = self._premium_cap_text(ztrata, cena, preview.min_tick, odhad=True)
@@ -997,6 +1015,7 @@ class FlowEngine:
                 request.stop_loss,
                 request.pt_on_underlying,
                 request.sl_on_underlying,
+                request.sl_spread_compensated,
             )
 
             # Propásnutý vstup se hlásí dřív než ostatní kontroly, jinak by
@@ -1065,6 +1084,7 @@ class FlowEngine:
                 right=preview.right,
                 pt_on_underlying=request.pt_on_underlying,
                 sl_on_underlying=request.sl_on_underlying,
+                sl_spread_compensated=preview.sl_spread_compensated,
                 expiration=preview.expiration,
                 strike=preview.strike,
                 min_tick=preview.min_tick,
@@ -3103,12 +3123,58 @@ class FlowEngine:
         flow.touch()
         return True
 
+    def _apply_sl_spread(self, flow: Flow) -> None:
+        """
+        Připočte k SL zadanému na opci spread zaplacený při nákupu.
+
+        Nakupuje se u ASKu, ale stop se spouští BIDem, takže SL je bez
+        kompenzace blíž o celý spread. Připočtením se zadaná hodnota stane
+        skutečnou vzdáleností k SL - ztráta na kontrakt o tentýž spread
+        naroste (množství to už zohlednilo v náhledu).
+
+        Uplatní se jen jednou (podruhé už je navýšení součástí uložené
+        hodnoty) a nikdy u break even, který má stát na nákupní ceně.
+        Neznámý BID kompenzaci ruší - odhadovat ji naslepo by posunulo
+        stop mimo zadání.
+        """
+        if not flow.sl_spread_compensated or flow.sl_on_underlying:
+            return
+        if flow.sl_spread_usd or flow.stop_loss <= 0:
+            return
+
+        bid, _, _ = self.ib.option_quotes(flow.option_contract)
+        if bid is None:
+            bid = flow.option_bid
+        spread = calc.paid_spread_usd(flow.fill_price, bid)
+        if spread <= 0:
+            self.log_event(
+                f"{flow.id}: spread při nákupu nelze určit (chybí BID opce) - "
+                f"SL zůstává na {flow.level_text('sl')} bez kompenzace."
+            )
+            return
+
+        flow.sl_spread_usd = spread
+        flow.stop_loss = round(flow.stop_loss + spread, 2)
+        # Počáteční SL slouží tlačítku "Počáteční SL" - musí se posunout také,
+        # jinak by se obchod vracel na nekompenzovanou úroveň
+        if flow.original_stop_loss:
+            flow.original_stop_loss = round(flow.original_stop_loss + spread, 2)
+        # Runner zapnutý ještě před nákupem si nese SL z doby zadání
+        if flow.runner_stop_loss:
+            flow.runner_stop_loss = round(flow.runner_stop_loss + spread, 2)
+        self.log_event(
+            f"{flow.id}: SL navýšen o zaplacený spread {spread:g} USD/ks "
+            f"na {flow.level_text('sl')}."
+        )
+
     def _register_fill(self, flow: Flow) -> bool:
         """Zaznamená nákup opce a připraví flow na zadání výstupního příkazu."""
         status = flow.entry_trade.orderStatus
         flow.fill_price = valid_price(status.avgFillPrice) or flow.entry_limit
         flow.fill_time = datetime.now()
         flow.filled_quantity = int(status.filled)
+        # Kompenzace SL o spread se počítá ze skutečné nákupní ceny, proto až teď
+        self._apply_sl_spread(flow)
         price_text = f"{flow.fill_price:g}" if flow.fill_price is not None else "neznámou cenu"
         flow.set_state(
             FlowState.FILLED,

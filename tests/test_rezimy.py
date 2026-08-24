@@ -1470,5 +1470,104 @@ class TestSoubehuPriUzavirani(ZakladRezimu):
         self.assertEqual(flow.state, FlowState.EXIT_ARMED)
 
 
+class TestKompenzaceSpreadu(ZakladRezimu):
+    """
+    SL na opci navýšený o spread zaplacený při nákupu. Náhrada TWS kotuje
+    opci 3,00 / 3,10, takže nákup za ASK znamená spread 10 USD na kontrakt.
+    """
+
+    async def test_sl_se_navysi_o_zaplaceny_spread(self):
+        flow = await self.zaloz(False, False, 10.0, 30.0, sl_spread_compensated=True)
+        await self.nakup(flow, 1, 3.10)
+
+        # 30 zadaných + 10 spread = stop o 0,40 pod nákupní cenou
+        self.assertAlmostEqual(flow.sl_spread_usd, 10.0)
+        self.assertAlmostEqual(flow.stop_loss, 40.0)
+        self.assertAlmostEqual(flow.exit_sl_trade.order.auxPrice, 2.70)
+
+    async def test_bez_prepinace_zustava_zadana_hodnota(self):
+        flow = await self.zaloz(False, False, 10.0, 30.0)
+        await self.nakup(flow, 1, 3.10)
+
+        self.assertAlmostEqual(flow.sl_spread_usd, 0.0)
+        self.assertAlmostEqual(flow.stop_loss, 30.0)
+        self.assertAlmostEqual(flow.exit_sl_trade.order.auxPrice, 2.80)
+
+    async def test_kompenzace_se_neopakuje(self):
+        flow = await self.zaloz(False, False, 10.0, 30.0, sl_spread_compensated=True)
+        await self.nakup(flow, 1, 3.10)
+        await self.engine._tick()
+        await self.engine._tick()
+
+        self.assertAlmostEqual(flow.stop_loss, 40.0)
+
+    async def test_lepsi_plneni_nez_ask_kompenzuje_min(self):
+        # Nákup za 3,05 při BIDu 3,00 znamená zaplacený spread jen 5 USD
+        flow = await self.zaloz(False, False, 10.0, 30.0, sl_spread_compensated=True)
+        await self.nakup(flow, 1, 3.05)
+
+        self.assertAlmostEqual(flow.sl_spread_usd, 5.0)
+        self.assertAlmostEqual(flow.exit_sl_trade.order.auxPrice, 2.70)
+
+    async def test_nakup_na_bidu_nekompenzuje(self):
+        flow = await self.zaloz(False, False, 10.0, 30.0, sl_spread_compensated=True)
+        await self.nakup(flow, 1, 3.00)
+
+        self.assertAlmostEqual(flow.sl_spread_usd, 0.0)
+        self.assertAlmostEqual(flow.stop_loss, 30.0)
+
+    async def test_sl_na_podkladu_kompenzaci_nepouziva(self):
+        flow = await self.zaloz(False, True, 10.0, 228.0, sl_spread_compensated=True)
+        await self.nakup(flow, 1, 3.10)
+
+        self.assertFalse(flow.sl_spread_compensated)
+        self.assertAlmostEqual(flow.stop_loss, 228.0)
+
+    async def test_mnozstvi_pocita_s_kompenzovanou_ztratou(self):
+        # Risk 50 USD: bez kompenzace 50/10 = 5 ks, s kompenzací 50/20 = 2 ks
+        bez = await self.engine.prepare("AAPL", 232.0, 10.0, 10.0, False, False)
+        s_kompenzaci = await self.engine.prepare("AAPL", 232.0, 10.0, 10.0, False, False, True)
+
+        self.assertEqual(bez.quantity, 5)
+        self.assertEqual(s_kompenzaci.quantity, 2)
+        self.assertAlmostEqual(s_kompenzaci.sl_spread_usd, 10.0)
+        # Zadaná úroveň se v náhledu nemění, kompenzace se uplatní až nákupem
+        self.assertAlmostEqual(s_kompenzaci.stop_loss, 10.0)
+
+    async def test_break_even_stoji_na_nakupni_cene(self):
+        flow = await self.zaloz(False, False, 10.0, 30.0, sl_spread_compensated=True)
+        await self.nakup(flow, 1, 3.10)
+        # Break even pod aktuálním BIDem by se rovnou prodával trhem
+        self.ib.price_bid, self.ib.price_ask = 3.20, 3.30
+
+        await self.engine.set_stop_loss(flow.id, "be")
+
+        # Break even se nekompenzuje - prodej má stát na zaplacené ceně
+        self.assertAlmostEqual(flow.stop_loss, 0.0)
+        self.assertAlmostEqual(flow.exit_sl_trade.order.auxPrice, 3.10)
+
+    async def test_navrat_na_pocatecni_sl_je_kompenzovany(self):
+        flow = await self.zaloz(False, False, 10.0, 30.0, sl_spread_compensated=True)
+        await self.nakup(flow, 1, 3.10)
+        self.ib.price_bid, self.ib.price_ask = 3.20, 3.30
+        await self.engine.set_stop_loss(flow.id, "be")
+
+        await self.engine.set_stop_loss(flow.id, "puvodni")
+
+        self.assertAlmostEqual(flow.stop_loss, 40.0)
+        self.assertAlmostEqual(flow.exit_sl_trade.order.auxPrice, 2.70)
+
+    async def test_runner_zapnuty_po_nakupu_prebira_kompenzovany_sl(self):
+        flow = await self.zaloz(
+            False, False, 10.0, 30.0, quantity=3, sl_spread_compensated=True
+        )
+        await self.nakup(flow, 3, 3.10)
+
+        await self.engine.set_runner(flow.id, 2.0)
+
+        self.assertAlmostEqual(flow.runner_stop_loss, 40.0)
+        self.assertAlmostEqual(flow.runner_sl_trade.order.auxPrice, 2.70)
+
+
 if __name__ == "__main__":
     unittest.main()

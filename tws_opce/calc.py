@@ -53,6 +53,38 @@ def spread_pct(bid: float | None, ask: float | None) -> float | None:
     return (ask - bid) / mid * 100.0
 
 
+def spread_usd(bid: float | None, ask: float | None) -> float:
+    """
+    Spread opce v USD na jeden kontrakt: (ASK - BID) krát multiplikátor.
+    Slouží ke kompenzaci SL zadaného na opci. Bez použitelné kotace vrací
+    nulu - kompenzace se pak neuplatní, místo aby se odhadovala naslepo.
+    """
+    if bid is None or ask is None:
+        return 0.0
+    if not (math.isfinite(bid) and math.isfinite(ask)):
+        return 0.0
+    if bid <= 0 or ask < bid:
+        return 0.0
+    return round((ask - bid) * OPTION_MULTIPLIER, 2)
+
+
+def paid_spread_usd(fill_price: float | None, bid: float | None) -> float:
+    """
+    Skutečně zaplacený spread v USD na kontrakt: nákupní cena minus BID.
+
+    Právě o tuto částku je pozice hned po nákupu v mínusu, a právě o ni je
+    proto SL na opci blíž, než odpovídá zadané ztrátě. Lepší plnění než na
+    BIDu ani chybějící kotace kompenzaci nevyvolají - vrací se nula.
+    """
+    if fill_price is None or bid is None:
+        return 0.0
+    if not (math.isfinite(fill_price) and math.isfinite(bid)):
+        return 0.0
+    if bid <= 0 or fill_price <= bid:
+        return 0.0
+    return round((fill_price - bid) * OPTION_MULTIPLIER, 2)
+
+
 def suggest_quantity_for_loss(
     risk_amount: float,
     loss_per_contract: float,

@@ -121,6 +121,15 @@ trading:
   pt_on_underlying: true
   sl_on_underlying: true
 
+  # Výchozí stav zaškrtávátka "SL o zaplacený spread dál" (jen u SL na opci).
+  # Opce se kupuje u ASKu, ale stop se spouští BIDem, takže SL na opci je
+  # ve skutečnosti blíž o celý spread - SL 30 USD/ks při spreadu 10 USD/ks
+  # se spustí už po pohybu ceny opce o 20 USD. Se zapnutou kompenzací se
+  # při nákupu k SL připočte skutečně zaplacený spread (nákupní cena minus
+  # BID), takže zadaná hodnota odpovídá pohybu trhu; ztráta na kontrakt
+  # o tento spread naroste a doporučené množství úměrně klesne.
+  sl_spread_compensated: false
+
   # Která úroveň se ve formuláři zadává jako prvotní; druhá se dopočítá podle
   # sl_to_pt_ratio a lze ji ručně přepsat. Určuje výchozí stav zaškrtávátka
   # (oranžové, hned za polem Vstup na podkladu):

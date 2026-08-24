@@ -125,6 +125,8 @@ class FlowRequest:
     max_spread_pct: float | None = None
     pt_on_underlying: bool = True
     sl_on_underlying: bool = True
+    # Připočtení spreadu k SL zadanému na opci - viz Flow.sl_spread_compensated
+    sl_spread_compensated: bool = False
 
 
 @dataclass
@@ -150,6 +152,17 @@ class Flow:
     # jinak vznikají dva příkazy a po vyplnění jednoho se druhý ruší.
     pt_on_underlying: bool = True
     sl_on_underlying: bool = True
+
+    # Kompenzace spreadu u SL zadaného na opci. Nakupuje se u ASKu, ale stop
+    # se spouští BIDem, takže SL je ve skutečnosti blíž o celý spread: SL 30
+    # při spreadu 10 USD/ks se spustí už po pohybu ceny opce o 20 USD.
+    # Se zapnutou kompenzací se při nákupu k SL připočte skutečně zaplacený
+    # spread (nákupní cena minus BID), takže zadaná hodnota odpovídá pohybu
+    # trhu - za cenu úměrně větší ztráty. Break even (SL 0) se nekompenzuje.
+    sl_spread_compensated: bool = False
+    # Kolik USD na kontrakt už bylo k SL připočteno; formulář o to zapsanou
+    # hodnotu zase snižuje, aby se navýšení při dalším zadání neřetězilo
+    sl_spread_usd: float = 0.0
 
     # PT zadané při založení obchodu; násobky cíle se počítají z něj,
     # aby opakovaná změna nevycházela z už posunuté hodnoty

@@ -394,6 +394,27 @@ class TradingUI:
                     lambda e: self._on_mode_change("sl", bool(e.value))
                 )
 
+                # Kompenzace spreadu u SL na opci: opce se kupuje u ASKu, ale
+                # stop se spouští BIDem, takže bez ní je SL blíž o celý spread.
+                # Pro SL na podkladu nemá smysl, proto se s ním přepínač zamyká
+                self.sl_spread_compensated = (
+                    ui.checkbox(
+                        "SL o zaplacený spread dál (jen při SL na opci)",
+                        value=self.cfg.trading.sl_spread_compensated,
+                    )
+                    .props("dense")
+                    .classes("prepinac")
+                    .tooltip(
+                        "Zaškrtnuto: k SL na opci se při nákupu připočte skutečně "
+                        "zaplacený spread (nákupní cena minus BID), takže zadaná "
+                        "hodnota odpovídá pohybu ceny opce. Ztráta na kontrakt "
+                        "o tento spread naroste a množství úměrně klesne."
+                    )
+                )
+                # Přepínač je aktivní jen při SL na opci; výchozí stav podle konfigurace
+                self.sl_spread_compensated.set_enabled(not self.cfg.trading.sl_on_underlying)
+                self.sl_spread_compensated.on_value_change(lambda _: self._on_sl_spread_change())
+
                 # Režim PT: zaškrtnuto = cena podkladu (podmíněný příkaz),
                 # odškrtnuto = zisk v USD na jeden kontrakt realizovaný
                 # limitním příkazem přímo na cenu opce
@@ -575,15 +596,30 @@ class TradingUI:
         """Režimy PT a SL ze zaškrtávátek: True = na podkladu, False = na opci."""
         return bool(self.pt_on_underlying.value), bool(self.sl_on_underlying.value)
 
-    def _set_modes(self, pt_on_underlying: bool, sl_on_underlying: bool) -> None:
+    def _form_sl_spread(self) -> bool:
+        """
+        Zaškrtávátko kompenzace SL o spread. U SL na podkladu se neuplatní,
+        i kdyby zůstalo zaškrtnuté z dřívějšího zadání.
+        """
+        return bool(self.sl_spread_compensated.value) and not bool(self.sl_on_underlying.value)
+
+    def _set_modes(
+        self,
+        pt_on_underlying: bool,
+        sl_on_underlying: bool,
+        sl_spread_compensated: bool | None = None,
+    ) -> None:
         """
         Nastaví zaškrtávátka režimu bez vedlejších účinků jejich obsluhy -
         při programovém nastavení se hodnoty polí nesmí mazat.
+        Bez zadané kompenzace (None) se její přepínač nechává být.
         """
         self._modes_locked = True
         try:
             self.pt_on_underlying.set_value(pt_on_underlying)
             self.sl_on_underlying.set_value(sl_on_underlying)
+            if sl_spread_compensated is not None:
+                self.sl_spread_compensated.set_value(sl_spread_compensated)
         finally:
             self._modes_locked = False
         self._refresh_mode_labels()
@@ -610,6 +646,8 @@ class TradingUI:
         pt_on, sl_on = self._form_modes()
         self.pt_input.props(f'label="{popisek_urovne("pt", pt_on)}"')
         self.sl_input.props(f'label="{popisek_urovne("sl", sl_on)}"')
+        # Kompenzace spreadu se týká jen SL zadaného na opci
+        self.sl_spread_compensated.set_enabled(not sl_on)
         self._arrange_level_groups()
 
     def _arrange_level_groups(self) -> None:
@@ -642,6 +680,17 @@ class TradingUI:
         prepnute = self.pt_input if druh == "pt" else self.sl_input
         prepnute.set_value(None)
         self._computed_input().set_value(None)
+        self._naplanuj_nahled()
+
+    def _on_sl_spread_change(self) -> None:
+        """
+        Přepnutí kompenzace SL o spread obchodníkem. Zadané úrovně zůstávají,
+        mění se jen doporučené množství (kompenzovaná ztráta je větší), proto
+        stačí přepočítat náhled. Synchronní ze stejného důvodu jako
+        _on_mode_change - programové nastavení běží pod zámkem.
+        """
+        if self._modes_locked:
+            return
         self._naplanuj_nahled()
 
     def _on_primary_change(self) -> None:
@@ -695,7 +744,9 @@ class TradingUI:
         self.symbol_input.set_value(flow.symbol)
         self._set_direction(flow.right)
         # Režimy se nastavují před hodnotami - jejich změna pole maže
-        self._set_modes(flow.pt_on_underlying, flow.sl_on_underlying)
+        self._set_modes(
+            flow.pt_on_underlying, flow.sl_on_underlying, flow.sl_spread_compensated
+        )
         self.entry_input.set_value(round(flow.entry_price, 2))
         self.pt_input.set_value(round(flow.profit_target, 2))
         self._zapis_sl(flow)
@@ -709,11 +760,15 @@ class TradingUI:
         Break even na opci je nulová ztráta; ve formuláři by nula znamenala
         "nezadáno" a přepočet ani nové zadání by s ní nešly provést, proto
         se pole nechává prázdné. Skutečnou úroveň ukazuje přehled obchodů.
+
+        Spread připočtený při nákupu se zase odečítá - do formuláře patří
+        hodnota, kterou obchodník zadal. Jinak by se při dalším zadání
+        kompenzace navršila podruhé.
         """
         if not flow.sl_on_underlying and flow.stop_loss <= 0:
             self.sl_input.set_value(None)
             return
-        self.sl_input.set_value(round(flow.stop_loss, 2))
+        self.sl_input.set_value(round(flow.stop_loss - flow.sl_spread_usd, 2))
 
     def _clear_inputs(self) -> None:
         """
@@ -725,7 +780,11 @@ class TradingUI:
             pole.set_value(None)
         # Limit spreadu, režimy PT/SL i prvotní úroveň se vrací na konfiguraci
         self.spread_input.set_value(self.cfg.trading.max_spread_pct)
-        self._set_modes(self.cfg.trading.pt_on_underlying, self.cfg.trading.sl_on_underlying)
+        self._set_modes(
+            self.cfg.trading.pt_on_underlying,
+            self.cfg.trading.sl_on_underlying,
+            self.cfg.trading.sl_spread_compensated,
+        )
         self._set_primary(self.cfg.trading.primary_level)
 
         # Formulář už nedrží žádný načtený obchod
@@ -791,6 +850,7 @@ class TradingUI:
         self._set_loading(True)
 
         pt_on, sl_on = self._form_modes()
+        sl_spread = self._form_sl_spread()
         # Přepočet zahazuje dopočítávanou úroveň (podle prvotní), aby se spočítala
         # znovu. Prázdná prvotní úroveň by ale nechala formulář bez zadání,
         # proto se v takovém případě počítá z té vyplněné
@@ -805,7 +865,7 @@ class TradingUI:
         if self._preview_task is not None and not self._preview_task.done():
             self._preview_task.cancel()
         self._preview_task = asyncio.create_task(
-            self.engine.prepare(symbol, entry, pt, sl, pt_on, sl_on)
+            self.engine.prepare(symbol, entry, pt, sl, pt_on, sl_on, sl_spread)
         )
         try:
             preview = await self._preview_task
@@ -890,6 +950,10 @@ class TradingUI:
                 )
             pt_text = level_text("pt", preview.profit_target, preview.pt_on_underlying)
             sl_text = level_text("sl", preview.stop_loss, preview.sl_on_underlying)
+            # Kompenzace se uplatní až skutečným spreadem při nákupu, náhled
+            # proto uvádí jen odhad z aktuální kotace
+            if preview.sl_spread_compensated:
+                sl_text += f" + spread ≈ {fmt(preview.sl_spread_usd)} USD"
             detail_parts.append(
                 f"doporučeno: PT {pt_text}, SL {sl_text}, {preview.quantity} ks"
             )
@@ -1098,6 +1162,7 @@ class TradingUI:
             max_spread_pct=max_spread,
             pt_on_underlying=pt_on,
             sl_on_underlying=sl_on,
+            sl_spread_compensated=self._form_sl_spread(),
         )
 
         # Založení obchodu si znovu načítá data z TWS, indikace platí i zde
