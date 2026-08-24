@@ -534,17 +534,23 @@ class TradingUI:
         """
         Směr obchodu, jak jej lze určit z formuláře ('C' / 'P', jinak None).
 
-        Načtený běžící obchod má směr daný. Jinak rozhoduje poloha vstupu
-        vůči aktuální ceně podkladu z posledního náhledu (ta se načítá už
-        po zadání tickeru a vstupu), stejně jako v enginu. Dokud cena není
-        známá (např. bez spojení s TWS), napoví aspoň poloha PT/SL na
-        podkladu vůči vstupu.
+        Načtený běžící obchod má směr daný, ale jen dokud mu neodporují
+        úrovně ve formuláři - ruční přepsání PT/SL na opačnou stranu vstupu
+        znamená, že se zadává nový obchod opačným směrem, a směr načteného
+        obchodu už neplatí. Jinak rozhoduje poloha vstupu vůči aktuální ceně
+        podkladu z posledního náhledu (ta se načítá už po zadání tickeru
+        a vstupu), stejně jako v enginu. Dokud cena není známá (např. bez
+        spojení s TWS), napoví aspoň poloha PT/SL na podkladu vůči vstupu.
         """
+        symbol, entry, pt, sl = self._form_values()
+        pt_on, sl_on = self._form_modes()
+        # Zamýšlený směr ze zadaných úrovní; None = z formuláře jej určit nelze
+        zamer = calc.intended_right(entry, pt, sl, pt_on, sl_on) if entry is not None else None
         if self.form_flow_id:
             flow = self.engine.flows.get(self.form_flow_id)
-            if flow is not None:
+            # Směr načteného obchodu platí, dokud mu zadané úrovně neodporují
+            if flow is not None and zamer in (None, flow.right):
                 return flow.right
-        symbol, entry, pt, sl = self._form_values()
         if not symbol or entry is None:
             return None
         # Cena z náhledu platí jen pro stejný ticker
@@ -555,8 +561,7 @@ class TradingUI:
             and preview.current_price is not None
         ):
             return calc.determine_right(preview.current_price, entry)
-        pt_on, sl_on = self._form_modes()
-        return calc.intended_right(entry, pt, sl, pt_on, sl_on)
+        return zamer
 
     def _form_values(self) -> tuple[str, float | None, float | None, float | None]:
         """Přečte hodnoty z formuláře a převede je na čísla."""
