@@ -572,22 +572,32 @@ class TradingUI:
         """
         Směr obchodu, jak jej lze určit z formuláře ('C' / 'P', jinak None).
 
-        Načtený běžící obchod má směr daný, ale jen dokud mu neodporují
-        úrovně ve formuláři - ruční přepsání PT/SL na opačnou stranu vstupu
-        znamená, že se zadává nový obchod opačným směrem, a směr načteného
-        obchodu už neplatí. Jinak rozhoduje poloha vstupu vůči aktuální ceně
-        podkladu z posledního náhledu (ta se načítá už po zadání tickeru
-        a vstupu), stejně jako v enginu. Dokud cena není známá (např. bez
-        spojení s TWS), napoví aspoň poloha PT/SL na podkladu vůči vstupu.
+        Načtený běžící obchod má směr daný, ale jen dokud jej formulář
+        skutečně popisuje: přepsaná vstupní cena nebo úrovně na opačné
+        straně znamenají nové zadání, u kterého směr načteného obchodu
+        neplatí. Jinak rozhoduje poloha vstupu vůči aktuální ceně podkladu
+        z posledního náhledu (ta se načítá už po zadání tickeru a vstupu),
+        stejně jako v enginu. Dokud cena není známá (např. bez spojení
+        s TWS), napoví aspoň poloha PT/SL na podkladu vůči vstupu.
+
+        Právě proto se vstup porovnává: u nakoupeného obchodu cena podkladu
+        jeho vstupní úroveň běžně překoná, takže přepočet ze samotné ceny
+        by u něj směr otočil.
         """
         symbol, entry, pt, sl = self._form_values()
         pt_on, sl_on = self._form_modes()
         # Zamýšlený směr ze zadaných úrovní; None = z formuláře jej určit nelze
+        # (obě úrovně na opci jsou jen částky v USD)
         zamer = calc.intended_right(entry, pt, sl, pt_on, sl_on) if entry is not None else None
         if self.form_flow_id:
             flow = self.engine.flows.get(self.form_flow_id)
-            # Směr načteného obchodu platí, dokud mu zadané úrovně neodporují
-            if flow is not None and zamer in (None, flow.right):
+            # Směr načteného obchodu platí, dokud mu neodporují zadané úrovně
+            # ani přepsaný vstup; prázdné pole vstupu se ještě za změnu nepovažuje
+            if (
+                flow is not None
+                and zamer in (None, flow.right)
+                and (entry is None or abs(entry - flow.entry_price) < 0.005)
+            ):
                 return flow.right
         if not symbol or entry is None:
             return None
