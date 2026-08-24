@@ -90,7 +90,7 @@ account:
 
   # Kolik procent účtu se smí prodělat na jednom obchodu.
   # Při účtu 5000 USD a hodnotě 1.0 je riskovaná částka 50 USD.
-  risk_pct: 5.0
+  risk_pct: 2.0
 
 
 
