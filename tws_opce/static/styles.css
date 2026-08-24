@@ -576,3 +576,28 @@ body.body--dark .log-radek {
   font-size: 0.85rem;
   margin-left: -8px;
 }
+
+/* Každý blok drží dvojici voleb, které patří k sobě (prvotní úroveň,
+   režim SL, režim PT). Mezera a jemná linka mezi bloky dávají najevo,
+   kde jedna volba končí a začíná další - barva vyhovuje světlému
+   i tmavému motivu */
+.prepinace .skupina-prepinacu {
+  gap: 0;
+  width: 100%;
+  padding: 5px 0;
+}
+
+.prepinace .skupina-prepinacu + .skupina-prepinacu {
+  border-top: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+/* Volby uvnitř bloku dostávají drobný odstup, aby na sebe netlačily */
+.prepinace .prepinac .q-radio {
+  padding: 2px 0;
+}
+
+/* Kompenzace spreadu je podřízená volbě režimu SL - odsazení to ukazuje */
+.prepinace .prepinac-podrizeny {
+  margin-left: 10px;
+  margin-top: 2px;
+}

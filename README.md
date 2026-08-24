@@ -103,11 +103,12 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    známá není, se směr napoví aspoň z polohy PT nebo SL na podkladu vůči
    vstupu.
 
-   **PT a SL na podkladu, nebo na opci.** Pod polem *Množství* jsou pod sebou
-   zaškrtávátka *SL na podkladu* a *PT na podkladu* (výchozí stav určuje
-   `trading.pt_on_underlying` a `trading.sl_on_underlying`). Zaškrtnuté
-   pole je cena podkladu a hlídá
-   ji podmíněný příkaz, jak je popsáno výše. Odškrtnuté pole je **zisk
+   **PT a SL na podkladu, nebo na opci.** Pod polem *Množství* stojí
+   oddělené bloky voleb *SL na podkladu / SL na opci* a *PT na podkladu /
+   PT na opci* (výchozí stav určuje `trading.pt_on_underlying`
+   a `trading.sl_on_underlying`). Volba *na podkladu* znamená cenu podkladu
+   a hlídá
+   ji podmíněný příkaz, jak je popsáno výše. Volba *na opci* je **zisk
    (PT), resp. ztráta (SL) v USD na jeden kontrakt** — 10 znamená posun
    ceny opce o 0,10 (nákup 3,00 → PT limit 3,10, SL stop 2,90). PT na opci
    se po nákupu realizuje limitním příkazem přímo na cenu opce, SL na opci
@@ -137,11 +138,11 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    i sloupec *Ztráta na SL*. Takový stop ale pozici prakticky nechrání —
    spustí se až u téměř bezcenné opce — proto na SL převyšující prémii
    upozorní náhled formuláře (z odhadované ceny opce při vstupu) a po nákupu
-   znovu průběh (ze skutečné nákupní ceny), včetně skutečného stropu ztráty. Přepnutí zaškrtávátka pole vyprázdní,
+   znovu průběh (ze skutečné nákupní ceny), včetně skutečného stropu ztráty. Přepnutí režimu pole vyprázdní,
    protože hodnota by v novém režimu znamenala něco jiného.
 
-   **SL o zaplacený spread dál.** Zaškrtávátko pod přepínačem *SL na
-   podkladu* (výchozí stav `trading.sl_spread_compensated`), aktivní jen
+   **SL o zaplacený spread dál.** Zaškrtávátko odsazené pod volbou režimu
+   SL (výchozí stav `trading.sl_spread_compensated`), dostupné jen
    při SL zadaném na opci. Řeší to, že opce se kupuje u ASKu, ale stop
    se spouští BIDem: pozice je hned po nákupu v mínusu o celý spread,
    takže SL je ve skutečnosti blíž, než odpovídá zadané ztrátě. Při
@@ -161,15 +162,16 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    to zaznamená. PT se nekompenzuje: dráha k němu je o spread naopak
    delší, protože limitní prodej se vyplní, až na jeho cenu dosáhne BID.
 
-   **Která úroveň je prvotní.** Oranžové zaškrtávátko *Zadává se SL, PT se
-   dopočítá podle poměru SL:PT* pod polem *Množství* (výchozí stav
+   **Která úroveň je prvotní.** Oranžová dvojice voleb *Zadává se SL, PT se
+   dopočítá podle poměru SL:PT* / *Zadává se PT, SL se dopočítá podle
+   poměru SL:PT* v prvním bloku pod polem *Množství* (výchozí stav
    `trading.primary_level`, standardně `sl`)
    určuje, která z úrovní se zadává a která se dopočítává podle poměru
    `sl_to_pt_ratio`. Zadávaná úroveň stojí vždy vedle vstupu, dopočítávaná
-   v dalším řádku – přepnutím si pole PT a SL vymění místo. Zaškrtnuto =
+   v dalším řádku – přepnutím si pole PT a SL vymění místo. Prvotní SL =
    povinný je SL a PT se dopočte (na podkladu zrcadlově
    `vstup ± |SL − vstup| / poměr`, na opci `SL / poměr`, ve smíšeném režimu
-   přes cenu opce jako výše), odškrtnuto = povinný je PT a dopočte se SL.
+   přes cenu opce jako výše), prvotní PT = povinný je PT a dopočte se SL.
    Bez vstupní ceny dopočet neproběhne – úrovně se zrcadlí kolem vstupu.
    Dopočítanou úroveň lze vždy přepsat ručně; **Přepočítat** ji spočítá
    znovu — je-li ale prvotní pole prázdné, počítá se naopak z toho vyplněného,
@@ -185,7 +187,7 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    **Načíst** obnoví údaje z TWS (cena podkladu, typ opce, expirace, strike,
    kotace, delta) a vyplněná pole nechá být — doplní jen ta prázdná.
    **Přepočítat** navíc přepíše dopočítávanou úroveň (SL, nebo PT podle
-   zaškrtávátka prvotní úrovně) i množství vypočtenými hodnotami; zadaná
+   volby prvotní úrovně) i množství vypočtenými hodnotami; zadaná
    hodnota se přitom zahodí a spočítá znovu podle poměru z konfigurace.
    Ručně zadané hodnoty tedy zmizí pouze na výslovné kliknutí, ne samovolně
    při psaní.

@@ -349,91 +349,108 @@ class TradingUI:
                 ui.button("Přepočítat", on_click=lambda: self._load_preview("prepocitat")).props(
                     "outline"
                 ).classes("tlacitko-vedle").tooltip(
-                    "Přepíše dopočítávanou úroveň (SL, nebo PT podle zaškrtávátka) "
+                    "Přepíše dopočítávanou úroveň (SL, nebo PT podle volby) "
                     "a množství vypočtenými hodnotami. Úroveň podle poměru SL:PT "
                     "z konfigurace, množství podle rizika a delty opce."
                 )
 
-            # Přepínače zadání stojí pod řádkem s množstvím pod sebou, každý
-            # s plným popisem; podrobnosti říká tooltip
+            # Přepínače zadání stojí pod řádkem s množstvím ve třech oddělených
+            # blocích: prvotní úroveň, režim SL a režim PT. Každý blok je dvojice
+            # voleb (radio), jejichž hodnotou je pravdivostní hodnota jako dřív;
+            # podrobnosti říká tooltip
             with ui.column().classes("prepinace"):
-                # Která úroveň je prvotní: zaškrtnuto = zadává se SL a PT se
-                # dopočítá z poměru SL:PT, odškrtnuto = zadává se PT a dopočítá
-                # se SL. Oranžová barva jej odlišuje od přepínačů režimu
-                self.sl_primary = (
-                    ui.checkbox(
-                        "Zadává se SL, PT se dopočítá podle poměru SL:PT",
-                        value=self.cfg.trading.primary_level == "sl",
+                # Která úroveň je prvotní: True = zadává se SL a PT se dopočítá
+                # z poměru SL:PT, False = zadává se PT a dopočítá se SL.
+                # Oranžová barva blok odlišuje od přepínačů režimu
+                with ui.column().classes("skupina-prepinacu"):
+                    self.sl_primary = (
+                        ui.radio(
+                            {
+                                True: "Zadává se SL, PT se dopočítá podle poměru SL:PT",
+                                False: "Zadává se PT, SL se dopočítá podle poměru SL:PT",
+                            },
+                            value=self.cfg.trading.primary_level == "sl",
+                        )
+                        .props("dense color=orange-8")
+                        .classes("prepinac")
+                        .tooltip(
+                            "Zadávaná úroveň stojí vedle vstupu, dopočítávaná v dalším "
+                            "řádku. Druhá úroveň se dopočítá podle poměru SL:PT "
+                            "z konfigurace a lze ji vždy přepsat ručně."
+                        )
                     )
-                    .props("dense color=orange-8")
-                    .classes("prepinac")
-                    .tooltip(
-                        "Zaškrtnuto: zadává se SL (pole vedle vstupu) a PT se dopočítá "
-                        "podle poměru SL:PT z konfigurace. Odškrtnuto: zadává se PT "
-                        "a dopočítá se SL. Dopočítanou úroveň lze vždy přepsat ručně."
-                    )
-                )
-                self.sl_primary.on_value_change(lambda e: self._on_primary_change())
+                    self.sl_primary.on_value_change(lambda e: self._on_primary_change())
 
-                # Režim SL: odškrtnuto = ztráta v USD na kontrakt, realizuje
-                # se stop-market příkazem přímo na cenu opce
-                self.sl_on_underlying = (
-                    ui.checkbox(
-                        "SL na podkladu (odškrtnuto: ztráta na opci v USD/ks)",
-                        value=self.cfg.trading.sl_on_underlying,
+                # Režim SL: na opci jde o ztrátu v USD na kontrakt, kterou
+                # realizuje stop-market příkaz přímo na cenu opce
+                with ui.column().classes("skupina-prepinacu"):
+                    self.sl_on_underlying = (
+                        ui.radio(
+                            {
+                                True: "SL na podkladu (cena podkladu)",
+                                False: "SL na opci (ztráta v USD/ks)",
+                            },
+                            value=self.cfg.trading.sl_on_underlying,
+                        )
+                        .props("dense")
+                        .classes("prepinac")
+                        .tooltip(
+                            "Na podkladu: SL je cena podkladu a hlídá ji podmíněný "
+                            "příkaz. Na opci: SL je ztráta na jedné opci v USD, "
+                            "prodá se stop-market příkazem na cenu opce."
+                        )
                     )
-                    .props("dense")
-                    .classes("prepinac")
-                    .tooltip(
-                        "Zaškrtnuto: SL je cena podkladu (podmíněný příkaz). "
-                        "Odškrtnuto: SL je ztráta na jedné opci v USD, prodá se "
-                        "stop-market příkazem na cenu opce."
+                    self.sl_on_underlying.on_value_change(
+                        lambda e: self._on_mode_change("sl", bool(e.value))
                     )
-                )
-                self.sl_on_underlying.on_value_change(
-                    lambda e: self._on_mode_change("sl", bool(e.value))
-                )
 
-                # Kompenzace spreadu u SL na opci: opce se kupuje u ASKu, ale
-                # stop se spouští BIDem, takže bez ní je SL blíž o celý spread.
-                # Pro SL na podkladu nemá smysl, proto se s ním přepínač zamyká
-                self.sl_spread_compensated = (
-                    ui.checkbox(
-                        "SL o zaplacený spread dál (jen při SL na opci)",
-                        value=self.cfg.trading.sl_spread_compensated,
+                    # Kompenzace spreadu patří k SL na opci: opce se kupuje u ASKu,
+                    # ale stop se spouští BIDem, takže bez ní je SL blíž o celý
+                    # spread. Pro SL na podkladu nemá smysl, proto se s ním zamyká
+                    self.sl_spread_compensated = (
+                        ui.checkbox(
+                            "SL o zaplacený spread dál",
+                            value=self.cfg.trading.sl_spread_compensated,
+                        )
+                        .props("dense")
+                        .classes("prepinac prepinac-podrizeny")
+                        .tooltip(
+                            "Zaškrtnuto: k SL na opci se při nákupu připočte skutečně "
+                            "zaplacený spread (nákupní cena minus BID), takže zadaná "
+                            "hodnota odpovídá pohybu ceny opce. Ztráta na kontrakt "
+                            "o tento spread naroste a množství úměrně klesne."
+                        )
                     )
-                    .props("dense")
-                    .classes("prepinac")
-                    .tooltip(
-                        "Zaškrtnuto: k SL na opci se při nákupu připočte skutečně "
-                        "zaplacený spread (nákupní cena minus BID), takže zadaná "
-                        "hodnota odpovídá pohybu ceny opce. Ztráta na kontrakt "
-                        "o tento spread naroste a množství úměrně klesne."
+                    # Volba je dostupná jen při SL na opci; výchozí stav z konfigurace
+                    self.sl_spread_compensated.set_enabled(
+                        not self.cfg.trading.sl_on_underlying
                     )
-                )
-                # Přepínač je aktivní jen při SL na opci; výchozí stav podle konfigurace
-                self.sl_spread_compensated.set_enabled(not self.cfg.trading.sl_on_underlying)
-                self.sl_spread_compensated.on_value_change(lambda _: self._on_sl_spread_change())
+                    self.sl_spread_compensated.on_value_change(
+                        lambda _: self._on_sl_spread_change()
+                    )
 
-                # Režim PT: zaškrtnuto = cena podkladu (podmíněný příkaz),
-                # odškrtnuto = zisk v USD na jeden kontrakt realizovaný
+                # Režim PT: na opci jde o zisk v USD na kontrakt realizovaný
                 # limitním příkazem přímo na cenu opce
-                self.pt_on_underlying = (
-                    ui.checkbox(
-                        "PT na podkladu (odškrtnuto: zisk na opci v USD/ks)",
-                        value=self.cfg.trading.pt_on_underlying,
+                with ui.column().classes("skupina-prepinacu"):
+                    self.pt_on_underlying = (
+                        ui.radio(
+                            {
+                                True: "PT na podkladu (cena podkladu)",
+                                False: "PT na opci (zisk v USD/ks)",
+                            },
+                            value=self.cfg.trading.pt_on_underlying,
+                        )
+                        .props("dense")
+                        .classes("prepinac")
+                        .tooltip(
+                            "Na podkladu: PT je cena podkladu a hlídá ji podmíněný "
+                            "příkaz. Na opci: PT je zisk na jedné opci v USD, prodá "
+                            "se limitním příkazem na cenu opce."
+                        )
                     )
-                    .props("dense")
-                    .classes("prepinac")
-                    .tooltip(
-                        "Zaškrtnuto: PT je cena podkladu (podmíněný příkaz). "
-                        "Odškrtnuto: PT je zisk na jedné opci v USD, prodá se "
-                        "limitním příkazem na cenu opce."
+                    self.pt_on_underlying.on_value_change(
+                        lambda e: self._on_mode_change("pt", bool(e.value))
                     )
-                )
-                self.pt_on_underlying.on_value_change(
-                    lambda e: self._on_mode_change("pt", bool(e.value))
-                )
 
             # Pole úrovní se rozmístí podle výchozí prvotní úrovně
             self._arrange_level_groups()
@@ -593,7 +610,7 @@ class TradingUI:
         return symbol, entry, pt, sl
 
     def _form_modes(self) -> tuple[bool, bool]:
-        """Režimy PT a SL ze zaškrtávátek: True = na podkladu, False = na opci."""
+        """Režimy PT a SL z voleb: True = na podkladu, False = na opci."""
         return bool(self.pt_on_underlying.value), bool(self.sl_on_underlying.value)
 
     def _form_sl_spread(self) -> bool:
@@ -610,7 +627,7 @@ class TradingUI:
         sl_spread_compensated: bool | None = None,
     ) -> None:
         """
-        Nastaví zaškrtávátka režimu bez vedlejších účinků jejich obsluhy -
+        Nastaví volby režimu bez vedlejších účinků jejich obsluhy -
         při programovém nastavení se hodnoty polí nesmí mazat.
         Bez zadané kompenzace (None) se její přepínač nechává být.
         """
@@ -625,7 +642,7 @@ class TradingUI:
         self._refresh_mode_labels()
 
     def _form_primary(self) -> str:
-        """Prvotní úroveň ze zaškrtávátka: 'sl' (PT se dopočítá), nebo 'pt'."""
+        """Prvotní úroveň z volby: 'sl' (PT se dopočítá), nebo 'pt'."""
         return "sl" if self.sl_primary.value else "pt"
 
     def _computed_input(self) -> ui.number:
@@ -633,7 +650,7 @@ class TradingUI:
         return self.pt_input if self._form_primary() == "sl" else self.sl_input
 
     def _set_primary(self, primary: str) -> None:
-        """Nastaví zaškrtávátko prvotní úrovně bez mazání polí (pod zámkem)."""
+        """Nastaví volbu prvotní úrovně bez mazání polí (pod zámkem)."""
         self._modes_locked = True
         try:
             self.sl_primary.set_value(primary == "sl")

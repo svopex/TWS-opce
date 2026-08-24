@@ -57,18 +57,18 @@ class TradingConfig:
 
     # Výchozí poměr SL vůči PT, pokud uživatel SL nezadá (1.0 = 1:1)
     sl_to_pt_ratio: float = 1.0
-    # Výchozí stav zaškrtávátek "na podkladu" ve formuláři:
+    # Výchozí stav voleb "na podkladu" ve formuláři:
     #   true  = PT / SL se zadává jako cena podkladu (podmíněný příkaz)
     #   false = PT / SL se zadává jako zisk / ztráta v USD na jeden kontrakt
     #           a realizuje se příkazem přímo na cenu opce (LMT, resp. STP)
     pt_on_underlying: bool = True
     sl_on_underlying: bool = True
-    # Výchozí stav zaškrtávátka "SL o zaplacený spread dál" - uplatní se jen
+    # Výchozí stav zaškrtávátka "SL o zaplacený spread dál" - dostupné jen
     # u SL zadaného na opci (sl_on_underlying = false)
     sl_spread_compensated: bool = False
     # Která úroveň se ve formuláři zadává jako prvotní; druhá se dopočítá
     # podle sl_to_pt_ratio: "sl" = zadává se SL a PT se dopočte (výchozí),
-    # "pt" = zadává se PT a SL se dopočte. Určuje výchozí stav zaškrtávátka.
+    # "pt" = zadává se PT a SL se dopočte. Určuje výchozí stav dvojice voleb.
     primary_level: str = "sl"
     max_spread_pct: float = 7.0
     entry_order_type: str = "LMT_ASK"

@@ -107,7 +107,7 @@ trading:
   # z implikované volatility (stejně jako sloupec "Zisk na PT").
   sl_to_pt_ratio: 1.0
 
-  # Výchozí stav zaškrtávátek "na podkladu" před poli PT a SL ve formuláři
+  # Výchozí stav voleb "na podkladu" v blocích režimu PT a SL ve formuláři
   # (pro každý obchod je lze přepnout):
   #   true  = hodnota je cena podkladu a hlídá ji podmíněný příkaz (jako dosud)
   #   false = hodnota je zisk (PT), resp. ztráta (SL) v USD na JEDEN KONTRAKT;
@@ -131,7 +131,7 @@ trading:
   sl_spread_compensated: false
 
   # Která úroveň se ve formuláři zadává jako prvotní; druhá se dopočítá podle
-  # sl_to_pt_ratio a lze ji ručně přepsat. Určuje výchozí stav zaškrtávátka
+  # sl_to_pt_ratio a lze ji ručně přepsat. Určuje výchozí stav dvojice voleb
   # (oranžové, hned za polem Vstup na podkladu):
   #   sl = zadává se SL, PT se dopočte (výchozí)
   #   pt = zadává se PT, SL se dopočte
