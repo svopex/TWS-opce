@@ -1235,7 +1235,11 @@ class FlowEngine:
             return (cena - nakupni) * calc.OPTION_MULTIPLIER
 
         zisk_pt = vysledek_na_kontrakt(flow.profit_target, flow.pt_on_underlying, True)
-        ztrata_sl = vysledek_na_kontrakt(flow.stop_loss, flow.sl_on_underlying, False)
+        # Čeká-li SL na kompenzaci spreadu, počítá se ztráta i s jejím odhadem -
+        # sloupec pak ukazuje riziko, které obchod ponese po nákupu
+        ztrata_sl = vysledek_na_kontrakt(
+            flow.sl_with_pending(flow.stop_loss), flow.sl_on_underlying, False
+        )
         if zisk_pt is None or ztrata_sl is None:
             flow.expected_profit = None
             flow.expected_loss = None
@@ -1269,7 +1273,9 @@ class FlowEngine:
         # break even), proto se jeho část oceňuje na jeho úrovni
         flow.expected_loss = ztrata_sl * hlavni_q
         if runner_q:
-            ztrata_runner = vysledek_na_kontrakt(flow.runner_sl, flow.sl_on_underlying, False)
+            ztrata_runner = vysledek_na_kontrakt(
+                flow.sl_with_pending(flow.runner_sl), flow.sl_on_underlying, False
+            )
             if ztrata_runner is None:
                 ztrata_runner = ztrata_sl
             flow.expected_loss += ztrata_runner * runner_q

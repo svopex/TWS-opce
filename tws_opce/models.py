@@ -300,11 +300,38 @@ class Flow:
         """
         return self.entry_price if self.sl_on_underlying else 0.0
 
+    @property
+    def pending_sl_spread(self) -> float:
+        """
+        Spread, který se k SL na opci teprve připočte při nákupu (USD/ks).
+
+        Kompenzace vychází ze skutečně zaplaceného spreadu, a ten je znám až
+        z vyplněného nákupu. Do té doby se pracuje s odhadem z aktuální kotace
+        opce, aby přehled ukazoval skutečné riziko, a ne hodnotu, která se po
+        nákupu skokem změní. Po nákupu, u SL na podkladu, u break even i bez
+        kotací je nula.
+        """
+        if not self.sl_spread_compensated or self.sl_on_underlying:
+            return 0.0
+        if self.sl_spread_usd or self.fill_price is not None or self.stop_loss <= 0:
+            return 0.0
+        return calc.spread_usd(self.option_bid, self.option_ask)
+
+    def sl_with_pending(self, hodnota: float) -> float:
+        """
+        Ztráta na opci i s dosud nepřipočteným spreadem. Break even (nula)
+        zůstává nulou - jeho stop má stát na nákupní ceně.
+        """
+        return hodnota + self.pending_sl_spread if hodnota > 0 else hodnota
+
     def level_text(self, druh: str, hodnota: float | None = None) -> str:
         """
         Popis vlastní úrovně PT ('pt') nebo SL ('sl').
         Bez zadané hodnoty se bere aktuální úroveň obchodu; jinak se popíše
         libovolná hodnota v témže režimu (například cíl runneru).
+
+        U SL čekajícího na kompenzaci spreadu se uvádí odhad včetně něj,
+        odlišený znaménkem přibližné rovnosti.
         """
         if druh == "pt":
             na_podkladu = self.pt_on_underlying
@@ -314,6 +341,12 @@ class Flow:
             na_podkladu = self.sl_on_underlying
             if hodnota is None:
                 hodnota = self.stop_loss
+            s_kompenzaci = self.sl_with_pending(hodnota)
+            if s_kompenzaci != hodnota:
+                popis = level_text(
+                    druh, s_kompenzaci, na_podkladu, self.fill_price, self.min_tick
+                )
+                return f"≈ {popis}"
         return level_text(druh, hodnota, na_podkladu, self.fill_price, self.min_tick)
 
     def scaled_target(self, multiple: float) -> float:

@@ -1557,6 +1557,37 @@ class TestKompenzaceSpreadu(ZakladRezimu):
         self.assertAlmostEqual(flow.stop_loss, 40.0)
         self.assertAlmostEqual(flow.exit_sl_trade.order.auxPrice, 2.70)
 
+    async def test_pred_nakupem_ukazuje_sl_i_ztratu_s_odhadem_spreadu(self):
+        flow = await self.zaloz(
+            False, False, 10.0, 10.0, quantity=2, sl_spread_compensated=True
+        )
+        await self.engine._tick()
+
+        # Kotace 3,00 / 3,10 = spread 10 USD/ks, takže SL 10 + 10 a ztráta 2 x 20
+        self.assertAlmostEqual(flow.pending_sl_spread, 10.0)
+        self.assertEqual(flow.level_text("sl"), "≈ -20.00 USD")
+        self.assertAlmostEqual(flow.expected_loss, -40.0)
+
+    async def test_po_nakupu_uz_sl_odhad_neuvadi(self):
+        flow = await self.zaloz(
+            False, False, 10.0, 10.0, quantity=2, sl_spread_compensated=True
+        )
+        await self.nakup(flow, 2, 3.10)
+        await self.engine._tick()
+
+        # Skutečný spread nahradil odhad - hodnota zůstává, značka odhadu mizí
+        self.assertAlmostEqual(flow.pending_sl_spread, 0.0)
+        self.assertEqual(flow.level_text("sl"), "2.90 (-20.00 USD)")
+        self.assertAlmostEqual(flow.expected_loss, -40.0)
+
+    async def test_bez_kompenzace_se_odhad_neuvadi(self):
+        flow = await self.zaloz(False, False, 10.0, 10.0, quantity=2)
+        await self.engine._tick()
+
+        self.assertAlmostEqual(flow.pending_sl_spread, 0.0)
+        self.assertEqual(flow.level_text("sl"), "-10.00 USD")
+        self.assertAlmostEqual(flow.expected_loss, -20.0)
+
     async def test_runner_zapnuty_po_nakupu_prebira_kompenzovany_sl(self):
         flow = await self.zaloz(
             False, False, 10.0, 30.0, quantity=3, sl_spread_compensated=True

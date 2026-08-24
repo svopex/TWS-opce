@@ -153,7 +153,11 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    na 3,55. Ztráta na kontrakt o tentýž spread naroste (30 → 40 USD),
    proto s ní počítá i doporučené množství — náhled používá spread
    z aktuální kotace a uvádí jej jako `+ spread ≈ 10,00 USD`, skutečnou
-   hodnotu určí až nákup a zapíše ji do průběhu. Připočtený spread nese
+   hodnotu určí až nákup a zapíše ji do průběhu. Než k němu dojde, ukazují
+   sloupce *SL* a *Ztráta na SL* v přehledu odhad **včetně** spreadu
+   z aktuální kotace (`≈ -20,00 USD`, resp. odpovídající ztráta), aby se
+   hodnota po nákupu neměnila skokem; jakmile je spread znám, značka
+   přibližné rovnosti zmizí. Připočtený spread nese
    obchod v poli `sl_spread_usd`, takže *Načíst* vrátí do formuláře
    původně zadanou hodnotu a kompenzace se při dalším zadání neřetězí.
    Break even se nekompenzuje — jeho stop má stát na zaplacené ceně;
