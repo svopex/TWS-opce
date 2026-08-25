@@ -15,7 +15,15 @@ from .config import AppConfig
 from .engine import FlowEngine, Preview
 from .ib_service import IBService
 from .import_dialog import ImportDialog
-from .models import PT_MULTIPLES, Flow, FlowRequest, FlowState, level_text
+from .models import (
+    PT_MULTIPLES,
+    Flow,
+    FlowRequest,
+    FlowState,
+    level_text,
+    pomer_z_rrr,
+    rrr_z_pomeru,
+)
 
 log = logging.getLogger(__name__)
 
@@ -396,8 +404,8 @@ class TradingUI:
                     "outline"
                 ).classes("tlacitko-vedle").tooltip(
                     "Přepíše dopočítávanou úroveň (SL, nebo PT podle volby) "
-                    "a množství vypočtenými hodnotami. Úroveň podle poměru SL:PT "
-                    "z konfigurace, množství podle rizika a delty opce."
+                    "a množství vypočtenými hodnotami. Úroveň podle zadaného "
+                    "RRR, množství podle rizika a delty opce."
                 )
 
             # Přepínače zadání stojí pod řádkem s množstvím ve třech oddělených
@@ -406,14 +414,14 @@ class TradingUI:
             # podrobnosti říká tooltip
             with ui.column().classes("prepinace"):
                 # Která úroveň je prvotní: True = zadává se SL a PT se dopočítá
-                # z poměru SL:PT, False = zadává se PT a dopočítá se SL.
+                # podle RRR, False = zadává se PT a dopočítá se SL.
                 # Oranžová barva blok odlišuje od přepínačů režimu
                 with ui.column().classes("skupina-prepinacu"):
                     self.sl_primary = (
                         ui.radio(
                             {
-                                True: "Zadává se SL, PT se dopočítá podle poměru SL:PT",
-                                False: "Zadává se PT, SL se dopočítá podle poměru SL:PT",
+                                True: "Zadává se SL, PT se dopočítá podle RRR",
+                                False: "Zadává se PT, SL se dopočítá podle RRR",
                             },
                             value=self.cfg.trading.primary_level == "sl",
                         )
@@ -421,8 +429,8 @@ class TradingUI:
                         .classes("prepinac")
                         .tooltip(
                             "Zadávaná úroveň stojí vedle vstupu, dopočítávaná v dalším "
-                            "řádku. Druhá úroveň se dopočítá podle poměru SL:PT "
-                            "z konfigurace a lze ji vždy přepsat ručně."
+                            "řádku. Druhá úroveň se dopočítá podle RRR z pole pod "
+                            "přepínači a lze ji vždy přepsat ručně."
                         )
                     )
                     self.sl_primary.on_value_change(lambda e: self._on_primary_change())
@@ -506,6 +514,30 @@ class TradingUI:
                     self.pt_mode.on_value_change(
                         lambda e: self._on_mode_change("pt", str(e.value))
                     )
+
+            # RRR pro dopočet druhé úrovně. Mění se zřídka, proto stojí až
+            # pod přepínači; výchozí hodnota vychází z konfigurace a přepsáním
+            # platí pro přepočet i pro zadání obchodu
+            with ui.row().classes("radek"):
+                self.rrr_input = (
+                    ui.number(
+                        "RRR (PT:SL)",
+                        value=rrr_z_pomeru(self.cfg.trading.sl_to_pt_ratio),
+                        format="%g",
+                        min=0,
+                    )
+                    .classes("pole")
+                    .props("outlined dense step=any")
+                    .tooltip(
+                        "Poměr zisku ku riziku, kterým se z prvotní úrovně "
+                        "dopočítá ta druhá: 2 = PT je dvakrát dál než SL, "
+                        "1 = obě stejně daleko. Výchozí hodnota vychází "
+                        "z konfigurace (převrácené trading.sl_to_pt_ratio), "
+                        "prázdné či nekladné pole se k ní vrací."
+                    )
+                )
+                # Změna RRR rovnou přepočítá dopočítávanou úroveň i množství
+                self.rrr_input.on("blur", lambda _: self._load_preview("prepocitat"))
 
             # Pole úrovní se rozmístí podle výchozí prvotní úrovně
             self._arrange_level_groups()
@@ -698,6 +730,19 @@ class TradingUI:
         """
         pt_mode, sl_mode = self._form_level_modes()
         return pt_mode == MODE_UNDERLYING, sl_mode == MODE_UNDERLYING
+
+    def _form_ratio(self) -> float | None:
+        """
+        Poměr SL:PT pro engine, odvozený z RRR ve formuláři.
+
+        Formulář se ptá na RRR (kolikrát je PT dál než SL), engine počítá
+        s obrácenou hodnotou - proto převrácená hodnota. Prázdné i nekladné
+        pole vrací None a engine pak sáhne do konfigurace.
+        """
+        if self.rrr_input.value in (None, ""):
+            return None
+        rrr = float(self.rrr_input.value)
+        return pomer_z_rrr(rrr) if rrr > 0 else None
 
     def _form_sl_spread(self) -> bool:
         """
@@ -958,6 +1003,7 @@ class TradingUI:
         pt_on: bool,
         sl_on: bool,
         sl_spread: bool,
+        pomer: float | None,
     ) -> Preview:
         """
         Připraví zadání a přitom vyřeší úrovně zadané procentem prémie.
@@ -971,12 +1017,16 @@ class TradingUI:
         pt_mode, sl_mode = self._form_level_modes()
         if MODE_PREMIUM not in (pt_mode, sl_mode):
             self.premium_used = None
-            return await self.engine.prepare(symbol, entry, pt, sl, pt_on, sl_on, sl_spread)
+            return await self.engine.prepare(
+                symbol, entry, pt, sl, pt_on, sl_on, sl_spread, pomer
+            )
 
         premie = self._premie_pro(symbol)
         if premie is None:
             # Hrubý první průchod jen kvůli ceně opce; jeho úrovně se zahodí
-            odhad = await self.engine.prepare(symbol, entry, pt, sl, pt_on, sl_on, sl_spread)
+            odhad = await self.engine.prepare(
+                symbol, entry, pt, sl, pt_on, sl_on, sl_spread, pomer
+            )
             self._zapamatuj_premii(odhad)
             premie = self._premie_pro(symbol)
             if premie is None:
@@ -990,7 +1040,7 @@ class TradingUI:
         self.premium_used = premie
         pt_usd, sl_usd = self._urovne_v_usd(pt, sl, premie)
         preview = await self.engine.prepare(
-            symbol, entry, pt_usd, sl_usd, pt_on, sl_on, sl_spread
+            symbol, entry, pt_usd, sl_usd, pt_on, sl_on, sl_spread, pomer
         )
         self._zapamatuj_premii(preview)
         return preview
@@ -1052,6 +1102,7 @@ class TradingUI:
 
         pt_on, sl_on = self._form_modes()
         sl_spread = self._form_sl_spread()
+        pomer = self._form_ratio()
         # Přepočet zahazuje dopočítávanou úroveň (podle prvotní), aby se spočítala
         # znovu. Prázdná prvotní úroveň by ale nechala formulář bez zadání,
         # proto se v takovém případě počítá z té vyplněné
@@ -1066,7 +1117,7 @@ class TradingUI:
         if self._preview_task is not None and not self._preview_task.done():
             self._preview_task.cancel()
         self._preview_task = asyncio.create_task(
-            self._priprav_s_rezimy(symbol, entry, pt, sl, pt_on, sl_on, sl_spread)
+            self._priprav_s_rezimy(symbol, entry, pt, sl, pt_on, sl_on, sl_spread, pomer)
         )
         try:
             preview = await self._preview_task
@@ -1395,6 +1446,7 @@ class TradingUI:
             pt_on_underlying=pt_on,
             sl_on_underlying=sl_on,
             sl_spread_compensated=self._form_sl_spread(),
+            sl_to_pt_ratio=self._form_ratio(),
         )
 
         # Založení obchodu si znovu načítá data z TWS, indikace platí i zde
@@ -1826,7 +1878,8 @@ class TradingUI:
             f"= {fmt(self.engine.risk_amount)} USD\n"
             f"Nákup: {t.entry_order_type} (tolerance {t.ask_tolerance_pct:g} %) | "
             f"prodej: {t.exit_order_type}\n"
-            f"Max. spread {t.max_spread_pct:g} % | SL:PT {t.sl_to_pt_ratio:g} | "
+            f"Max. spread {t.max_spread_pct:g} % | "
+            f"SL:PT {t.sl_to_pt_ratio:g} (RRR {rrr_z_pomeru(t.sl_to_pt_ratio):g}) | "
             f"expirace {expiration_text}\n"
             f"Výchozí PT: {rezim_pt} | výchozí SL: {rezim_sl} | prvotní: {prvotni}"
         )

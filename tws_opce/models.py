@@ -22,6 +22,26 @@ def cislo_text(hodnota: float, desetin: int = 2) -> str:
     return f"{hodnota:,.{desetin}f}".replace(",", " ")
 
 
+def pomer_z_rrr(rrr: float) -> float:
+    """
+    Poměr SL:PT pro engine z RRR zadaného ve formuláři.
+
+    Formuláře se ptají na RRR (kolikrát je PT dál než SL), engine i konfigurace
+    pracují s obrácenou hodnotou - RRR 2 je tedy poměr 0,5. Nekladné RRR nemá
+    smysl a vrací se nezměněné, ať si jej ošetří volající.
+    """
+    return 1.0 / rrr if rrr > 0 else rrr
+
+
+def rrr_z_pomeru(pomer: float) -> float:
+    """
+    RRR do formuláře z poměru SL:PT (typicky z konfigurace) - opačný převod
+    k pomer_z_rrr. Zaokrouhluje se na dvě desetinná místa, aby v poli
+    nestál nekonečný rozvoj jako 3,3333.
+    """
+    return round(1.0 / pomer, 2) if pomer > 0 else pomer
+
+
 def level_text(
     druh: str,
     hodnota: float,
@@ -118,7 +138,8 @@ class FlowRequest:
     PT a SL se zadávají buď jako cena podkladu (výchozí), nebo jako zisk,
     resp. ztráta v USD na jeden opční kontrakt - o tom rozhodují přepínače
     pt_on_underlying a sl_on_underlying. Stačí zadat jednu z úrovní,
-    chybějící se dopočítá podle poměru SL:PT z konfigurace.
+    chybějící se dopočítá podle poměru SL:PT z formuláře (sl_to_pt_ratio),
+    nebo - není-li zadán - z konfigurace.
     """
 
     symbol: str
@@ -131,6 +152,9 @@ class FlowRequest:
     sl_on_underlying: bool = True
     # Připočtení spreadu k SL zadanému na opci - viz Flow.sl_spread_compensated
     sl_spread_compensated: bool = False
+    # Poměr SL:PT pro dopočet chybějící úrovně. None znamená "vzít
+    # z konfigurace" - formulář sem posílá hodnotu ze svého pole
+    sl_to_pt_ratio: float | None = None
 
 
 @dataclass

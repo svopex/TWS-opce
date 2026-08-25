@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tws_opce import calc
+from tws_opce.models import pomer_z_rrr, rrr_z_pomeru
 
 
 class TestSmerObchodu(unittest.TestCase):
@@ -38,6 +39,41 @@ class TestSmerObchodu(unittest.TestCase):
         self.assertEqual(calc.condition_directions("C"), (True, True, False))
         # PUT: vstup dolů, PT dolů, SL nahoru
         self.assertEqual(calc.condition_directions("P"), (False, False, True))
+
+
+class TestPrevoduRRR(unittest.TestCase):
+    """Převody mezi RRR ve formulářích a poměrem SL:PT v enginu."""
+
+    def test_rrr_dva_je_polovicni_pomer(self):
+        # RRR 2 = PT dvakrát dál než SL, tedy poměr SL:PT 0,5
+        self.assertAlmostEqual(pomer_z_rrr(2.0), 0.5)
+
+    def test_rrr_jedna_nechava_pomer_jedna(self):
+        self.assertAlmostEqual(pomer_z_rrr(1.0), 1.0)
+
+    def test_rrr_pod_jednou_da_pomer_nad_jednou(self):
+        # RRR 0,5 = SL dvakrát dál než PT
+        self.assertAlmostEqual(pomer_z_rrr(0.5), 2.0)
+
+    def test_pomer_zpet_na_rrr(self):
+        self.assertAlmostEqual(rrr_z_pomeru(0.5), 2.0)
+        self.assertAlmostEqual(rrr_z_pomeru(1.0), 1.0)
+
+    def test_rrr_z_pomeru_zaokrouhluje(self):
+        # 1/0,3 = 3,3333... - do pole patří zaokrouhlená hodnota
+        self.assertAlmostEqual(rrr_z_pomeru(0.3), 3.33)
+
+    def test_nekladna_hodnota_projde_beze_zmeny(self):
+        # Ošetření je na volajícím, převod jen nesmí spadnout na dělení nulou
+        self.assertEqual(pomer_z_rrr(0.0), 0.0)
+        self.assertEqual(rrr_z_pomeru(0.0), 0.0)
+
+    def test_rrr_dva_da_pt_dvakrat_dal_nez_sl(self):
+        # Ověření celého smyslu: vstup 100, SL 95 (5 bodů), RRR 2 -> PT 110
+        pomer = pomer_z_rrr(2.0)
+        self.assertAlmostEqual(calc.default_profit_target(100.0, 95.0, pomer), 110.0)
+        # A opačně: z PT 110 vyjde zpět SL 95
+        self.assertAlmostEqual(calc.default_stop_loss(100.0, 110.0, pomer), 95.0)
 
 
 class TestSpread(unittest.TestCase):

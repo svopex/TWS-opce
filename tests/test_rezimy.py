@@ -98,6 +98,36 @@ class TestZadaniNaOpci(ZakladRezimu):
         self.assertFalse(flow.sl_on_underlying)
         self.assertAlmostEqual(flow.stop_loss, 5.0)
 
+    async def test_pomer_ze_zadani_prebije_konfiguraci(self):
+        # Poměr z formuláře má přednost před konfigurací: SL = PT * 0,5
+        self.cfg.trading.sl_to_pt_ratio = 1.0
+        flow = await self.zaloz(False, False, 10.0, sl_to_pt_ratio=0.5)
+        self.assertAlmostEqual(flow.stop_loss, 5.0)
+
+    async def test_nezadany_pomer_bere_hodnotu_z_konfigurace(self):
+        # Prázdné pole formuláře (None) se vrací ke konfiguraci
+        self.cfg.trading.sl_to_pt_ratio = 0.25
+        flow = await self.zaloz(False, False, 10.0, sl_to_pt_ratio=None)
+        self.assertAlmostEqual(flow.stop_loss, 2.5)
+
+    async def test_nekladny_pomer_bere_hodnotu_z_konfigurace(self):
+        # Nula ani záporné číslo dopočet neunesou - platí konfigurace
+        self.cfg.trading.sl_to_pt_ratio = 0.25
+        flow = await self.zaloz(False, False, 10.0, sl_to_pt_ratio=0.0)
+        self.assertAlmostEqual(flow.stop_loss, 2.5)
+
+    async def test_pomer_ze_zadani_plati_i_na_podkladu(self):
+        # Na podkladu je poměr vzdálenost SL od vstupu: 3 body PT * 0,5
+        self.cfg.trading.sl_to_pt_ratio = 1.0
+        flow = await self.zaloz(True, True, 235.0, sl_to_pt_ratio=0.5)
+        self.assertAlmostEqual(flow.stop_loss, 230.5)
+
+    async def test_pomer_ze_zadani_dopocita_pt_ze_sl(self):
+        # Prvotní SL: PT je jeho podíl poměrem - 10 USD / 0,5 = 20 USD
+        self.cfg.trading.sl_to_pt_ratio = 1.0
+        flow = await self.zaloz(False, False, None, 10.0, sl_to_pt_ratio=0.5)
+        self.assertAlmostEqual(flow.profit_target, 20.0)
+
     async def test_zadany_sl_na_opci_ma_prednost(self):
         flow = await self.zaloz(False, False, 10.0, 7.0)
         self.assertAlmostEqual(flow.stop_loss, 7.0)

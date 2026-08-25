@@ -204,6 +204,11 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    `vstup ± |SL − vstup| / poměr`, na opci `SL / poměr`, ve smíšeném režimu
    přes cenu opce jako výše), prvotní PT = povinný je PT a dopočte se SL.
    Bez vstupní ceny dopočet neproběhne – úrovně se zrcadlí kolem vstupu.
+   Poměr se bere z pole **RRR (PT:SL)** pod přepínači režimů. Zadává se jako
+   poměr zisku ku riziku — *RRR 2* znamená, že PT je dvakrát dál než SL —
+   tedy obráceně než konfigurační `sl_to_pt_ratio`, ze kterého vychází
+   výchozí hodnota pole (`RRR = 1 / sl_to_pt_ratio`). Prázdné či nekladné
+   pole se vrací ke konfiguraci.
    Dopočítanou úroveň lze vždy přepsat ručně; **Přepočítat** ji spočítá
    znovu — je-li ale prvotní pole prázdné, počítá se naopak z toho vyplněného,
    aby zadání nezmizelo celé. K odeslání proto stačí vstupní cena a kterákoliv
@@ -465,7 +470,7 @@ Nad tabulkou se volí režim cíle, společný všem načteným pozicím:
   podkladu, spočítaná jako `vstup + (target_price − vstup) × %/100`. Při 100 %
   je to přesně cílová cena ze souboru, při 50 % půlka cesty k ní; znaménko
   rozdílu řeší směr, takže vzorec platí pro long i short. SL se dopočítá
-  rovněž **na podkladu** podle poměru `sl_to_pt_ratio` z konfigurace.
+  rovněž **na podkladu** podle pole *RRR (PT:SL)*.
 - **PT na opci v USD/ks** — PT je zisk na jedné opci v USD, společný
   všem pozicím, a SL je ztráta na opci podle téhož poměru. Cílová cena ze
   souboru se v tomto režimu nepoužívá.
@@ -501,7 +506,8 @@ se po nákupu založí rovnou rozdělené. Pozice s příliš malým množstvím
 nedostane (vyžaduje víc kontraktů, než je jeho velikost); obchod se přesto
 založí a důvod se objeví ve sloupci *Stav*.
 
-Vedle režimu se zadává **Max. spread [%]** (výchozí z konfigurace). Tlačítkem
+Vedle režimu se zadává **Max. spread [%]** a **RRR (PT:SL)** pro dopočet SL —
+*RRR 2* dá SL na polovině vzdálenosti PT. Obojí vychází z konfigurace. Tlačítkem
 **Přepočítat** se PT, SL i množství u všech dosud nezadaných pozic spočítají
 znovu; tlačítko ↻ v řádku přepočte jedinou pozici a **ponechá** v ní ručně
 upravené PT. Množství se určuje stejně jako v běžném formuláři — z riskované

@@ -21,7 +21,7 @@ from .config import AppConfig
 from .engine import FlowEngine, Preview
 from .ib_service import IBService
 from .importer import ImportedPosition
-from .models import PT_MULTIPLES, FlowRequest, cislo_text
+from .models import PT_MULTIPLES, FlowRequest, cislo_text, pomer_z_rrr, rrr_z_pomeru
 
 log = logging.getLogger(__name__)
 
@@ -263,6 +263,25 @@ class ImportDialog:
                 .classes("pole")
                 .props("outlined dense step=any")
             )
+            # RRR pro dopočet SL z PT u všech načtených pozic; mění se
+            # zřídka, výchozí hodnota vychází z konfigurace
+            self.rrr_input = (
+                ui.number(
+                    "RRR (PT:SL)",
+                    value=rrr_z_pomeru(self.cfg.trading.sl_to_pt_ratio),
+                    format="%g",
+                    min=0,
+                )
+                .classes("pole")
+                .props("outlined dense step=any")
+                .tooltip(
+                    "Poměr zisku ku riziku, kterým se z PT dopočítá SL: "
+                    "2 = PT je dvakrát dál než SL, 1 = obě stejně daleko. "
+                    "Výchozí hodnota vychází z konfigurace (převrácené "
+                    "trading.sl_to_pt_ratio), prázdné či nekladné pole "
+                    "se k ní vrací."
+                )
+            )
             ui.button("Přepočítat", on_click=lambda: self._priprav_vse()).props(
                 "outline"
             ).classes("tlacitko-vedle").tooltip(
@@ -500,6 +519,17 @@ class ImportDialog:
             else:
                 tlacitko.props(add="outline color=grey-7")
 
+    def _pomer(self) -> float | None:
+        """
+        Poměr SL:PT pro engine, odvozený z RRR v dialogu.
+
+        Dialog se ptá na RRR (kolikrát je PT dál než SL), engine počítá
+        s obrácenou hodnotou. Prázdné i nekladné pole vrací None - engine
+        pak použije hodnotu z konfigurace.
+        """
+        rrr = self._cislo(self.rrr_input.value)
+        return pomer_z_rrr(rrr) if rrr is not None and rrr > 0 else None
+
     def _sl_spread(self) -> bool:
         """Kompenzace SL o spread - uplatní se jen při SL zadaném na opci."""
         return bool(self.sl_spread_compensated.value) and self.rezim.value in REZIMY_NA_OPCI
@@ -712,6 +742,7 @@ class ImportDialog:
                 pt_on,
                 sl_on,
                 self._sl_spread(),
+                self._pomer(),
             )
         except Exception as exc:
             radek.preview = None
@@ -787,6 +818,7 @@ class ImportDialog:
         max_spread = self._cislo(self.spread_input.value)
         pt_on, sl_on = self._rezimy()
         sl_spread = self._sl_spread()
+        pomer = self._pomer()
 
         zalozeno = 0
         chyb = 0
@@ -815,6 +847,7 @@ class ImportDialog:
                     pt_on_underlying=pt_on,
                     sl_on_underlying=sl_on,
                     sl_spread_compensated=sl_spread,
+                    sl_to_pt_ratio=pomer,
                 )
                 try:
                     flow = await self.engine.start_flow(request)

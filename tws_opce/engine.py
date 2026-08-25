@@ -75,6 +75,9 @@ class Preview:
     # Režim zadání PT a SL (cena podkladu, nebo USD na kontrakt)
     pt_on_underlying: bool = True
     sl_on_underlying: bool = True
+    # Poměr SL:PT použitý k dopočtu chybějící úrovně - z formuláře,
+    # nebo (není-li zadán) z konfigurace
+    sl_to_pt_ratio: float = 1.0
     # Kompenzace spreadu u SL na opci a její odhadovaná velikost v USD
     # na kontrakt. Skutečná hodnota se určí až ze spreadu při nákupu,
     # náhled s odhadem počítá množství a hlídá strop prémie.
@@ -299,6 +302,7 @@ class FlowEngine:
         pt_on_underlying: bool = True,
         sl_on_underlying: bool = True,
         sl_spread_compensated: bool = False,
+        sl_to_pt_ratio: float | None = None,
     ) -> Preview:
         """
         Připraví zadání obchodu: načte cenu podkladu, určí typ opce, expiraci,
@@ -308,7 +312,8 @@ class FlowEngine:
         PT a SL jsou buď ceny podkladu, nebo - při vypnutém přepínači
         "na podkladu" - zisk, resp. ztráta v USD na jeden kontrakt. Stačí
         zadat jednu z úrovní: chybějící se dopočítá z poměru SL:PT
-        v konfiguraci (SL z PT, nebo PT ze SL).
+        (SL z PT, nebo PT ze SL). Poměr přebírá sl_to_pt_ratio z formuláře;
+        bez něj (None, nebo nekladná hodnota) platí hodnota z konfigurace.
 
         sl_spread_compensated připočte k SL na opci spread opce, aby zadaná
         hodnota odpovídala potřebnému pohybu trhu; náhled používá spread
@@ -329,6 +334,13 @@ class FlowEngine:
             sl_on_underlying=sl_on_underlying,
             # Kompenzace má smysl jen u SL zadaného na opci
             sl_spread_compensated=sl_spread_compensated and not sl_on_underlying,
+            # Nekladný poměr by dopočet rozbil (dělení nulou, obrácené znaménko),
+            # proto se v takovém případě sahá po hodnotě z konfigurace
+            sl_to_pt_ratio=(
+                sl_to_pt_ratio
+                if sl_to_pt_ratio is not None and sl_to_pt_ratio > 0
+                else self.cfg.trading.sl_to_pt_ratio
+            ),
         )
 
         # Odběry tržních dat zakládá příprava sama; nedoběhne-li (chyba,
@@ -725,7 +737,7 @@ class FlowEngine:
         referencni: _ReferenceOption | None,
     ) -> float:
         """
-        PT podle poměru SL:PT z konfigurace, když obchodník zadal jen SL.
+        PT podle zvoleného poměru SL:PT, když obchodník zadal jen SL.
 
         Ve stejném režimu je to prostý podíl: na podkladu vzdálenost SL od
         vstupu dělená poměrem (na opačnou stranu), na opci ztráta v USD
@@ -733,7 +745,7 @@ class FlowEngine:
         opce: buď se hledá úroveň podkladu, kde opce vydělá SL/poměr USD,
         nebo se ztráta na SL podkladu přepočte do USD a vydělí poměrem.
         """
-        pomer = self.cfg.trading.sl_to_pt_ratio
+        pomer = preview.sl_to_pt_ratio
         if preview.pt_on_underlying and preview.sl_on_underlying:
             return calc.default_profit_target(entry_price, stop_loss, pomer)
         if not preview.pt_on_underlying and not preview.sl_on_underlying:
@@ -775,7 +787,7 @@ class FlowEngine:
         self, preview: Preview, entry_price: float, profit_target: float, delta: float
     ) -> float:
         """
-        SL podle poměru SL:PT z konfigurace, když jej uživatel nezadal.
+        SL podle zvoleného poměru SL:PT, když jej uživatel nezadal.
 
         Ve stejném režimu jako PT jde o prostý násobek: na podkladu vzdálenost
         od vstupu, na opci zisk v USD. Při smíšeném režimu se zisk na PT
@@ -783,7 +795,7 @@ class FlowEngine:
         "Zisk na PT" (implikovaná volatilita z aktuální ceny opce); bez
         kotací lineárně přes deltu.
         """
-        pomer = self.cfg.trading.sl_to_pt_ratio
+        pomer = preview.sl_to_pt_ratio
         if preview.pt_on_underlying and preview.sl_on_underlying:
             return calc.default_stop_loss(entry_price, profit_target, pomer)
         if not preview.pt_on_underlying and not preview.sl_on_underlying:
@@ -1023,6 +1035,7 @@ class FlowEngine:
                 request.pt_on_underlying,
                 request.sl_on_underlying,
                 request.sl_spread_compensated,
+                request.sl_to_pt_ratio,
             )
 
             # Propásnutý vstup se hlásí dřív než ostatní kontroly, jinak by
