@@ -217,6 +217,23 @@ def rezim_urovne(na_podkladu: bool) -> str:
     return MODE_UNDERLYING if na_podkladu else MODE_USD
 
 
+def format_countdown(sekundy: float) -> str:
+    """
+    Zbývající čas pro odpočty v hlavičce. Pod hodinu vyjde MM:SS, do dne
+    H:MM:SS a přes den se přidá počet dní (odpočet do otevření trhu běží
+    i přes víkend, takže může jít o desítky hodin).
+    """
+    celkem = max(0, int(sekundy))
+    dny, zbytek = divmod(celkem, 86400)
+    hodiny, zbytek = divmod(zbytek, 3600)
+    minuty, sek = divmod(zbytek, 60)
+    if dny:
+        return f"{dny} d {hodiny}:{minuty:02d}:{sek:02d}"
+    if hodiny:
+        return f"{hodiny}:{minuty:02d}:{sek:02d}"
+    return f"{minuty:02d}:{sek:02d}"
+
+
 class TradingUI:
     """Sestavuje a obsluhuje uživatelské rozhraní nad obchodním enginem."""
 
@@ -292,6 +309,9 @@ class TradingUI:
         with ui.header().classes("hlavicka"):
             ui.label("Obchodování opcí – TWS").classes("nazev")
             ui.space()
+            # Odpočet do otevření burzy - mimo obchodní hodiny
+            self.market_open_label = ui.label().classes("odpocet-otevreni")
+            self.market_open_label.set_visibility(False)
             # Odpočet do automatického uzavření obchodů před koncem burzy
             self.auto_close_label = ui.label().classes("odpocet-uzavreni")
             self.auto_close_label.set_visibility(False)
@@ -526,7 +546,7 @@ class TradingUI:
                         format="%g",
                         min=0,
                     )
-                    .classes("pole")
+                    .classes("pole-tretina")
                     .props("outlined dense step=any")
                     .tooltip(
                         "Poměr zisku ku riziku, kterým se z prvotní úrovně "
@@ -1635,10 +1655,21 @@ class TradingUI:
         """Aktualizuje stav spojení, tabulku obchodů a log."""
         self._refresh_warning()
         self._refresh_status()
+        self._refresh_market_open()
         self._refresh_auto_close()
         self._refresh_table()
         self._refresh_log()
         self._refresh_config()
+
+    def _refresh_market_open(self) -> None:
+        """Odpočet do otevření burzy v hlavičce - během seance se skrývá."""
+        sekundy = self.engine.market_open_seconds()
+        if sekundy is None:
+            self.market_open_label.set_visibility(False)
+            return
+
+        self.market_open_label.set_visibility(True)
+        self.market_open_label.set_text(f"Otevření trhu za {format_countdown(sekundy)}")
 
     def _refresh_auto_close(self) -> None:
         """Odpočet do automatického uzavření obchodů v hlavičce."""
@@ -1653,12 +1684,9 @@ class TradingUI:
             self.auto_close_label.classes(add="odpocet-aktivni")
             return
 
-        # Zbývající čas ve tvaru H:MM:SS, pod hodinu jen MM:SS
-        celkem = int(sekundy)
-        hodiny, zbytek = divmod(celkem, 3600)
-        minuty, sek = divmod(zbytek, 60)
-        cas = f"{hodiny}:{minuty:02d}:{sek:02d}" if hodiny else f"{minuty:02d}:{sek:02d}"
-        self.auto_close_label.set_text(f"Automatické uzavření za {cas}")
+        self.auto_close_label.set_text(
+            f"Automatické uzavření všech pozic za {format_countdown(sekundy)}"
+        )
         self.auto_close_label.classes(remove="odpocet-aktivni")
 
     def _refresh_warning(self) -> None:

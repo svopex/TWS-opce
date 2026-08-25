@@ -119,6 +119,9 @@ class TradingConfig:
     # Časová zóna burzy - uzavírání se časuje v ní, takže posuny letního
     # a zimního času vůči místnímu času počítače nehrají roli
     exchange_timezone: str = "America/New_York"
+    # Čas otevření burzy ve formátu HH:MM (v časové zóně burzy).
+    # Slouží jen k odpočtu v hlavičce, obchodování neovlivňuje.
+    exchange_open_time: str = "09:30"
     # Čas zavření burzy ve formátu HH:MM (v časové zóně burzy).
     # Zkrácené obchodní dny (např. před svátky) aplikace nezná.
     exchange_close_time: str = "16:00"
@@ -280,16 +283,17 @@ def validate_config(cfg: AppConfig) -> None:
             f"trading.exchange_timezone '{cfg.trading.exchange_timezone}' není platná časová zóna"
         )
 
-    # Čas zavření burzy musí mít tvar HH:MM
-    try:
-        hodina, minuta = (int(cast) for cast in cfg.trading.exchange_close_time.split(":"))
-        if not (0 <= hodina <= 23 and 0 <= minuta <= 59):
-            raise ValueError
-    except (ValueError, AttributeError):
-        problems.append(
-            f"trading.exchange_close_time '{cfg.trading.exchange_close_time}' "
-            f"musí mít tvar HH:MM"
-        )
+    # Časy otevření a zavření burzy musí mít tvar HH:MM
+    for nazev, hodnota in (
+        ("exchange_open_time", cfg.trading.exchange_open_time),
+        ("exchange_close_time", cfg.trading.exchange_close_time),
+    ):
+        try:
+            hodina, minuta = (int(cast) for cast in hodnota.split(":"))
+            if not (0 <= hodina <= 23 and 0 <= minuta <= 59):
+                raise ValueError
+        except (ValueError, AttributeError):
+            problems.append(f"trading.{nazev} '{hodnota}' musí mít tvar HH:MM")
     if cfg.trading.exit_order_type not in EXIT_ORDER_TYPES:
         problems.append(
             f"trading.exit_order_type musí být jedna z {EXIT_ORDER_TYPES}, "

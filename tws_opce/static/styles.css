@@ -30,6 +30,13 @@
   color: #fee2e2;
 }
 
+/* Odpočet do otevření burzy - zobrazuje se mimo obchodní hodiny */
+.odpocet-otevreni {
+  color: #cbd5e1;
+  font-size: 0.8rem;
+  margin-right: 12px;
+}
+
 /* Odpočet do automatického uzavření obchodů před koncem burzy */
 .odpocet-uzavreni {
   color: #cbd5e1;
@@ -186,6 +193,13 @@
 .pole {
   flex: 1 1 45%;
   min-width: 150px;
+}
+
+/* Užší pole pro krátké hodnoty (RRR) - v řádku stojí samo, proto by se
+   jinak natáhlo přes celou šířku panelu */
+.pole-tretina {
+  flex: 0 1 33%;
+  min-width: 120px;
 }
 
 .pole-ticker {

@@ -1873,6 +1873,32 @@ class TestAutomatickehoUzavreni(ZakladTestu):
         self.cfg.trading.auto_close_enabled = False
         self.assertIsNone(self.engine.auto_close_seconds())
 
+    async def test_odpocet_do_otevreni_trhu(self):
+        # Hodinu před otevřením zbývá 3600 sekund
+        self.burza(8, 30)
+        self.assertAlmostEqual(self.engine.market_open_seconds(), 3600.0)
+
+        # Během seance se odpočet nezobrazuje
+        self.burza(11, 0)
+        self.assertIsNone(self.engine.market_open_seconds())
+
+        # Po zavření se míří na otevření následujícího obchodního dne
+        self.burza(17, 30)
+        self.assertAlmostEqual(self.engine.market_open_seconds(), 16 * 3600.0)
+
+        # Pátek 21. 8. 2026 po zavření - nejbližší otevření je až v pondělí
+        self.burza(17, 30, den=21)
+        self.assertAlmostEqual(self.engine.market_open_seconds(), 64 * 3600.0)
+
+        # Sobota 22. 8. 2026 dopoledne - stále se čeká na pondělní otevření
+        self.burza(9, 0, den=22)
+        self.assertAlmostEqual(self.engine.market_open_seconds(), (48 + 0.5) * 3600.0)
+
+        # Odpočet nezávisí na automatickém uzavírání obchodů
+        self.burza(8, 30)
+        self.cfg.trading.auto_close_enabled = False
+        self.assertAlmostEqual(self.engine.market_open_seconds(), 3600.0)
+
     async def test_obchody_se_pred_zavrenim_uzavrou(self):
         cekajici = await self.zaloz_call()
         drzeny = await self.zaloz_put()

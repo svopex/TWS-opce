@@ -263,6 +263,10 @@ trading:
   # a zimního času vůči místnímu času počítače nehrají roli
   exchange_timezone: "America/New_York"
 
+  # Čas otevření burzy ve formátu HH:MM (v časové zóně burzy).
+  # Slouží jen k odpočtu v hlavičce, obchodování neovlivňuje.
+  exchange_open_time: "09:30"
+
   # Čas zavření burzy ve formátu HH:MM (v časové zóně burzy).
   # Zkrácené obchodní dny (např. před svátky) aplikace nezná.
   exchange_close_time: "16:00"

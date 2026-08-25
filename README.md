@@ -414,6 +414,15 @@ počítače nehrají roli. Čas zavření burzy určuje `trading.exchange_close_
 (výchozí 16:00 newyorského času); zkrácené obchodní dny před svátky aplikace
 nezná. Funkci lze vypnout pomocí `trading.auto_close_enabled: false`.
 
+### Odpočet do otevření trhu
+
+Mimo obchodní hodiny ukazuje hlavička odpočet do nejbližšího otevření burzy.
+Čas otevření určuje `trading.exchange_open_time` (výchozí 09:30 newyorského
+času) a počítá se ve stejné časové zóně jako uzavírání. Po zavření a o víkendu
+odpočet míří na otevření následujícího obchodního dne, proto se u delších pauz
+vypisuje i počet dní; svátky aplikace nezná. Během seance je odpočet skrytý
+a nastavení nijak neovlivňuje obchodování.
+
 ### Stavy obchodu
 
 | Stav | Význam |
