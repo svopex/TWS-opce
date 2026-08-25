@@ -15,6 +15,37 @@ from tws_opce.engine import FlowEngine
 from tws_opce.import_dialog import ImportDialog, RadekPozice
 from tws_opce.models import Flow, FlowState
 
+
+class Zaskrtavatko:
+    """Náhrada zaškrtávátka - test nepotřebuje vykreslené rozhraní."""
+
+    def __init__(self, value: bool) -> None:
+        self.value = value
+        self.enabled = True
+
+    def set_value(self, value: bool) -> None:
+        self.value = value
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+
+class Pole:
+    """Náhrada číselného pole řádku (množství)."""
+
+    def __init__(self, value: float | None = None) -> None:
+        self.value = value
+
+
+class Popisek:
+    """Náhrada popisku, do kterého se zapisuje souhrn pod tabulkou."""
+
+    def __init__(self) -> None:
+        self.text = ""
+
+    def set_text(self, text: str) -> None:
+        self.text = text
+
 # Zkrácená obdoba skutečného souboru: ke každému obchodu je starší varianta
 # bez plusu (ta se má přeskočit) i „plus" položka, ze které se čerpá
 SOUBOR = """
@@ -314,6 +345,32 @@ class TestZamekRadku(unittest.TestCase):
         radek = self.radek(None)
         text, _ = self.dialog._stav_zadaneho(radek)
         self.assertIn("už není v přehledu", text)
+
+    def test_otevreni_zaskrtne_vse_krome_zamcenych(self):
+        # Formulář se otevírá s nabídkou zadat vše, co zadat lze
+        volny = self.radek(FlowState.ARMED)
+        volny.vybrano = Zaskrtavatko(False)
+        volny.qty_input = Pole(2)
+        zamceny = RadekPozice(pozice=self.pozice, flow_id="TSLA-1")
+        zamceny.vybrano = Zaskrtavatko(True)
+        zamceny.qty_input = Pole(3)
+        self.engine.flows["TSLA-1"] = Flow(
+            id="TSLA-1",
+            symbol="TSLA",
+            entry_price=346.9,
+            profit_target=339.27,
+            stop_loss=350.0,
+            quantity=2,
+            max_spread_pct=5.0,
+            state=FlowState.EXIT_ARMED,
+        )
+        self.dialog.radky = [volny, zamceny]
+        self.dialog.souhrn_label = Popisek()
+        self.dialog.engine._live_account_size = 6000.0
+
+        self.dialog._vyber_vse()
+        self.assertTrue(volny.vybrano.value)
+        self.assertFalse(zamceny.vybrano.value)
 
     def test_poznamka_o_nezapnutem_runneru_prezije_obnovu(self):
         radek = self.radek(FlowState.ARMED)

@@ -336,6 +336,10 @@ class ImportDialog:
     def open(self) -> None:
         """Otevře dialog a připomene stav spojení s TWS."""
         self.dialog.open()
+        # Otevření formuláře nabídne k zadání vše, co zadat lze. Zaškrtnutí
+        # sundané dřívějším zadáním nebo propásnutým vstupem se tím obnoví,
+        # takže se dá celý soubor poslat do trhu znovu jedním tlačítkem
+        self._vyber_vse()
         if not self.ib.connected:
             ui.notify(
                 "Není navázáno spojení s TWS - pozice se načtou, ale SL "
@@ -861,6 +865,17 @@ class ImportDialog:
             radek.obnovit_button.set_enabled(not zamceno)
             if zamceno and radek.vybrano.value:
                 radek.vybrano.set_value(False)
+
+    def _vyber_vse(self) -> None:
+        """
+        Zaškrtne všechny řádky, které lze zadat. Zamčený řádek (obchod už
+        drží pozici) zůstává odškrtnutý - zadat se stejně nedá.
+        """
+        if not self.radky:
+            return
+        for radek in self.radky:
+            radek.vybrano.set_value(not self._zamceno(radek))
+        self._obnov_souhrn()
 
     def refresh(self) -> None:
         """

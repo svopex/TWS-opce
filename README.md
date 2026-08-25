@@ -598,6 +598,12 @@ Zámek se přepočítává průběžně, dokud je dialog otevřený. Vyplní-li 
 řádek se zamkne sám; smažete-li obchod z monitoringu, sám se odemkne — soubor
 kvůli tomu není potřeba načítat znovu.
 
+Každé otevření formuláře navíc **zaškrtne všechny řádky, které lze zadat**, takže
+se dá celý soubor poslat do trhu znovu jedním tlačítkem. Obnoví se tím i zaškrtnutí
+sundané dřívějším zadáním nebo propásnutým vstupem; zamčený řádek zůstává
+odškrtnutý. U propásnutého vstupu zadání odmítne až engine a důvod zapíše
+do sloupce *Stav* — obchod na opačnou stranu tedy nevznikne.
+
 ## Velikost účtu
 
 Riskovaná částka se počítá z velikosti účtu, kterou lze zadat dvěma způsoby:
