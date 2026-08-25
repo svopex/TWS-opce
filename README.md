@@ -575,9 +575,28 @@ jej lze přesto zadat.
 
 Tlačítko **Zadat vybrané pozice do trhu** založí obchody postupně, každý stejným
 způsobem jako ruční zadání formulářem — včetně všech kontrol. Chyba jedné pozice
-ostatní nezastaví, zapíše se do jejího sloupce *Stav*; už založený řádek se
-podruhé nezadá. Bez spojení s TWS se pozice načtou a PT vyplní (je to čistý
-výpočet ze zadání), SL ani množství se ale dopočítat nedají.
+ostatní nezastaví, zapíše se do jejího sloupce *Stav*. Bez spojení s TWS se pozice
+načtou a PT vyplní (je to čistý výpočet ze zadání), SL ani množství se ale
+dopočítat nedají.
+
+### Opakované zadání téže pozice
+
+Řádek si obchod, který z něj vznikl, pamatuje a jeho sloupec *Stav* pak ukazuje
+**živý stav toho obchodu** (`Zadáno AMZN-5 – Před nákupem`). Zaškrtnutí se po
+zadání sundá, aby druhý stisk tlačítka tentýž řádek neposlal do trhu podruhé —
+zaškrtnout jej ale lze znovu a pozici tím **přepsat**. Platí přitom stejné
+pravidlo jako ve formuláři zadání:
+
+| Stav založeného obchodu | Řádek |
+| --- | --- |
+| Připravuje se, Před nákupem, Blokováno spreadem, Čeká na kotace | lze zadat znovu — engine původní obchod zruší, odstraní z přehledu a nahradí novým (nastavení runneru se přenese) |
+| Nakoupeno, Nakoupeno – výstup aktivní, Uzavírá se | **zamčeno** — obchod drží pozici, nejprve jej zrušte v monitoringu |
+| Uzavřeno, Zrušeno, Vstup propásnut, Chyba | lze zadat znovu — vznikne nový obchod, ten původní zůstává v přehledu |
+| smazán z monitoringu | lze zadat znovu |
+
+Zámek se přepočítává průběžně, dokud je dialog otevřený. Vyplní-li se nákup,
+řádek se zamkne sám; smažete-li obchod z monitoringu, sám se odemkne — soubor
+kvůli tomu není potřeba načítat znovu.
 
 ## Velikost účtu
 

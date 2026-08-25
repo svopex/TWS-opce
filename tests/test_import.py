@@ -8,7 +8,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests.fake_ib import FakeIBService
 from tws_opce import importer
+from tws_opce.config import AppConfig
+from tws_opce.engine import FlowEngine
+from tws_opce.import_dialog import ImportDialog, RadekPozice
+from tws_opce.models import Flow, FlowState
 
 # Zkrácená obdoba skutečného souboru: ke každému obchodu je starší varianta
 # bez plusu (ta se má přeskočit) i „plus" položka, ze které se čerpá
@@ -221,6 +226,101 @@ class TestSkutecnySoubor(unittest.TestCase):
         self.assertEqual(vysledek.warnings, [])
         # Směry vycházejí z polohy cíle vůči vstupu
         self.assertEqual([p.right for p in vysledek.positions], ["C", "C", "P", "P"])
+
+
+class TestZamekRadku(unittest.TestCase):
+    """
+    Kdy lze řádek importního dialogu zadat znovu (přepsat obchod).
+
+    Zámek drží jedině obchod s otevřenou pozicí - čekající na vstup engine
+    při novém zadání sám nahradí a ukončený už nepřekáží.
+    """
+
+    def setUp(self) -> None:
+        cfg = AppConfig()
+        cfg.state.enabled = False
+        self.engine = FlowEngine(cfg, FakeIBService(cfg))
+        # Dialog se nevykresluje - zámek se ptá jen na engine a id obchodu
+        self.dialog = ImportDialog(cfg, self.engine, self.engine.ib, None)
+        self.pozice = importer.ImportedPosition(
+            key="AMZN Long+", symbol="AMZN", entry_price=266.4, target_price=269.33
+        )
+
+    def radek(self, stav: FlowState | None) -> RadekPozice:
+        """Řádek se založeným obchodem v daném stavu; None = obchod v přehledu není."""
+        radek = RadekPozice(pozice=self.pozice, flow_id="AMZN-1")
+        if stav is not None:
+            self.engine.flows["AMZN-1"] = Flow(
+                id="AMZN-1",
+                symbol="AMZN",
+                entry_price=266.4,
+                profit_target=269.33,
+                stop_loss=265.0,
+                quantity=2,
+                max_spread_pct=5.0,
+                state=stav,
+            )
+        return radek
+
+    def test_nezadany_radek_neni_zamceny(self):
+        self.assertFalse(self.dialog._zamceno(RadekPozice(pozice=self.pozice)))
+
+    def test_obchod_cekajici_na_vstup_lze_prepsat(self):
+        # Tyhle stavy engine při novém zadání sám zruší a nahradí
+        for stav in (
+            FlowState.NEW,
+            FlowState.ARMED,
+            FlowState.SPREAD_BLOCKED,
+            FlowState.NO_QUOTES,
+        ):
+            with self.subTest(stav=stav):
+                self.assertFalse(self.dialog._zamceno(self.radek(stav)))
+
+    def test_obchod_s_pozici_je_zamceny(self):
+        for stav in (FlowState.FILLED, FlowState.EXIT_ARMED, FlowState.CLOSING):
+            with self.subTest(stav=stav):
+                self.assertTrue(self.dialog._zamceno(self.radek(stav)))
+
+    def test_ukonceny_obchod_uz_neprekazi(self):
+        for stav in (
+            FlowState.CLOSED,
+            FlowState.CANCELLED,
+            FlowState.MISSED,
+            FlowState.ERROR,
+        ):
+            with self.subTest(stav=stav):
+                self.assertFalse(self.dialog._zamceno(self.radek(stav)))
+
+    def test_obchod_smazany_z_prehledu_radek_odemkne(self):
+        # Přesně situace po tlačítku „Zrušit a smazat vše"
+        radek = self.radek(FlowState.EXIT_ARMED)
+        self.assertTrue(self.dialog._zamceno(radek))
+        self.engine.flows.clear()
+        self.assertFalse(self.dialog._zamceno(radek))
+
+    def test_popis_stavu_sleduje_obchod(self):
+        radek = self.radek(FlowState.EXIT_ARMED)
+        text, trida = self.dialog._stav_zadaneho(radek)
+        self.assertIn("Nakoupeno – výstup aktivní", text)
+        self.assertEqual(trida, "stav-import-ok")
+
+    def test_ukonceny_obchod_pozve_k_novemu_zadani(self):
+        radek = self.radek(FlowState.CLOSED)
+        text, trida = self.dialog._stav_zadaneho(radek)
+        self.assertIn("lze zadat znovu", text)
+        self.assertEqual(trida, "stav-import-varovani")
+
+    def test_smazany_obchod_se_pozna_z_popisu(self):
+        radek = self.radek(None)
+        text, _ = self.dialog._stav_zadaneho(radek)
+        self.assertIn("už není v přehledu", text)
+
+    def test_poznamka_o_nezapnutem_runneru_prezije_obnovu(self):
+        radek = self.radek(FlowState.ARMED)
+        radek.poznamka = "runner nezapnut: málo kontraktů"
+        text, trida = self.dialog._stav_zadaneho(radek)
+        self.assertIn("runner nezapnut", text)
+        self.assertEqual(trida, "stav-import-varovani")
 
 
 if __name__ == "__main__":

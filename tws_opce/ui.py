@@ -1662,8 +1662,10 @@ class TradingUI:
         self._refresh_table()
         self._refresh_log()
         self._refresh_config()
-        # Otevřený přehled výsledků tiká živě spolu s tabulkou
+        # Otevřené popupy tikají živě spolu s tabulkou: přehled výsledků
+        # i importní dialog, kterému se tím obnovují zámky zadaných řádků
         self.report_dialog.refresh()
+        self.import_dialog.refresh()
 
     def _refresh_market_open(self) -> None:
         """Odpočet do otevření burzy v hlavičce - během seance se skrývá."""

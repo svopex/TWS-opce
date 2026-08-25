@@ -94,11 +94,19 @@ class RadekPozice:
     preview: Preview | None = None
     # Odhad nákupní ceny opce, ze kterého vyšel PT zadaný procentem prémie
     premie: float | None = None
-    # Obchod už byl založen; řádek se podruhé nezadává
-    zadano: bool = False
+    # Id obchodu, který z řádku vznikl; prázdné, dokud se nezadal. Podle
+    # stavu tohoto obchodu se pozná, zda jde řádek zadat znovu
+    flow_id: str = ""
+    # Doplňující poznámka k založenému obchodu (třeba nezapnutý runner),
+    # kterou obnovovaný popis stavu nesmí zahodit
+    poznamka: str = ""
+    # Stav řádku právě popisuje založený obchod a obnovovací smyčka jej drží
+    # aktuální; jakýkoliv jiný zápis do stavu tuto značku sundá
+    stav_z_obchodu: bool = False
 
     def stav(self, text: str, trida: str = "") -> None:
         """Zapíše stav řádku a obarví jej podle druhu sdělení."""
+        self.stav_z_obchodu = False
         self.stav_label.set_text(text)
         self.stav_label.classes(
             remove="stav-import-ok stav-import-chyba stav-import-varovani",
@@ -350,7 +358,7 @@ class ImportDialog:
         # Úrovně z předchozího režimu mají jiný význam, proto se pole vyprázdní
         if prepocitat and self.radky:
             for radek in self.radky:
-                if not radek.zadano:
+                if not self._zamceno(radek):
                     radek.pt_input.set_value(None)
                     radek.sl_input.set_value(None)
                     radek.premie = None
@@ -499,13 +507,13 @@ class ImportDialog:
 
     def _nastav_runner(self, hodnota: str) -> None:
         """
-        Zapamatuje výchozí volbu runneru a přenese ji do všech dosud
-        nezadaných řádků; u založených obchodů už by neměla co změnit.
+        Zapamatuje výchozí volbu runneru a přenese ji do všech řádků, které
+        lze zadat; u zamčeného obchodu s pozicí už by neměla co změnit.
         """
         self.runner_value = hodnota
         self._zvyrazni_runner()
         for radek in self.radky:
-            if not radek.zadano and radek.runner_select is not None:
+            if not self._zamceno(radek) and radek.runner_select is not None:
                 radek.runner_select.set_value(hodnota)
 
     def _zvyrazni_runner(self) -> None:
@@ -609,7 +617,7 @@ class ImportDialog:
                 "Není navázáno spojení s TWS - doplní se jen PT.", type="warning"
             )
 
-        cekajici = [radek for radek in self.radky if not radek.zadano]
+        cekajici = [radek for radek in self.radky if not self._zamceno(radek)]
         celkem = len(cekajici)
         try:
             for poradi, radek in enumerate(cekajici, 1):
@@ -626,7 +634,7 @@ class ImportDialog:
         Přepočte jediný řádek a ponechá v něm ručně upravené PT.
         Slouží tlačítku v řádku po ruční změně cíle.
         """
-        if radek.zadano:
+        if self._zamceno(radek):
             return
         if not self.ib.connected:
             ui.notify("Není navázáno spojení s TWS.", type="negative")
@@ -790,9 +798,92 @@ class ImportDialog:
         else:
             radek.stav(f"Připraveno{zaklad}", "stav-import-ok")
 
+    def _zamceno(self, radek: RadekPozice) -> bool:
+        """
+        True, pokud řádek nelze zadat znovu.
+
+        Zámek drží jedině obchod, který z řádku vznikl a už drží (nebo právě
+        uzavírá) pozici - ten by nové zadání muselo zrušit i s pozicí, což
+        engine zakazuje. Obchod čekající na vstup engine při novém zadání sám
+        nahradí, ukončený už nepřekáží a smazaný z přehledu neexistuje.
+        """
+        if not radek.flow_id:
+            return False
+        flow = self.engine.flows.get(radek.flow_id)
+        if flow is None:
+            return False
+        return flow.state.is_active and not flow.state.is_before_entry
+
+    def _stav_zadaneho(self, radek: RadekPozice) -> tuple[str, str]:
+        """
+        Popis a barva stavu řádku, ze kterého už vznikl obchod.
+        Text sleduje živý stav obchodu, aby bylo vidět, proč řádek jde
+        (nebo nejde) zadat znovu.
+        """
+        flow = self.engine.flows.get(radek.flow_id)
+        if flow is None:
+            return (
+                f"Obchod {radek.flow_id} už není v přehledu - lze zadat znovu.",
+                "stav-import-varovani",
+            )
+
+        popis_runneru = ""
+        if flow.runner_active:
+            nasobek = flow.runner_multiple
+            popis_runneru = f", runner {flow.runner_quantity} ks"
+            if nasobek is not None:
+                popis_runneru += f" na {nasobek:g}×"
+        text = f"Zadáno {flow.id} – {flow.state.label}{popis_runneru}"
+        if radek.poznamka:
+            return f"{text}; {radek.poznamka}", "stav-import-varovani"
+        if flow.state.is_active:
+            return text, "stav-import-ok"
+        return f"{text} - lze zadat znovu.", "stav-import-varovani"
+
+    def _zapis_stav_obchodu(self, radek: RadekPozice) -> None:
+        """
+        Zapíše do stavu řádku živý popis založeného obchodu a označí stav
+        jako obchodem řízený - obnova jej pak drží aktuální.
+        """
+        text, trida = self._stav_zadaneho(radek)
+        radek.stav(text, trida)
+        radek.stav_z_obchodu = True
+
+    def _obnov_zamky(self) -> None:
+        """
+        Zpřístupní, nebo zamkne řádky podle stavu obchodů, které z nich
+        vznikly. Zamčený řádek se zároveň odškrtne, aby nezůstal ve výběru
+        k zadání - pozice se mohla nakoupit až po jeho zaškrtnutí.
+        """
+        for radek in self.radky:
+            zamceno = self._zamceno(radek)
+            radek.vybrano.set_enabled(not zamceno)
+            radek.obnovit_button.set_enabled(not zamceno)
+            if zamceno and radek.vybrano.value:
+                radek.vybrano.set_value(False)
+
+    def refresh(self) -> None:
+        """
+        Udrží otevřený dialog v souladu se skutečností - stav založených
+        obchodů, zámky řádků i souhrn pod tabulkou. Volá se z periodické
+        smyčky rozhraní; zavřený dialog se přeskakuje.
+        """
+        if not self.dialog.value or not self.radky:
+            return
+
+        for radek in self.radky:
+            if radek.flow_id and radek.stav_z_obchodu:
+                self._zapis_stav_obchodu(radek)
+        self._obnov_zamky()
+        self._obnov_souhrn()
+
     def _obnov_souhrn(self) -> None:
         """Souhrn pod tabulkou - kolik pozic a kontraktů se chystá do trhu."""
-        vybrane = [radek for radek in self.radky if radek.vybrano.value and not radek.zadano]
+        vybrane = [
+            radek
+            for radek in self.radky
+            if radek.vybrano.value and not self._zamceno(radek)
+        ]
         kontrakty = sum(int(self._cislo(radek.qty_input.value) or 0) for radek in vybrane)
         self.souhrn_label.set_text(
             f"K zadání {len(vybrane)} pozic, celkem {kontrakty} kontraktů | "
@@ -810,7 +901,11 @@ class ImportDialog:
         formulář. Chyba jedné pozice ostatní nezastaví, zapíše se do jejího
         stavu; už založený řádek se podruhé nezadává.
         """
-        vybrane = [radek for radek in self.radky if radek.vybrano.value and not radek.zadano]
+        vybrane = [
+            radek
+            for radek in self.radky
+            if radek.vybrano.value and not self._zamceno(radek)
+        ]
         if not vybrane:
             ui.notify("Není vybrána žádná pozice k zadání.", type="warning")
             return
@@ -856,39 +951,29 @@ class ImportDialog:
                     chyb += 1
                     continue
 
-                # Založený obchod se z dialogu už nesmí zadat podruhé
-                radek.zadano = True
+                # Řádek si založený obchod zapamatuje - podle jeho stavu se
+                # pozná, zda jde zadat znovu. Zaškrtnutí se sundá, aby druhý
+                # stisk tlačítka tentýž řádek neposlal do trhu podruhé
+                radek.flow_id = flow.id
+                radek.poznamka = ""
                 radek.vybrano.set_value(False)
-                radek.vybrano.set_enabled(False)
-                radek.obnovit_button.set_enabled(False)
 
                 # Runner se zapíná až na hotovém obchodu. Nezdaří-li se
                 # (typicky málo kontraktů), obchod běží dál - jen se to připíše
                 # do stavu, aby to nezapadlo
-                popis_runneru = ""
                 nasobek = runner_nasobek(radek.runner_select.value)
                 if nasobek is not None:
                     try:
                         await self.engine.set_runner(flow.id, nasobek)
                     except Exception as exc:
-                        radek.stav(
-                            f"Zadáno {flow.id} – {flow.state.label}; runner nezapnut: {exc}",
-                            "stav-import-varovani",
-                        )
-                        zalozeno += 1
-                        continue
-                    popis_runneru = (
-                        f", runner {flow.runner_quantity} ks na {nasobek:g}×"
-                    )
+                        radek.poznamka = f"runner nezapnut: {exc}"
 
-                radek.stav(
-                    f"Zadáno {flow.id} – {flow.state.label}{popis_runneru}",
-                    "stav-import-ok",
-                )
+                self._zapis_stav_obchodu(radek)
                 zalozeno += 1
         finally:
             self._set_loading(False)
 
+        self._obnov_zamky()
         self._obnov_souhrn()
         if self.on_created:
             self.on_created()
