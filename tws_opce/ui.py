@@ -173,18 +173,43 @@ def fmt(value: float | None, digits: int = 2, suffix: str = "") -> str:
     return f"{value:,.{digits}f}{suffix}".replace(",", " ")
 
 
-# Popisky polí PT a SL podle režimu zadání (na podkladu / na opci)
-PT_LABELS = {True: "PT na podkladu", False: "PT na opci [USD/ks]"}
-SL_LABELS = {True: "SL na podkladu", False: "SL na opci [USD/ks]"}
+# Režimy zadání úrovně PT a SL. Podklad je cena podkladu hlídaná podmíněným
+# příkazem, zbylé dva jsou tatáž úroveň na opci - jednou zapsaná přímo v USD
+# na kontrakt, podruhé podílem ze zaplacené prémie. Procento je jen jednotka
+# formuláře: před odesláním se z ceny opce převede na USD, takže engine i stav
+# obchodu pracují s USD stejně jako dosud.
+MODE_UNDERLYING = "underlying"
+MODE_USD = "usd"
+MODE_PREMIUM = "premium"
+
+# Režimy, ve kterých úroveň leží na opci
+MODES_ON_OPTION = (MODE_USD, MODE_PREMIUM)
+
+# Popisky polí PT a SL podle režimu zadání
+PT_LABELS = {
+    MODE_UNDERLYING: "PT na podkladu",
+    MODE_USD: "PT na opci [USD/ks]",
+    MODE_PREMIUM: "PT na opci [% prémie]",
+}
+SL_LABELS = {
+    MODE_UNDERLYING: "SL na podkladu",
+    MODE_USD: "SL na opci [USD/ks]",
+    MODE_PREMIUM: "SL na opci [% prémie]",
+}
 
 
-def popisek_urovne(druh: str, na_podkladu: bool) -> str:
+def popisek_urovne(druh: str, rezim: str) -> str:
     """
     Popisek pole PT ('pt') nebo SL ('sl') podle režimu. Která z úrovní se
     dopočítává (a je tedy nepovinná), říká přepínač prvotní úrovně pod poli
     a napovídá i umístění pole - zadávaná úroveň stojí vždy vedle vstupu.
     """
-    return (PT_LABELS if druh == "pt" else SL_LABELS)[na_podkladu]
+    return (PT_LABELS if druh == "pt" else SL_LABELS)[rezim]
+
+
+def rezim_urovne(na_podkladu: bool) -> str:
+    """Režim odpovídající uloženému příznaku obchodu (ten procento nezná)."""
+    return MODE_UNDERLYING if na_podkladu else MODE_USD
 
 
 class TradingUI:
@@ -215,6 +240,16 @@ class TradingUI:
         self._preview_task: asyncio.Task | None = None
         # Ticker, ke kterému patří hodnoty ve formuláři
         self.last_symbol: str | None = None
+        # Odhad nákupní ceny opce z posledního náhledu a ticker, ke kterému
+        # patří. Z něj se převádějí úrovně zadané procentem prémie na USD
+        # na kontrakt; None znamená, že převod zatím nelze provést
+        self.premium_estimate: float | None = None
+        self.premium_symbol: str | None = None
+        # Prémie, kterou poslední příprava k převodu skutečně použila. Zpětný
+        # převod do procent i odeslání musí vycházet z téže hodnoty - jinak by
+        # se PT a SL rozešly, kdykoliv příprava vybere jiný strike (a s ním
+        # jinou cenu opce), než z jakého se procenta převáděla
+        self.premium_used: float | None = None
         # Naposledy zobrazené pozice bez dozoru; None znamená, že pruh ještě nebyl
         # vykreslen - prázdná množina je platný stav a nesmí se s tím zaměnit
         self.last_unmanaged: set[int] | None = None
@@ -326,7 +361,7 @@ class TradingUI:
                 )
                 self.pt_input = (
                     ui.number(
-                        popisek_urovne("pt", self.cfg.trading.pt_on_underlying),
+                        popisek_urovne("pt", rezim_urovne(self.cfg.trading.pt_on_underlying)),
                         format="%.2f",
                     )
                     .classes("pole")
@@ -334,7 +369,7 @@ class TradingUI:
                 )
                 self.sl_input = (
                     ui.number(
-                        popisek_urovne("sl", self.cfg.trading.sl_on_underlying),
+                        popisek_urovne("sl", rezim_urovne(self.cfg.trading.sl_on_underlying)),
                         format="%.2f",
                     )
                     .classes("pole")
@@ -398,24 +433,28 @@ class TradingUI:
                 # Režim SL: na opci jde o ztrátu v USD na kontrakt, kterou
                 # realizuje stop-market příkaz přímo na cenu opce
                 with ui.column().classes("skupina-prepinacu"):
-                    self.sl_on_underlying = (
+                    self.sl_mode = (
                         ui.radio(
                             {
-                                True: "SL na podkladu (cena podkladu)",
-                                False: "SL na opci (ztráta v USD/ks)",
+                                MODE_UNDERLYING: "SL na podkladu (cena podkladu)",
+                                MODE_USD: "SL na opci (ztráta v USD/ks)",
+                                MODE_PREMIUM: "SL na opci (% prémie)",
                             },
-                            value=self.cfg.trading.sl_on_underlying,
+                            value=rezim_urovne(self.cfg.trading.sl_on_underlying),
                         )
                         .props("dense")
                         .classes("prepinac")
                         .tooltip(
                             "Na podkladu: SL je cena podkladu a hlídá ji podmíněný "
                             "příkaz. Na opci: SL je ztráta na jedné opci v USD, "
-                            "prodá se stop-market příkazem na cenu opce."
+                            "prodá se stop-market příkazem na cenu opce. "
+                            "% prémie: tatáž ztráta zadaná podílem z ceny opce - "
+                            "30 % z opce za 3,00 je 90 USD na kontrakt. Přepočet "
+                            "na USD ukazuje náhled a provede se před odesláním."
                         )
                     )
-                    self.sl_on_underlying.on_value_change(
-                        lambda e: self._on_mode_change("sl", bool(e.value))
+                    self.sl_mode.on_value_change(
+                        lambda e: self._on_mode_change("sl", str(e.value))
                     )
 
                     # Kompenzace spreadu patří k SL na opci: opce se kupuje u ASKu,
@@ -435,7 +474,8 @@ class TradingUI:
                             "o tento spread naroste a množství úměrně klesne."
                         )
                     )
-                    # Volba je dostupná jen při SL na opci; výchozí stav z konfigurace
+                    # Volba je dostupná jen při SL na opci (v USD i v procentech
+                    # prémie); výchozí stav z konfigurace
                     self.sl_spread_compensated.set_enabled(
                         not self.cfg.trading.sl_on_underlying
                     )
@@ -446,24 +486,28 @@ class TradingUI:
                 # Režim PT: na opci jde o zisk v USD na kontrakt realizovaný
                 # limitním příkazem přímo na cenu opce
                 with ui.column().classes("skupina-prepinacu"):
-                    self.pt_on_underlying = (
+                    self.pt_mode = (
                         ui.radio(
                             {
-                                True: "PT na podkladu (cena podkladu)",
-                                False: "PT na opci (zisk v USD/ks)",
+                                MODE_UNDERLYING: "PT na podkladu (cena podkladu)",
+                                MODE_USD: "PT na opci (zisk v USD/ks)",
+                                MODE_PREMIUM: "PT na opci (% prémie)",
                             },
-                            value=self.cfg.trading.pt_on_underlying,
+                            value=rezim_urovne(self.cfg.trading.pt_on_underlying),
                         )
                         .props("dense")
                         .classes("prepinac")
                         .tooltip(
                             "Na podkladu: PT je cena podkladu a hlídá ji podmíněný "
                             "příkaz. Na opci: PT je zisk na jedné opci v USD, prodá "
-                            "se limitním příkazem na cenu opce."
+                            "se limitním příkazem na cenu opce. % prémie: tentýž zisk "
+                            "zadaný podílem z ceny opce - 30 % z opce za 3,00 je "
+                            "90 USD na kontrakt. Přepočet na USD ukazuje náhled "
+                            "a provede se před odesláním."
                         )
                     )
-                    self.pt_on_underlying.on_value_change(
-                        lambda e: self._on_mode_change("pt", bool(e.value))
+                    self.pt_mode.on_value_change(
+                        lambda e: self._on_mode_change("pt", str(e.value))
                     )
 
             # Pole úrovní se rozmístí podle výchozí prvotní úrovně
@@ -645,16 +689,26 @@ class TradingUI:
         sl = float(self.sl_input.value) if self.sl_input.value not in (None, "") else None
         return symbol, entry, pt, sl
 
+    def _form_level_modes(self) -> tuple[str, str]:
+        """Zvolené režimy úrovní PT a SL (podklad / USD na opci / % prémie)."""
+        return str(self.pt_mode.value), str(self.sl_mode.value)
+
     def _form_modes(self) -> tuple[bool, bool]:
-        """Režimy PT a SL z voleb: True = na podkladu, False = na opci."""
-        return bool(self.pt_on_underlying.value), bool(self.sl_on_underlying.value)
+        """
+        Režimy PT a SL pro engine: True = na podkladu, False = na opci.
+        Procento prémie je jen jednotka formuláře, pro engine je to úroveň
+        na opci stejně jako zápis přímo v USD.
+        """
+        pt_mode, sl_mode = self._form_level_modes()
+        return pt_mode == MODE_UNDERLYING, sl_mode == MODE_UNDERLYING
 
     def _form_sl_spread(self) -> bool:
         """
         Zaškrtávátko kompenzace SL o spread. U SL na podkladu se neuplatní,
         i kdyby zůstalo zaškrtnuté z dřívějšího zadání.
         """
-        return bool(self.sl_spread_compensated.value) and not bool(self.sl_on_underlying.value)
+        _, sl_mode = self._form_level_modes()
+        return bool(self.sl_spread_compensated.value) and sl_mode in MODES_ON_OPTION
 
     def _set_modes(
         self,
@@ -666,11 +720,14 @@ class TradingUI:
         Nastaví volby režimu bez vedlejších účinků jejich obsluhy -
         při programovém nastavení se hodnoty polí nesmí mazat.
         Bez zadané kompenzace (None) se její přepínač nechává být.
+
+        Přebírá pravdivostní hodnoty, protože obchod ani konfigurace procento
+        neznají - úroveň na opci se proto vždy nastaví jako zápis v USD.
         """
         self._modes_locked = True
         try:
-            self.pt_on_underlying.set_value(pt_on_underlying)
-            self.sl_on_underlying.set_value(sl_on_underlying)
+            self.pt_mode.set_value(rezim_urovne(pt_on_underlying))
+            self.sl_mode.set_value(rezim_urovne(sl_on_underlying))
             if sl_spread_compensated is not None:
                 self.sl_spread_compensated.set_value(sl_spread_compensated)
         finally:
@@ -696,11 +753,11 @@ class TradingUI:
 
     def _refresh_mode_labels(self) -> None:
         """Popisky polí PT a SL odpovídají zvolenému režimu; rozmístění prvotní úrovni."""
-        pt_on, sl_on = self._form_modes()
-        self.pt_input.props(f'label="{popisek_urovne("pt", pt_on)}"')
-        self.sl_input.props(f'label="{popisek_urovne("sl", sl_on)}"')
-        # Kompenzace spreadu se týká jen SL zadaného na opci
-        self.sl_spread_compensated.set_enabled(not sl_on)
+        pt_mode, sl_mode = self._form_level_modes()
+        self.pt_input.props(f'label="{popisek_urovne("pt", pt_mode)}"')
+        self.sl_input.props(f'label="{popisek_urovne("sl", sl_mode)}"')
+        # Kompenzace spreadu se týká jen SL zadaného na opci - v USD i v procentech
+        self.sl_spread_compensated.set_enabled(sl_mode in MODES_ON_OPTION)
         self._arrange_level_groups()
 
     def _arrange_level_groups(self) -> None:
@@ -717,7 +774,7 @@ class TradingUI:
         prvotni.move(self.radek_prvotni, target_index=1)
         dopoctena.move(self.radek_dopoctene, target_index=0)
 
-    def _on_mode_change(self, druh: str, na_podkladu: bool) -> None:
+    def _on_mode_change(self, druh: str, rezim: str) -> None:
         """
         Přepnutí režimu PT nebo SL obchodníkem.
         Hodnota v poli má v novém režimu jiný význam (cena podkladu vs. USD),
@@ -840,12 +897,106 @@ class TradingUI:
         )
         self._set_primary(self.cfg.trading.primary_level)
 
-        # Formulář už nedrží žádný načtený obchod
+        # Formulář už nedrží žádný načtený obchod ani odhad prémie
         self.form_flow_id = None
         self.preview = None
+        self.premium_estimate = None
+        self.premium_symbol = None
+        self.premium_used = None
         self.preview_detail.set_text("")
         self.preview_warning.set_text("")
         self._set_direction(None)
+
+    def _premie_pro(self, symbol: str) -> float | None:
+        """Odhad nákupní ceny opce pro daný ticker, je-li z náhledu k dispozici."""
+        if self.premium_symbol != symbol:
+            return None
+        return self.premium_estimate
+
+    def _zapamatuj_premii(self, preview: Preview) -> None:
+        """Uloží odhad nákupní ceny opce z náhledu pro převody procent prémie."""
+        if preview.expected_fill_price and preview.expected_fill_price > 0:
+            self.premium_estimate = preview.expected_fill_price
+            self.premium_symbol = preview.symbol
+
+    @staticmethod
+    def _pct_na_usd(pct: float | None, premie: float | None) -> float | None:
+        """
+        Úroveň zadaná procentem prémie převedená na USD na kontrakt.
+        Prémie kontraktu je cena opce krát 100, takže jedno procento je
+        právě cena opce v USD. Bez známé prémie vrací None.
+        """
+        if pct is None or premie is None or premie <= 0:
+            return None
+        return round(pct * premie, 2)
+
+    @staticmethod
+    def _usd_na_pct(usd: float | None, premie: float | None) -> float | None:
+        """Zpětný převod z USD na kontrakt na procento prémie."""
+        if usd is None or premie is None or premie <= 0:
+            return None
+        return round(usd / premie, 2)
+
+    def _urovne_v_usd(
+        self, pt: float | None, sl: float | None, premie: float | None
+    ) -> tuple[float | None, float | None]:
+        """
+        Úrovně z formuláře převedené do jednotek, kterým rozumí engine.
+        Režim procenta prémie se přepočte přes odhad nákupní ceny opce,
+        ostatní režimy se předávají beze změny.
+        """
+        pt_mode, sl_mode = self._form_level_modes()
+        if pt_mode == MODE_PREMIUM:
+            pt = self._pct_na_usd(pt, premie)
+        if sl_mode == MODE_PREMIUM:
+            sl = self._pct_na_usd(sl, premie)
+        return pt, sl
+
+    async def _priprav_s_rezimy(
+        self,
+        symbol: str,
+        entry: float,
+        pt: float | None,
+        sl: float | None,
+        pt_on: bool,
+        sl_on: bool,
+        sl_spread: bool,
+    ) -> Preview:
+        """
+        Připraví zadání a přitom vyřeší úrovně zadané procentem prémie.
+
+        Procento se vztahuje k ceně opce, kterou ale aplikace vybírá teprve
+        podle zadaných úrovní. Není-li odhad nákupní ceny z dřívějšího náhledu
+        po ruce, připraví se zadání nejdřív s procentem dosazeným místo USD -
+        slouží jen k výběru kontraktu a odhadu jeho ceny. Z ní pak vyjdou
+        skutečné úrovně v USD a zadání se připraví znovu.
+        """
+        pt_mode, sl_mode = self._form_level_modes()
+        if MODE_PREMIUM not in (pt_mode, sl_mode):
+            self.premium_used = None
+            return await self.engine.prepare(symbol, entry, pt, sl, pt_on, sl_on, sl_spread)
+
+        premie = self._premie_pro(symbol)
+        if premie is None:
+            # Hrubý první průchod jen kvůli ceně opce; jeho úrovně se zahodí
+            odhad = await self.engine.prepare(symbol, entry, pt, sl, pt_on, sl_on, sl_spread)
+            self._zapamatuj_premii(odhad)
+            premie = self._premie_pro(symbol)
+            if premie is None:
+                self.premium_used = None
+                return odhad
+
+        # Od téhle chvíle platí pro celý přepočet jediná prémie - do USD i zpět
+        # do procent. Příprava sice může vybrat jiný strike (a s ním jinak
+        # drahou opci), ale úrovně se podle něj už nepřepočítávají; jinak by PT
+        # vycházelo z jedné ceny opce a SL se do procent vracelo podle druhé
+        self.premium_used = premie
+        pt_usd, sl_usd = self._urovne_v_usd(pt, sl, premie)
+        preview = await self.engine.prepare(
+            symbol, entry, pt_usd, sl_usd, pt_on, sl_on, sl_spread
+        )
+        self._zapamatuj_premii(preview)
+        return preview
 
     async def _load_preview(self, rezim: str = "nacist") -> None:
         """
@@ -918,7 +1069,7 @@ class TradingUI:
         if self._preview_task is not None and not self._preview_task.done():
             self._preview_task.cancel()
         self._preview_task = asyncio.create_task(
-            self.engine.prepare(symbol, entry, pt, sl, pt_on, sl_on, sl_spread)
+            self._priprav_s_rezimy(symbol, entry, pt, sl, pt_on, sl_on, sl_spread)
         )
         try:
             preview = await self._preview_task
@@ -949,11 +1100,22 @@ class TradingUI:
 
     def _apply_preview(self, preview: Preview, rezim: str) -> None:
         """Promítne připravený obchod do formuláře a informačního panelu."""
+        # Odhad nákupní ceny opce slouží převodům procent prémie
+        self._zapamatuj_premii(preview)
+
         # Bez vybraného kontraktu nejsou dopočtené úrovně ani množství k dispozici
         if preview.expiration:
             # Dopočítává se úroveň, která není prvotní (PT při prvotním SL, jinak SL)
             pole = self._computed_input()
             hodnota = preview.profit_target if pole is self.pt_input else preview.stop_loss
+            # Engine vrací úroveň na opci v USD; do pole v režimu procenta
+            # prémie patří zpět procento
+            pt_mode, sl_mode = self._form_level_modes()
+            rezim_pole = pt_mode if pole is self.pt_input else sl_mode
+            if rezim_pole == MODE_PREMIUM:
+                hodnota = self._usd_na_pct(hodnota, self.premium_used)
+            if hodnota is None:
+                hodnota = 0.0
             if rezim == "prepocitat":
                 # Výslovný přepočet přepíše obě pole vypočtenými hodnotami
                 pole.set_value(round(hodnota, 2))
@@ -1003,6 +1165,12 @@ class TradingUI:
                 )
             pt_text = level_text("pt", preview.profit_target, preview.pt_on_underlying)
             sl_text = level_text("sl", preview.stop_loss, preview.sl_on_underlying)
+            # V režimu procenta prémie se uvede, z jaké ceny opce se počítalo -
+            # jinak není poznat, odkud se doporučené USD vzalo
+            if MODE_PREMIUM in self._form_level_modes() and self.premium_used:
+                detail_parts.append(
+                    f"základ procent: prémie ≈ {fmt(self.premium_used * 100)} USD/ks"
+                )
             # Kompenzace se uplatní až skutečným spreadem při nákupu, náhled
             # proto uvádí jen odhad z aktuální kotace
             if preview.sl_spread_compensated:
@@ -1201,6 +1369,20 @@ class TradingUI:
                 type="negative",
             )
             return
+
+        # Úroveň zadaná procentem prémie se odesílá převedená na USD na
+        # kontrakt - obchod ani engine procento neznají. Převod potřebuje odhad
+        # nákupní ceny opce z náhledu; bez něj nelze zadání sestavit
+        if MODE_PREMIUM in self._form_level_modes():
+            premie = self.premium_used or self._premie_pro(symbol)
+            if premie is None:
+                ui.notify(
+                    "Pro přepočet z procent prémie chybí cena opce - "
+                    "načtěte nejdřív data z TWS tlačítkem Načíst.",
+                    type="negative",
+                )
+                return
+            pt, sl = self._urovne_v_usd(pt, sl, premie)
 
         quantity = int(self.qty_input.value) if self.qty_input.value else None
         max_spread = float(self.spread_input.value) if self.spread_input.value else None

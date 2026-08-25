@@ -113,6 +113,33 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    ceny opce o 0,10 (nákup 3,00 → PT limit 3,10, SL stop 2,90). PT na opci
    se po nákupu realizuje limitním příkazem přímo na cenu opce, SL na opci
    stop-market příkazem. Oba režimy lze libovolně kombinovat.
+   **PT a SL v procentech prémie.** Třetí volba v obou blocích — *PT na opci
+   (% prémie)*, resp. *SL na opci (% prémie)* — zapisuje tutéž úroveň na opci
+   podílem ze zaplacené prémie místo částky v USD. Prémie kontraktu je cena
+   opce krát 100, takže **jedno procento prémie je právě cena opce v USD**:
+   30 % z opce za 3,00 (300 USD) je 90 USD na kontrakt, z opce za 0,50 jen
+   15 USD. Napříč různě drahými kontrakty tak každý obchod riskuje stejný díl
+   vložených peněz, což pevná částka v USD nedělá — u levné opce bývá neúměrně
+   velká (a naráží na strop prémie), u drahé zanedbatelná.
+
+   Je to **jen jednotka formuláře**: procento se před odesláním přepočte na USD
+   na kontrakt a obchod, engine i uložený stav dál pracují s USD úplně stejně
+   jako u zápisu *na opci [USD/ks]*. Základem přepočtu je **odhadovaná nákupní
+   cena** opce, tedy cena v okamžiku, kdy podklad dosáhne vstupní úrovně;
+   náhled ji uvádí jako `základ procent: prémie ≈ 317 USD/ks`. Celý přepočet
+   drží jednu jedinou prémii — do USD i zpět do procent — takže si PT a SL
+   navzájem odpovídají, i když příprava nakonec vybere jinak drahý strike. Protože aplikace vybírá kontrakt
+   teprve podle zadaných úrovní, sáhne si v tomto režimu do TWS dvakrát —
+   poprvé jen pro odhad ceny opce, podruhé už se skutečnými úrovněmi; jakmile
+   odhad pro daný ticker má, další načtení jsou jednoprůchodová. Dopočítávaná
+   úroveň se do pole vrací také v procentech. Kompenzace **SL o zaplacený
+   spread dál** je dostupná i zde — připočte se k přepočtené částce v USD.
+
+   Odeslání bez načtených dat z TWS přepočet provést nemůže a formulář na to
+   upozorní; stačí kliknout na *Načíst*. Načtený běžící obchod se do formuláře
+   vrací v USD, protože procento zná jen formulář — po nákupu je prémie známá
+   a pevná, takže USD je přesnější zápis.
+
    Při PT na opci se strike vybírá k úrovni podkladu, kterou aplikace
    odvodí z ceny opce: z aktuální kotace opce se strikem u vstupu zjistí
    implikovanou volatilitu, spočítá cenu opce v okamžiku vstupu, přičte
