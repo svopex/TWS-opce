@@ -2096,5 +2096,89 @@ class TestProvizi(ZakladTestu):
         self.assertAlmostEqual(flow.entry_commission, 3.25)
 
 
+class TestUkliduNeobchodovanych(ZakladTestu):
+    """Odstranění obchodů, které se nikdy nedostaly k nákupu."""
+
+    async def priprav_prehled(self) -> dict[str, FlowState]:
+        """
+        Přehled se zástupcem každého zajímavého stavu: čekající před nákupem,
+        otevřená pozice, uzavřený obchod, zrušený, propásnutý a chybový.
+        """
+        cekajici = await self.zaloz_call(symbol="AAPL")
+
+        otevreny = await self.zaloz_call(symbol="MSFT", quantity=1)
+        self.ib.fill(otevreny.entry_trade, 1, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+
+        uzavreny = await self.zaloz_call(symbol="AMZN", quantity=1)
+        self.ib.fill(uzavreny.entry_trade, 1, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        self.ib.price_underlying = 235.5
+        self.ib.fill(uzavreny.exit_trade, 1, 4.00)
+        await self.engine._tick()
+        self.ib.price_underlying = 230.0
+
+        zruseny = await self.zaloz_call(symbol="TSLA")
+        await self.engine.cancel_flow(zruseny.id)
+
+        propasnuty = await self.zaloz_call(symbol="NFLX")
+        propasnuty.set_state(FlowState.MISSED, "Vstup propásnut.")
+
+        chybovy = await self.zaloz_call(symbol="META")
+        chybovy.set_state(FlowState.ERROR, "Něco se pokazilo.")
+
+        return {
+            "cekajici": cekajici.id,
+            "otevreny": otevreny.id,
+            "uzavreny": uzavreny.id,
+            "zruseny": zruseny.id,
+            "propasnuty": propasnuty.id,
+            "chybovy": chybovy.id,
+        }
+
+    async def test_odstrani_zrusene_i_propasnute(self):
+        ids = await self.priprav_prehled()
+        self.assertEqual(self.engine.flows[ids["zruseny"]].state, FlowState.CANCELLED)
+
+        self.assertEqual(self.engine.remove_untraded(), 2)
+        self.assertNotIn(ids["zruseny"], self.engine.flows)
+        self.assertNotIn(ids["propasnuty"], self.engine.flows)
+
+    async def test_ostatni_obchody_v_prehledu_zustavaji(self):
+        ids = await self.priprav_prehled()
+        self.engine.remove_untraded()
+
+        # Čekající, otevřený i uzavřený zůstávají; chybový vyžaduje ruční
+        # kontrolu a nesmí z přehledu tiše zmizet
+        for klic in ("cekajici", "otevreny", "uzavreny", "chybovy"):
+            self.assertIn(ids[klic], self.engine.flows, klic)
+
+    async def test_prazdny_uklid_nic_neodstrani(self):
+        await self.zaloz_call(symbol="AAPL")
+        self.assertEqual(self.engine.remove_untraded(), 0)
+        self.assertEqual(len(self.engine.flows), 1)
+
+    async def test_zruseny_obchod_s_pozici_v_prehledu_zustava(self):
+        # Zrušení nakoupeného obchodu bez uzavření nechá pozici otevřenou
+        # a nezajištěnou v TWS - takový řádek nesmí úklid odklidit
+        flow = await self.zaloz_call(symbol="TSLA", quantity=1)
+        self.ib.fill(flow.entry_trade, 1, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        await self.engine.cancel_flow(flow.id)
+
+        self.assertEqual(flow.state, FlowState.CANCELLED)
+        self.assertIsNotNone(flow.fill_price)
+        self.assertEqual(self.engine.remove_untraded(), 0)
+        self.assertIn(flow.id, self.engine.flows)
+
+    async def test_opakovany_uklid_uz_nic_nenajde(self):
+        await self.priprav_prehled()
+        self.assertEqual(self.engine.remove_untraded(), 2)
+        self.assertEqual(self.engine.remove_untraded(), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -2355,6 +2355,42 @@ class FlowEngine:
         self.flows.pop(flow_id, None)
         self._notify()
 
+    def remove_untraded(self) -> int:
+        """
+        Odstraní z přehledu obchody, které se nikdy nedostaly k nákupu -
+        zrušené a propásnuté - a vrátí jejich počet.
+
+        Takový obchod nemá v trhu příkaz ani pozici a nenese žádný výsledek,
+        takže se jen vyřadí z přehledu a do TWS se nesahá. Čekající, otevřené
+        i uzavřené obchody zůstávají a s nimi dvě výjimky, které by se z přehledu
+        ztratit neměly: obchod skončený chybou vyžaduje ruční kontrolu a zrušený
+        obchod, který stihl nakoupit, drží v TWS otevřenou a nezajištěnou pozici.
+        """
+        k_odstraneni = [
+            flow
+            for flow in self.flows.values()
+            if flow.state in (FlowState.CANCELLED, FlowState.MISSED)
+            and flow.fill_price is None
+        ]
+        if not k_odstraneni:
+            return 0
+
+        for flow in k_odstraneni:
+            # Odběry tržních dat takový obchod zpravidla nedrží, uvolnění je
+            # ale levné a pojistí se tím proti zapomenutému odběru
+            self._release(flow)
+            self.flows.pop(flow.id, None)
+            self._lost_leg_warned -= {
+                klic for klic in self._lost_leg_warned if klic.startswith(f"{flow.id}:")
+            }
+
+        self.log_event(
+            f"Z přehledu odstraněno {len(k_odstraneni)} obchodů bez nákupu "
+            f"(zrušené a propásnuté)."
+        )
+        self._notify()
+        return len(k_odstraneni)
+
     async def cancel_and_clear_all(self) -> tuple[int, int]:
         """
         Zruší všechna běžící flow a vyprázdní celý přehled obchodů.

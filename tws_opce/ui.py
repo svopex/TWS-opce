@@ -616,6 +616,19 @@ class TradingUI:
                     "Přehled obchodního dne na celou obrazovku - souhrn výsledků, "
                     "běžící i uzavřené obchody a průběh dne v grafu."
                 )
+                # Úklid řádků bez výsledku - zrušené a propásnuté obchody
+                ui.button(
+                    "Uklidit neobchodované",
+                    icon="playlist_remove",
+                    on_click=self._on_remove_untraded,
+                ).props("outline dense color=primary").classes(
+                    "tlacitko-uklidit"
+                ).tooltip(
+                    "Odstraní z přehledu zrušené a propásnuté obchody - ty, které "
+                    "se nikdy nedostaly k nákupu. Čekající, otevřené i uzavřené "
+                    "obchody zůstávají, stejně jako obchod skončený chybou nebo "
+                    "zrušený s otevřenou pozicí. Do TWS se nesahá."
+                )
                 # Hromadné zrušení běžících obchodů a vyprázdnění přehledu
                 ui.button(
                     "Zrušit a smazat vše",
@@ -1602,6 +1615,28 @@ class TradingUI:
         # Formulář už nemá na co odkazovat, pokud ukazoval právě tento obchod
         if self.form_flow_id == flow.id:
             self.form_flow_id = None
+        self._refresh()
+
+    def _on_remove_untraded(self) -> None:
+        """
+        Odstraní z přehledu obchody bez nákupu - zrušené a propásnuté.
+        Ostatní řádky (čekající, otevřené, uzavřené) zůstávají, proto se
+        na akci neptáme: nic s výsledkem se ztratit nemůže.
+        """
+        try:
+            odstraneno = self.engine.remove_untraded()
+        except Exception as exc:
+            ui.notify(str(exc), type="negative")
+            return
+
+        if not odstraneno:
+            ui.notify("Žádný zrušený ani propásnutý obchod v přehledu není.", type="info")
+            return
+
+        # Formulář už nemá na co odkazovat, pokud ukazoval odstraněný obchod
+        if self.form_flow_id and self.form_flow_id not in self.engine.flows:
+            self.form_flow_id = None
+        ui.notify(f"Z přehledu odstraněno {odstraneno} obchodů bez nákupu.", type="warning")
         self._refresh()
 
     async def _potvrd_vycisteni(self, bezici: int, s_pozici: int, celkem: int) -> bool:

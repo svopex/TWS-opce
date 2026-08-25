@@ -875,6 +875,13 @@ body.body--dark .log-radek {
   font-size: 0.72rem;
 }
 
+/* Úklid neobchodovaných řádků vpravo v nadpisu monitoringu */
+.tlacitko-uklidit {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  margin-right: 6px;
+}
+
 /* Hromadné zrušení a vymazání přehledu vpravo v nadpisu monitoringu */
 .tlacitko-smazat-vse {
   flex: 0 0 auto;
