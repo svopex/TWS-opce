@@ -414,12 +414,35 @@ class TradingUI:
                     .props("outlined dense step=any")
                 )
 
+            # Množství, RRR a přepočet stojí v jednom řádku, aby formulář
+            # nerostl do výšky; obě pole jsou proto užší
             with ui.row().classes("radek"):
                 self.qty_input = (
                     ui.number("Množství [ks]", value=None, format="%.0f", step=1, min=1)
-                    .classes("pole")
+                    .classes("pole-uzke")
                     .props("outlined dense")
                 )
+                # RRR pro dopočet druhé úrovně; výchozí hodnota vychází
+                # z konfigurace a přepsáním platí pro přepočet i pro zadání obchodu
+                self.rrr_input = (
+                    ui.number(
+                        "RRR (PT:SL)",
+                        value=rrr_z_pomeru(self.cfg.trading.sl_to_pt_ratio),
+                        format="%g",
+                        min=0,
+                    )
+                    .classes("pole-uzke")
+                    .props("outlined dense step=any")
+                    .tooltip(
+                        "Poměr zisku ku riziku, kterým se z prvotní úrovně "
+                        "dopočítá ta druhá: 2 = PT je dvakrát dál než SL, "
+                        "1 = obě stejně daleko. Výchozí hodnota vychází "
+                        "z konfigurace (převrácené trading.sl_to_pt_ratio), "
+                        "prázdné či nekladné pole se k ní vrací."
+                    )
+                )
+                # Změna RRR rovnou přepočítá dopočítávanou úroveň i množství
+                self.rrr_input.on("blur", lambda _: self._load_preview("prepocitat"))
                 ui.button("Přepočítat", on_click=lambda: self._load_preview("prepocitat")).props(
                     "outline"
                 ).classes("tlacitko-vedle").tooltip(
@@ -449,8 +472,8 @@ class TradingUI:
                         .classes("prepinac")
                         .tooltip(
                             "Zadávaná úroveň stojí vedle vstupu, dopočítávaná v dalším "
-                            "řádku. Druhá úroveň se dopočítá podle RRR z pole pod "
-                            "přepínači a lze ji vždy přepsat ručně."
+                            "řádku. Druhá úroveň se dopočítá podle RRR z pole vedle "
+                            "množství a lze ji vždy přepsat ručně."
                         )
                     )
                     self.sl_primary.on_value_change(lambda e: self._on_primary_change())
@@ -534,30 +557,6 @@ class TradingUI:
                     self.pt_mode.on_value_change(
                         lambda e: self._on_mode_change("pt", str(e.value))
                     )
-
-            # RRR pro dopočet druhé úrovně. Mění se zřídka, proto stojí až
-            # pod přepínači; výchozí hodnota vychází z konfigurace a přepsáním
-            # platí pro přepočet i pro zadání obchodu
-            with ui.row().classes("radek"):
-                self.rrr_input = (
-                    ui.number(
-                        "RRR (PT:SL)",
-                        value=rrr_z_pomeru(self.cfg.trading.sl_to_pt_ratio),
-                        format="%g",
-                        min=0,
-                    )
-                    .classes("pole-tretina")
-                    .props("outlined dense step=any")
-                    .tooltip(
-                        "Poměr zisku ku riziku, kterým se z prvotní úrovně "
-                        "dopočítá ta druhá: 2 = PT je dvakrát dál než SL, "
-                        "1 = obě stejně daleko. Výchozí hodnota vychází "
-                        "z konfigurace (převrácené trading.sl_to_pt_ratio), "
-                        "prázdné či nekladné pole se k ní vrací."
-                    )
-                )
-                # Změna RRR rovnou přepočítá dopočítávanou úroveň i množství
-                self.rrr_input.on("blur", lambda _: self._load_preview("prepocitat"))
 
             # Pole úrovní se rozmístí podle výchozí prvotní úrovně
             self._arrange_level_groups()

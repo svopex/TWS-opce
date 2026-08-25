@@ -195,11 +195,11 @@
   min-width: 150px;
 }
 
-/* Užší pole pro krátké hodnoty (RRR) - v řádku stojí samo, proto by se
-   jinak natáhlo přes celou šířku panelu */
-.pole-tretina {
-  flex: 0 1 33%;
-  min-width: 120px;
+/* Užší pole pro krátké hodnoty (množství, RRR) - dvě se vejdou do jednoho
+   řádku vedle tlačítka, takže formulář zbytečně neroste do výšky */
+.pole-uzke {
+  flex: 1 1 0;
+  min-width: 110px;
 }
 
 .pole-ticker {
