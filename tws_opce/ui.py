@@ -14,6 +14,7 @@ from . import calc
 from .config import AppConfig
 from .engine import FlowEngine, Preview
 from .ib_service import IBService
+from .import_dialog import ImportDialog
 from .models import Flow, FlowRequest, FlowState, level_text
 
 log = logging.getLogger(__name__)
@@ -222,6 +223,11 @@ class TradingUI:
 
         self._build_header()
 
+        # Popup formulář pro hromadné načtení pozic ze souboru. Vzniká už teď,
+        # aby jeho prvky patřily tomuto klientovi; otevírá jej tlačítko ve formuláři
+        self.import_dialog = ImportDialog(self.cfg, self.engine, self.ib, self._refresh)
+        self.import_dialog.build()
+
         # Pruh s upozorněním na pozice, které aplikace neřídí
         self.warning_bar = ui.row().classes("pruh-varovani")
         self.warning_bar.set_visibility(False)
@@ -283,6 +289,14 @@ class TradingUI:
                     "na podkladu vůči vstupu."
                 )
                 self.direction_badge.set_visibility(False)
+                ui.space()
+                # Hromadné zadání ze souboru se zadáním obchodního dne
+                ui.button(
+                    "Načíst ze souboru", on_click=self.import_dialog.open
+                ).props("outline dense").classes("tlacitko-import").tooltip(
+                    "Načte vstupní pozice ze souboru se zadáním dne a nabídne "
+                    "jejich hromadné zadání do trhu."
+                )
 
             with ui.row().classes("radek"):
                 self.symbol_input = (
@@ -1573,6 +1587,11 @@ def create_ui(cfg: AppConfig, engine: FlowEngine, ib: IBService) -> None:
     """Zaregistruje statické soubory a hlavní stránku aplikace."""
     # Keš se u lokální aplikace vypíná, aby se úpravy stylů projevily ihned po obnovení stránky
     app.add_static_files("/static", str(STATIC_DIR), max_cache_age=0)
+
+    # Bubliny s nápovědou vyskakují nad prvkem, ne pod ním - pod poli formuláře
+    # by zakrývaly další pole a v tabulce řádek s tlačítky. Šířku omezuje CSS,
+    # takže se delší text zalomí do více řádků místo jednoho dlouhého pruhu
+    ui.tooltip.default_props('anchor="top middle" self="bottom middle"')
 
     @ui.page("/")
     def index() -> None:

@@ -601,3 +601,213 @@ body.body--dark .log-radek {
   margin-left: 10px;
   margin-top: 2px;
 }
+
+/* --- Bubliny s nápovědou --- */
+/* Ukotvení nad prvkem řeší props v ui.py, zde jen tvar: raději užší a vyšší
+   bublina než jeden dlouhý pruh přes půl obrazovky. Delší text se zalomí */
+.q-tooltip {
+  font-size: 0.78rem;
+  line-height: 1.35;
+  max-width: 300px;
+  padding: 7px 10px;
+  white-space: normal;
+}
+
+/* --- Dialog hromadného načtení pozic ze souboru --- */
+/* Šířku dialogu drží obal: bez ní by Quasar kartu buď zúžil na 560 px,
+   nebo (s prop full-width) roztáhl přes celou obrazovku. Karta se smršťuje
+   na obsah, takže před načtením souboru zabírá jen tolik místa, kolik je
+   potřeba, a s tabulkou naroste nejvýš na její šířku */
+.dialog-import-obal .q-dialog__inner--minimized > div {
+  max-width: min(940px, 94vw);
+}
+
+.dialog-import {
+  gap: 6px;
+  padding: 14px 16px;
+  width: fit-content;
+}
+
+.dialog-import .dialog-nadpis {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+/* Popis se zalamuje dřív, než by roztáhl celou kartu */
+.dialog-import .dialog-popis {
+  color: #475569;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  max-width: 560px;
+}
+
+/* Řádek s výběrem souboru - nahrávací prvek a jméno načteného souboru */
+.dialog-import .radek-import-soubor {
+  align-items: center;
+  gap: 10px;
+  width: auto;
+}
+
+.dialog-import .nahrani-souboru {
+  flex: 0 0 auto;
+  width: 250px;
+}
+
+/* Seznam nahraných souborů uvnitř prvku není k ničemu - obsah se přečte hned
+   a prvek se vzápětí vyprázdní, aby šel týž soubor vybrat znovu */
+.dialog-import .nahrani-souboru .q-uploader__list {
+  display: none;
+}
+
+.dialog-import .popis-souboru {
+  color: #334155;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+/* Pole nad tabulkou jsou úzká - jde o jedno až dvě čísla */
+.dialog-import .pole {
+  flex: 0 0 auto;
+  min-width: 0;
+  width: 130px;
+}
+
+/* Přepínače dialogu stojí těsněji než ve formuláři zadání */
+.dialog-import .prepinace-import {
+  margin: 0;
+}
+
+.dialog-import .prepinace-import .skupina-prepinacu {
+  padding: 0;
+}
+
+/* Řádek s poli cíle a spreadu se nemá roztahovat na šířku karty */
+.dialog-import .radek {
+  gap: 8px;
+  width: auto;
+}
+
+/* Tabulka načtených pozic. Šířky sloupců drží zarovnání buněk, které jsou
+   přímými potomky mřížky; poslední sloupec (stav) dobírá zbytek místa */
+.dialog-import .tabulka-import {
+  align-items: center;
+  gap: 3px 7px;
+  grid-template-columns:
+    26px 58px 58px 68px 68px 138px 84px 84px 52px minmax(150px, 1fr);
+  margin-top: 4px;
+  width: 100%;
+}
+
+.dialog-import .hlavicka-import {
+  color: #475569;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.dialog-import .bunka-import {
+  font-size: 0.82rem;
+  min-width: 0;
+}
+
+.dialog-import .bunka-ticker {
+  font-weight: 600;
+}
+
+.dialog-import .bunka-cislo {
+  text-align: right;
+}
+
+.dialog-import .bunka-kontrakt {
+  color: #475569;
+  font-size: 0.75rem;
+}
+
+/* Pole v řádku tabulky nemají popisek, proto se jim ubírá vnitřní výška */
+.dialog-import .pole-import {
+  width: 100%;
+}
+
+.dialog-import .pole-import .q-field__control {
+  height: 30px;
+}
+
+.dialog-import .pole-import input {
+  font-size: 0.8rem;
+  text-align: right;
+}
+
+/* Buňka stavu nese tlačítko přepočtu řádku a text stavu vedle sebe */
+.dialog-import .bunka-stav {
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 2px;
+  width: auto;
+}
+
+/* Stav se raději zalomí, než aby se ořízl - hlášky o chybách bývají dlouhé */
+.dialog-import .stav-import {
+  font-size: 0.75rem;
+  line-height: 1.25;
+  white-space: normal;
+}
+
+.dialog-import .stav-import-ok {
+  color: #15803d;
+}
+
+.dialog-import .stav-import-chyba {
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+.dialog-import .stav-import-varovani {
+  color: #b45309;
+}
+
+.dialog-import .souhrn-import {
+  color: #334155;
+  font-size: 0.8rem;
+  font-weight: 500;
+  margin-top: 4px;
+}
+
+/* Tlačítka dialogu mají šířku podle textu, ne podle karty */
+.dialog-import .radek-tlacitka {
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.dialog-import .tlacitko-import-akce {
+  flex: 0 0 auto;
+}
+
+/* Tlačítko otevírající dialog stojí vpravo v nadpisu formuláře */
+.tlacitko-import {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+}
+
+/* --- Dialog načtení pozic v tmavém režimu --- */
+body.body--dark .dialog-import .dialog-popis,
+body.body--dark .dialog-import .bunka-kontrakt,
+body.body--dark .dialog-import .hlavicka-import {
+  color: #94a3b8;
+}
+
+body.body--dark .dialog-import .popis-souboru,
+body.body--dark .dialog-import .souhrn-import {
+  color: #cbd5e1;
+}
+
+body.body--dark .dialog-import .stav-import-ok {
+  color: #4ade80;
+}
+
+body.body--dark .dialog-import .stav-import-chyba {
+  color: #f87171;
+}
+
+body.body--dark .dialog-import .stav-import-varovani {
+  color: #fbbf24;
+}

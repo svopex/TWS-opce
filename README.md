@@ -413,6 +413,50 @@ v průběhu. Běží-li přitom obchod na stejném tickeru, upozornění výslov
 pod dozorem, přestože obchod míří na jiný strike nebo expiraci. Sama k nim nic nezadává — nezná jejich PT ani SL. Interval kontroly
 je `engine.unmanaged_check_sec` (výchozí 30 s, `0` kontrolu vypne).
 
+## Načtení pozic ze souboru
+
+Vedle nadpisu *Zadání obchodu* stojí tlačítko **Načíst ze souboru**. Otevře
+popup formulář, ve kterém se vybere YAML soubor se zadáním obchodního dne
+(například `2026-08-25.yaml`) a všechny pozice z něj se zadají naráz.
+
+Ze souboru se čerpá **jen z položek, jejichž klíč končí plusem** (`AMZN Long+`),
+a to pouze ze tří údajů — `symbol`, `entry_price` a `target_price`. Ostatní
+pole souboru patří jinému nástroji a aplikace je ignoruje; položky bez plusu
+se přeskočí. Vadná položka (chybějící ticker či cena, cíl shodný se vstupem)
+načtení nezastaví — přeskočí se a důvod se vypíše nad tabulkou, aby zbytek
+souboru zůstal použitelný.
+
+Nad tabulkou se volí režim cíle, společný všem načteným pozicím:
+
+- **PT na podkladu v % dráhy k cíli** — PT je cena
+  podkladu, spočítaná jako `vstup + (target_price − vstup) × %/100`. Při 100 %
+  je to přesně cílová cena ze souboru, při 50 % půlka cesty k ní; znaménko
+  rozdílu řeší směr, takže vzorec platí pro long i short. SL se dopočítá
+  rovněž **na podkladu** podle poměru `sl_to_pt_ratio` z konfigurace.
+- **PT na opci v USD/ks** — PT je zisk na jedné opci v USD, společný
+  všem pozicím, a SL je ztráta na opci podle téhož poměru. Cílová cena ze
+  souboru se v tomto režimu nepoužívá. Jen zde má smysl zaškrtávátko
+  **SL o zaplacený spread dál** — chová se stejně jako v běžném formuláři.
+
+Vedle režimu se zadává **Max. spread [%]** (výchozí z konfigurace). Tlačítkem
+**Přepočítat** se PT, SL i množství u všech dosud nezadaných pozic spočítají
+znovu; tlačítko ↻ v řádku přepočte jedinou pozici a **ponechá** v ní ručně
+upravené PT. Množství se určuje stejně jako v běžném formuláři — z riskované
+částky, delty opce a vzdálenosti ke SL, resp. přímo ze ztráty na kontrakt.
+
+Tabulka ukazuje u každé pozice směr ze souboru, vstupní i cílovou cenu, vybraný
+opční kontrakt a **editovatelná pole PT, SL a Ks**. Skutečný směr určuje
+aplikace z aktuální ceny podkladu jako vždy; liší-li se od směru daného souborem,
+trh už vstupní úroveň překonal — takový řádek se označí jako *Vstup propásnut*
+a **odškrtne**, aby se omylem nezaložil obchod na opačnou stranu. Zaškrtnutím
+jej lze přesto zadat.
+
+Tlačítko **Zadat vybrané pozice do trhu** založí obchody postupně, každý stejným
+způsobem jako ruční zadání formulářem — včetně všech kontrol. Chyba jedné pozice
+ostatní nezastaví, zapíše se do jejího sloupce *Stav*; už založený řádek se
+podruhé nezadá. Bez spojení s TWS se pozice načtou a PT vyplní (je to čistý
+výpočet ze zadání), SL ani množství se ale dopočítat nedají.
+
 ## Velikost účtu
 
 Riskovaná částka se počítá z velikosti účtu, kterou lze zadat dvěma způsoby:
@@ -443,8 +487,9 @@ python -m unittest discover -s . -p "test_*.py"
 
 Testy běží proti náhradě TWS (`tests/fake_ib.py`) — pokrývají výpočty,
 čtení tržních dat i celý průběh obchodu včetně příkazů, jejich podmínek,
-runneru, režimů PT/SL na opci (`tests/test_rezimy.py`) a obnovy po
-restartu. Spojení s TWS není potřeba.
+runneru, režimů PT/SL na opci (`tests/test_rezimy.py`), načítání pozic ze
+souboru (`tests/test_import.py`) a obnovy po restartu. Spojení s TWS není
+potřeba.
 
 ## Struktura
 
@@ -459,6 +504,8 @@ tws_opce/
   ib_service.py          obálka nad ib_async (kontrakty, data, příkazy)
   engine.py              řízení obchodů a monitorovací smyčka
   store.py               ukládání stavu obchodů na disk
+  importer.py            načtení vstupních pozic ze souboru se zadáním dne
+  import_dialog.py       popup formulář hromadného zadání načtených pozic
   ui.py                  webové rozhraní
   static/styles.css      styly
 tests/                   testy
