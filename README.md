@@ -460,6 +460,50 @@ v průběhu. Běží-li přitom obchod na stejném tickeru, upozornění výslov
 pod dozorem, přestože obchod míří na jiný strike nebo expiraci. Sama k nim nic nezadává — nezná jejich PT ani SL. Interval kontroly
 je `engine.unmanaged_check_sec` (výchozí 30 s, `0` kontrolu vypne).
 
+## Přehled výsledků
+
+Vedle nadpisu *Monitoring obchodů* stojí tlačítko **Výsledky**. Otevře popup
+přes celou obrazovku s přehledem obchodního dne — co se obchodovalo, co ještě
+běží a s jakým výsledkem. Monitorovací tabulka zůstává beze změny, přehled je
+pouze pohled navíc; po zavření se nic neděje.
+
+Přepínač **Dnes / Vše** v pravém horním rohu určuje rozsah. *Dnes* bere obchody
+založené dnešního dne a k nim všechny, které stále běží (aplikace může běžet
+přes noc nebo obnovit stav z předchozího dne). *Vše* ukazuje celý obsah
+monitoringu bez ohledu na datum.
+
+Obsah se obnovuje ze stejné smyčky jako tabulka, takže otevřené pozice v něm
+tikají živě. Rozvržení je navržené na jednu obrazovku bez posuvníku — posouvají
+se nejvýš samotné seznamy uvnitř svých panelů.
+
+### Souhrnné dlaždice
+
+| Dlaždice | Co ukazuje |
+| --- | --- |
+| Výsledek dne | realizovaný i otevřený výsledek dohromady |
+| Realizováno | výsledek už prodaných kusů; zvlášť se uvádí část z obchodů, které dosud běží (prodaný runner) |
+| Otevřené pozice | nerealizovaný výsledek otevřených pozic oceněný BIDem |
+| Úspěšnost | podíl ziskových obchodů z ukončených, které skutečně nakoupily |
+| Profit factor | poměr hrubého zisku k hrubé ztrátě, pod ním průměrný zisk a průměrná ztráta |
+| Obchody | kolik jich běží, kolik skončilo a kolik se nedostalo k nákupu |
+
+Statistiky úspěšnosti počítají **jen ukončené obchody s nákupem** — běžící
+pozice se do nich nezapočítává, dokud se výsledek může ještě otočit, a
+propásnutý či před vstupem zrušený obchod se nikdy neodehrál.
+
+### Panely
+
+* **Běží teď** — otevřené i čekající obchody s nákupní cenou, aktuálním BIDem
+  a otevřeným P/L. Pruh *SL → PT* ukazuje, kde pozice stojí mezi stop-lossem
+  (vlevo) a cílem (vpravo); vychází z otevřeného výsledku proti očekávanému
+  zisku na PT a ztrátě na SL, takže funguje ve všech režimech zadání úrovní.
+* **Uzavřené obchody** — od nejnovějšího, s dosaženými cenami, dobou držení
+  a důvodem výstupu (PT, SL, ručně, propásnuto, zrušeno). Pruh *Porovnání*
+  vynáší výsledek proti největšímu výsledku dne — ztráta doleva, zisk doprava.
+* **Průběh dne** — kumulovaný realizovaný výsledek, bod za každý uzavřený obchod.
+* **Výsledek podle tickeru** — součet realizovaného i otevřeného výsledku
+  po tickerech, seřazený od nejlepšího po nejhorší.
+
 ## Načtení pozic ze souboru
 
 Vedle nadpisu *Zadání obchodu* stojí tlačítko **Načíst ze souboru**. Otevře
@@ -566,7 +610,8 @@ python -m unittest discover -s . -p "test_*.py"
 Testy běží proti náhradě TWS (`tests/fake_ib.py`) — pokrývají výpočty,
 čtení tržních dat i celý průběh obchodu včetně příkazů, jejich podmínek,
 runneru, režimů PT/SL na opci (`tests/test_rezimy.py`), načítání pozic ze
-souboru (`tests/test_import.py`) a obnovy po restartu. Spojení s TWS není
+souboru (`tests/test_import.py`), souhrn obchodního dne
+(`tests/test_report.py`) a obnovy po restartu. Spojení s TWS není
 potřeba.
 
 ## Struktura
@@ -584,6 +629,8 @@ tws_opce/
   store.py               ukládání stavu obchodů na disk
   importer.py            načtení vstupních pozic ze souboru se zadáním dne
   import_dialog.py       popup formulář hromadného zadání načtených pozic
+  report.py              souhrn obchodního dne pro přehled výsledků
+  report_dialog.py       popup s přehledem výsledků na celou obrazovku
   ui.py                  webové rozhraní
   static/styles.css      styly
 tests/                   testy

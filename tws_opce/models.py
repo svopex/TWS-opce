@@ -107,6 +107,26 @@ class FlowState(str, Enum):
         }[self]
 
     @property
+    def css_class(self) -> str:
+        """
+        CSS třída pro barevné odlišení stavu - používá ji monitorovací
+        tabulka i přehled výsledků, aby stav vypadal všude stejně.
+        """
+        return {
+            FlowState.NEW: "stav-ceka",
+            FlowState.ARMED: "stav-ceka",
+            FlowState.SPREAD_BLOCKED: "stav-blokovano",
+            FlowState.NO_QUOTES: "stav-blokovano",
+            FlowState.FILLED: "stav-nakoupeno",
+            FlowState.EXIT_ARMED: "stav-nakoupeno",
+            FlowState.CLOSING: "stav-uzavira",
+            FlowState.CLOSED: "stav-uzavreno",
+            FlowState.MISSED: "stav-propasnuto",
+            FlowState.CANCELLED: "stav-zruseno",
+            FlowState.ERROR: "stav-chyba",
+        }[self]
+
+    @property
     def is_active(self) -> bool:
         """Flow, které ještě vyžaduje pozornost monitorovací smyčky."""
         return self in (
@@ -435,6 +455,79 @@ class Flow:
                 return None
             vysledek += (cena - self.fill_price) * mnozstvi * 100
         return vysledek
+
+    @property
+    def realized_pnl(self) -> float | None:
+        """
+        Realizovaný zisk/ztráta obchodu v USD - jen skutečně prodané kusy.
+
+        Na rozdíl od unrealized_pnl se sem nepočítá dosud otevřená část pozice
+        oceněná trhem; hodnota se tedy už nezmění. Sečte se výsledek dříve
+        prodaných runnerů, prodané (i jen částečně) hlavní části a runneru,
+        který se prodal, ale ještě nebyl zúčtován do souhrnu.
+        Bez nákupu (a tedy bez čeho realizovat) None.
+        """
+        if self.fill_price is None:
+            return None
+
+        vysledek = self.runner_realized_pnl
+        if self.exit_fill_price is not None:
+            # Hlavní část je doprodaná, známa je její výsledná průměrná cena
+            vysledek += (
+                (self.exit_fill_price - self.fill_price)
+                * self.main_quantity
+                * calc.OPTION_MULTIPLIER
+            )
+        elif self.main_sold_quantity > 0:
+            # Prodala se jen část hlavní pozice - zbytek zůstává otevřený
+            prumer = self.main_sold_value / self.main_sold_quantity
+            vysledek += (
+                (prumer - self.fill_price)
+                * self.main_sold_quantity
+                * calc.OPTION_MULTIPLIER
+            )
+        # Prodaný, ale zatím nezúčtovaný runner (stav uložený starší verzí)
+        if (
+            self.runner_active
+            and self.runner_fill_price is not None
+            and self.runner_quantity <= self.held_quantity
+        ):
+            vysledek += (
+                (self.runner_fill_price - self.fill_price)
+                * self.runner_quantity
+                * calc.OPTION_MULTIPLIER
+            )
+        return vysledek
+
+    @property
+    def holding_seconds(self) -> float | None:
+        """
+        Jak dlouho obchod drží (resp. držel) pozici, v sekundách.
+        Před nákupem None; u běžící pozice se počítá do teď, u ukončené
+        do času poslední změny stavu.
+        """
+        if self.fill_time is None:
+            return None
+        konec = datetime.now() if self.state.is_active else self.updated_at
+        return max((konec - self.fill_time).total_seconds(), 0.0)
+
+    @property
+    def result_reason(self) -> str:
+        """
+        Krátký popis toho, jak obchod dopadl - pro přehled výsledků.
+
+        U uzavřené pozice je to důvod výstupu zapsaný enginem (PT, SL, ručně),
+        u obchodů ukončených bez pozice jejich stav.
+        """
+        if self.exit_reason:
+            return self.exit_reason
+        if self.state == FlowState.MISSED:
+            return "propásnuto"
+        if self.state == FlowState.CANCELLED:
+            return "zrušeno"
+        if self.state == FlowState.ERROR:
+            return "chyba"
+        return "-"
 
     @property
     def risk_reward(self) -> float | None:

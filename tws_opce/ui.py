@@ -24,25 +24,11 @@ from .models import (
     pomer_z_rrr,
     rrr_z_pomeru,
 )
+from .report_dialog import ReportDialog
 
 log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-
-# Přiřazení CSS třídy jednotlivým stavům flow kvůli barevnému odlišení v tabulce
-STATE_CLASSES = {
-    FlowState.NEW: "stav-ceka",
-    FlowState.ARMED: "stav-ceka",
-    FlowState.SPREAD_BLOCKED: "stav-blokovano",
-    FlowState.NO_QUOTES: "stav-blokovano",
-    FlowState.FILLED: "stav-nakoupeno",
-    FlowState.EXIT_ARMED: "stav-nakoupeno",
-    FlowState.CLOSING: "stav-uzavira",
-    FlowState.CLOSED: "stav-uzavreno",
-    FlowState.MISSED: "stav-propasnuto",
-    FlowState.CANCELLED: "stav-zruseno",
-    FlowState.ERROR: "stav-chyba",
-}
 
 # Definice sloupců monitorovací tabulky
 TABLE_COLUMNS = [
@@ -284,6 +270,12 @@ class TradingUI:
         # aby jeho prvky patřily tomuto klientovi; otevírá jej tlačítko ve formuláři
         self.import_dialog = ImportDialog(self.cfg, self.engine, self.ib, self._refresh)
         self.import_dialog.build()
+
+        # Popup s přehledem výsledků dne; grafy v něm se řídí zvoleným vzhledem
+        self.report_dialog = ReportDialog(
+            self.cfg, self.engine, lambda: bool(self.dark_mode.value)
+        )
+        self.report_dialog.build()
 
         # Pruh s upozorněním na pozice, které aplikace neřídí
         self.warning_bar = ui.row().classes("pruh-varovani")
@@ -600,6 +592,17 @@ class TradingUI:
             with ui.row().classes("radek radek-nadpis"):
                 ui.label("Monitoring obchodů").classes("nadpis-sekce")
                 ui.space()
+                # Přehled výsledků dne - co se obchodovalo, co běží a jak dopadlo
+                ui.button(
+                    "Výsledky",
+                    icon="insights",
+                    on_click=self.report_dialog.open,
+                ).props("outline dense color=primary").classes(
+                    "tlacitko-vysledky"
+                ).tooltip(
+                    "Přehled obchodního dne na celou obrazovku - souhrn výsledků, "
+                    "běžící i uzavřené obchody a průběh dne v grafu."
+                )
                 # Hromadné zrušení běžících obchodů a vyprázdnění přehledu
                 ui.button(
                     "Zrušit a smazat vše",
@@ -1659,6 +1662,8 @@ class TradingUI:
         self._refresh_table()
         self._refresh_log()
         self._refresh_config()
+        # Otevřený přehled výsledků tiká živě spolu s tabulkou
+        self.report_dialog.refresh()
 
     def _refresh_market_open(self) -> None:
         """Odpočet do otevření burzy v hlavičce - během seance se skrývá."""
@@ -1857,7 +1862,7 @@ class TradingUI:
             "exp_loss": fmt(flow.expected_loss),
             "pnl": fmt(pnl) if pnl is not None else "-",
             "state": flow.state.label,
-            "state_class": STATE_CLASSES.get(flow.state, ""),
+            "state_class": flow.state.css_class,
             # Třída pro barevné odlišení zisku a ztráty
             "pnl_class": "zisk" if (pnl or 0) > 0 else ("ztrata" if (pnl or 0) < 0 else ""),
         }
