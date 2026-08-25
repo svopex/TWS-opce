@@ -173,6 +173,39 @@ class TestCilZProcent(unittest.TestCase):
             importer.profit_target_from_pct(266.4, 269.33, -10.0)
 
 
+class TestCilZPremie(unittest.TestCase):
+    """PT (resp. SL) na opci zadaný podílem ze zaplacené prémie."""
+
+    def test_procento_z_premie_je_cena_opce_krat_procento(self):
+        # Prémie kontraktu = cena opce x 100, takže 1 % prémie = cena opce v USD
+        self.assertAlmostEqual(importer.profit_target_from_premium_pct(30.0, 3.00), 90.0)
+
+    def test_desetina_z_opce_za_sto_dolaru(self):
+        # Opce za 1,00 stojí 100 USD za kontrakt, 10 % z ní je 10 USD
+        self.assertAlmostEqual(importer.profit_target_from_premium_pct(10.0, 1.00), 10.0)
+
+    def test_stejne_procento_skaluje_s_cenou_opce(self):
+        # Táž volba dá u levné opce úměrně menší a u drahé úměrně větší částku
+        self.assertAlmostEqual(importer.profit_target_from_premium_pct(10.0, 0.50), 5.0)
+        self.assertAlmostEqual(importer.profit_target_from_premium_pct(10.0, 2.00), 20.0)
+
+    def test_sto_procent_je_cela_premie(self):
+        self.assertAlmostEqual(importer.profit_target_from_premium_pct(100.0, 2.50), 250.0)
+
+    def test_vysledek_je_zaokrouhlen_na_centy(self):
+        self.assertAlmostEqual(importer.profit_target_from_premium_pct(33.0, 1.37), 45.21)
+
+    def test_nekladne_procento_se_odmitne(self):
+        with self.assertRaises(ValueError):
+            importer.profit_target_from_premium_pct(0.0, 3.00)
+        with self.assertRaises(ValueError):
+            importer.profit_target_from_premium_pct(-5.0, 3.00)
+
+    def test_nekladna_cena_opce_se_odmitne(self):
+        with self.assertRaises(ValueError):
+            importer.profit_target_from_premium_pct(30.0, 0.0)
+
+
 class TestSkutecnySoubor(unittest.TestCase):
     """Načtení souboru dodaného s aplikací, pokud je k dispozici."""
 

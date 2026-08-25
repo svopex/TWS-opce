@@ -28,6 +28,11 @@ log = logging.getLogger(__name__)
 # Režimy zadání cíle v dialogu
 REZIM_PCT = "pct"
 REZIM_USD = "usd"
+REZIM_PREMIUM = "premium"
+
+# Režimy, ve kterých jsou PT i SL zadané na opci - jen u nich má smysl
+# kompenzace SL o zaplacený spread
+REZIMY_NA_OPCI = (REZIM_USD, REZIM_PREMIUM)
 
 # Popisky sloupců tabulky načtených pozic
 SLOUPCE = ("", "Ticker", "Směr", "Vstup", "Cíl", "Kontrakt", "PT", "SL", "Ks", "Stav")
@@ -58,6 +63,8 @@ class RadekPozice:
     obnovit_button: Any = None
     # Poslední připravený náhled - drží vybraný kontrakt a určený směr
     preview: Preview | None = None
+    # Odhad nákupní ceny opce, ze kterého vyšel PT zadaný procentem prémie
+    premie: float | None = None
     # Obchod už byl založen; řádek se podruhé nezadává
     zadano: bool = False
 
@@ -164,17 +171,21 @@ class ImportDialog:
                         {
                             REZIM_PCT: "PT na podkladu v % dráhy k cíli",
                             REZIM_USD: "PT na opci v USD/ks",
+                            REZIM_PREMIUM: "PT na opci v % prémie",
                         },
                         value=REZIM_PCT,
                     )
                     .props("dense")
                     .classes("prepinac")
                     .tooltip(
-                        "V % : PT je cena podkladu, 100 % je přesně cílová cena ze "
-                        "souboru; SL se dopočítá také na podkladu podle poměru SL:PT "
-                        "z konfigurace. V USD: PT je zisk na jedné opci a SL ztráta "
-                        "na opci, obojí podle téhož poměru - cílová cena ze souboru "
-                        "se v tomto režimu nepoužívá."
+                        "% dráhy k cíli: PT je cena podkladu, 100 % je přesně cílová "
+                        "cena ze souboru; SL se dopočítá také na podkladu podle poměru "
+                        "SL:PT z konfigurace. USD/ks: PT je zisk na jedné opci a SL "
+                        "ztráta na opci, obojí podle téhož poměru. % prémie: totéž, "
+                        "ale zadané podílem z ceny opce - 30 % z opce za 3,00 je "
+                        "90 USD na kontrakt, takže levná i drahá opce riskuje stejný "
+                        "díl vložených peněz. V obou opčních režimech se cílová cena "
+                        "ze souboru nepoužívá."
                     )
                 )
                 self.rezim.on_value_change(lambda _: self._on_rezim_change())
@@ -203,6 +214,11 @@ class ImportDialog:
             )
             self.usd_input = (
                 ui.number("PT [USD/ks]", value=None, format="%.2f", min=0)
+                .classes("pole")
+                .props("outlined dense step=any")
+            )
+            self.premium_input = (
+                ui.number("PT [% prémie]", value=None, format="%.2f", min=0)
                 .classes("pole")
                 .props("outlined dense step=any")
             )
@@ -247,16 +263,19 @@ class ImportDialog:
         a kompenzace spreadu se zpřístupní jen u SL na opci. Načtené pozice
         se rovnou přepočítají, protože se mění význam všech úrovní.
         """
-        v_procentech = self.rezim.value == REZIM_PCT
-        self.pct_input.set_visibility(v_procentech)
-        self.usd_input.set_visibility(not v_procentech)
-        self.sl_spread_compensated.set_enabled(not v_procentech)
+        rezim = self.rezim.value
+        self.pct_input.set_visibility(rezim == REZIM_PCT)
+        self.usd_input.set_visibility(rezim == REZIM_USD)
+        self.premium_input.set_visibility(rezim == REZIM_PREMIUM)
+        # Kompenzace spreadu patří k SL na opci - tedy k oběma opčním režimům
+        self.sl_spread_compensated.set_enabled(rezim in REZIMY_NA_OPCI)
         # Úrovně z předchozího režimu mají jiný význam, proto se pole vyprázdní
         if prepocitat and self.radky:
             for radek in self.radky:
                 if not radek.zadano:
                     radek.pt_input.set_value(None)
                     radek.sl_input.set_value(None)
+                    radek.premie = None
             self._naplanuj_pripravu()
 
     async def _on_upload(self, event: Any) -> None:
@@ -386,31 +405,59 @@ class ImportDialog:
             return None
 
     def _rezimy(self) -> tuple[bool, bool]:
-        """Režim PT a SL podle volby dialogu: True = na podkladu."""
+        """
+        Režim PT a SL podle volby dialogu: True = na podkladu.
+        Procento prémie je jen jiný způsob zápisu úrovně na opci, proto se
+        engine v obou opčních režimech chová stejně.
+        """
         na_podkladu = self.rezim.value == REZIM_PCT
         return na_podkladu, na_podkladu
 
     def _sl_spread(self) -> bool:
         """Kompenzace SL o spread - uplatní se jen při SL zadaném na opci."""
-        return bool(self.sl_spread_compensated.value) and self.rezim.value == REZIM_USD
+        return bool(self.sl_spread_compensated.value) and self.rezim.value in REZIMY_NA_OPCI
+
+    def _zadana_hodnota(self) -> float | None:
+        """
+        Číslo vyplněné v poli aktuálního režimu. Prázdné i nekladné pole
+        vrací None - zadání pak nedává smysl a příprava se neprovádí.
+        """
+        pole = {
+            REZIM_PCT: self.pct_input,
+            REZIM_USD: self.usd_input,
+            REZIM_PREMIUM: self.premium_input,
+        }[self.rezim.value]
+        hodnota = self._cislo(pole.value)
+        return hodnota if hodnota is not None and hodnota > 0 else None
+
+    def _popis_hodnoty(self) -> str:
+        """Název zadávané hodnoty pro hlášku o nevyplněném poli."""
+        return {
+            REZIM_PCT: "procento cíle",
+            REZIM_USD: "PT na opci v USD",
+            REZIM_PREMIUM: "PT v procentech prémie",
+        }[self.rezim.value]
 
     def _cil_pro(self, pozice: ImportedPosition) -> float | None:
         """
         Cílová úroveň pro danou pozici podle zvoleného režimu: v procentech
-        podíl dráhy ze vstupu k cíli ze souboru, jinak zisk v USD na kontrakt
-        společný všem pozicím. Bez vyplněného pole vrací None.
+        podíl dráhy ze vstupu k cíli ze souboru, v USD zisk na kontrakt
+        společný všem pozicím.
+
+        V režimu procenta z prémie vrací None i s vyplněným polem - PT se
+        odvozuje od ceny opce, kterou zná až připravený náhled, a počítá se
+        proto až v _pt_z_premie.
         """
-        if self.rezim.value == REZIM_PCT:
-            pct = self._cislo(self.pct_input.value)
-            if pct is None or pct <= 0:
-                return None
-            return importer.profit_target_from_pct(
-                pozice.entry_price, pozice.target_price, pct
-            )
-        usd = self._cislo(self.usd_input.value)
-        if usd is None or usd <= 0:
+        hodnota = self._zadana_hodnota()
+        if hodnota is None:
             return None
-        return round(usd, 2)
+        if self.rezim.value == REZIM_PCT:
+            return importer.profit_target_from_pct(
+                pozice.entry_price, pozice.target_price, hodnota
+            )
+        if self.rezim.value == REZIM_USD:
+            return round(hodnota, 2)
+        return None
 
     def _set_loading(self, active: bool, text: str = "") -> None:
         """Zobrazí, nebo skryje indikaci probíhající přípravy."""
@@ -435,9 +482,8 @@ class ImportDialog:
         if not self.radky:
             ui.notify("Nejprve vyberte soubor s pozicemi.", type="warning")
             return
-        if self._cil_pro(self.radky[0].pozice) is None:
-            popis = "procento cíle" if self.rezim.value == REZIM_PCT else "PT na opci v USD"
-            ui.notify(f"Vyplňte {popis}.", type="warning")
+        if self._zadana_hodnota() is None:
+            ui.notify(f"Vyplňte {self._popis_hodnoty()}.", type="warning")
             return
         # Bez spojení se PT přesto vyplní - je to čistý výpočet ze zadání.
         # Dopočet SL a množství potřebuje kontrakt a kotace z TWS
@@ -475,6 +521,52 @@ class ImportDialog:
             self._set_loading(False)
         self._obnov_souhrn()
 
+    async def _pt_z_premie(self, radek: RadekPozice) -> float | None:
+        """
+        PT v USD na kontrakt z procenta prémie zadaného nad tabulkou.
+
+        Procento se vztahuje k ceně opce, kterou obchod nakoupí - tu ale
+        aplikace vybírá až podle PT, takže se nejdřív připraví zadání s cílem
+        ze souboru na podkladu. Z něj vyjde odhad nákupní ceny opce, a teprve
+        z ní požadovaný podíl. Chyba i chybějící cena zapíše stav řádku
+        a vrací None.
+        """
+        pct = self._zadana_hodnota()
+        if pct is None:
+            return None
+
+        pozice = radek.pozice
+        try:
+            odhad = await self.engine.prepare(
+                pozice.symbol,
+                pozice.entry_price,
+                pozice.target_price,
+                None,
+                True,
+                True,
+                False,
+            )
+        except Exception as exc:
+            radek.premie = None
+            radek.kontrakt_label.set_text("-")
+            radek.stav(f"Chyba přípravy: {exc}", "stav-import-chyba")
+            return None
+
+        # Nejlepší je odhad ceny v okamžiku vstupu; bez modelu poslouží
+        # aktuální ASK (nakupuje se u něj), nakonec cena pro model
+        premie = odhad.expected_fill_price or odhad.option_ask or odhad.option_price
+        if not premie or premie <= 0:
+            radek.premie = None
+            radek.kontrakt_label.set_text("-")
+            radek.stav(
+                "Cenu opce se nepodařilo zjistit - PT z prémie nelze spočítat.",
+                "stav-import-chyba",
+            )
+            return None
+
+        radek.premie = premie
+        return importer.profit_target_from_premium_pct(pct, premie)
+
     async def _priprav_radek(self, radek: RadekPozice, zachovat_pt: bool = False) -> None:
         """
         Připraví jednu pozici: určí kontrakt, dopočítá SL podle poměru SL:PT
@@ -489,20 +581,39 @@ class ImportDialog:
             if pt is None:
                 radek.stav("Vyplňte PT", "stav-import-chyba")
                 return
+            # Ručně přepsané PT už z prémie nevychází, poznámka o ní by mátla
+            radek.premie = None
         else:
             pt = self._cil_pro(radek.pozice)
-            if pt is None:
+            # V režimu procenta z prémie se PT dopočítá až z ceny opce (níže),
+            # jinak prázdná hodnota znamená nevyplněné zadání
+            if pt is None and self.rezim.value != REZIM_PREMIUM:
                 return
 
-        # PT je známé hned - nezávisí na kotacích, tak ať je v poli i bez TWS
-        radek.pt_input.set_value(round(pt, 2))
+        # Známé PT patří do pole hned - nezávisí na kotacích, tak ať je vidět
+        # i bez spojení s TWS
+        if pt is not None:
+            radek.pt_input.set_value(round(pt, 2))
         if not self.ib.connected:
             radek.kontrakt_label.set_text("-")
             radek.stav(
-                "Bez spojení s TWS - SL ani množství nelze dopočítat.",
+                "Bez spojení s TWS - "
+                + (
+                    "PT z prémie, SL ani množství nelze dopočítat."
+                    if pt is None
+                    else "SL ani množství nelze dopočítat."
+                ),
                 "stav-import-varovani",
             )
             return
+
+        # Procento prémie se převádí na USD na kontrakt z odhadované nákupní
+        # ceny opce; tu zná až připravený náhled, proto se sahá do TWS dvakrát
+        if pt is None:
+            pt = await self._pt_z_premie(radek)
+            if pt is None:
+                return
+            radek.pt_input.set_value(pt)
 
         pt_on, sl_on = self._rezimy()
         try:
@@ -549,11 +660,17 @@ class ImportDialog:
             )
             return
 
+        # U PT odvozeného z prémie se uvede, z jaké ceny opce se počítalo
+        zaklad = (
+            f" · prémie ≈ {fmt(radek.premie * 100)} USD" if radek.premie else ""
+        )
         if preview.warnings:
-            radek.stav("Připraveno s výhradami: " + " ".join(preview.warnings),
-                       "stav-import-varovani")
+            radek.stav(
+                f"Připraveno{zaklad} s výhradami: " + " ".join(preview.warnings),
+                "stav-import-varovani",
+            )
         else:
-            radek.stav("Připraveno", "stav-import-ok")
+            radek.stav(f"Připraveno{zaklad}", "stav-import-ok")
 
     def _obnov_souhrn(self) -> None:
         """Souhrn pod tabulkou - kolik pozic a kontraktů se chystá do trhu."""

@@ -163,3 +163,24 @@ def profit_target_from_pct(entry_price: float, target_price: float, pct: float) 
     if pct <= 0:
         raise ValueError("Procento cíle musí být kladné číslo.")
     return round(entry_price + (target_price - entry_price) * pct / 100.0, 2)
+
+
+def profit_target_from_premium_pct(pct: float, option_price: float) -> float:
+    """
+    PT (resp. SL) na opci v USD na kontrakt z procenta zaplacené prémie.
+
+    Prémie jednoho kontraktu je cena opce krát multiplikátor (100), takže
+    jedno procento prémie je právě cena opce v USD - 30 % z opce za 3,00
+    (300 USD) je 90 USD na kontrakt. Zadaná hodnota tak znamená u levné
+    i drahé opce stejný podíl vložených peněz, což fixní částka v USD
+    napříč košíkem nedělá.
+
+    Procento nad 100 nemá u SL smysl (stop by stál pod nulovou cenou opce),
+    tady se ale nekontroluje - na překročení zaplacené prémie upozorňuje
+    engine při přípravě zadání i po nákupu.
+    """
+    if pct <= 0:
+        raise ValueError("Procento prémie musí být kladné číslo.")
+    if option_price <= 0:
+        raise ValueError("Cena opce pro výpočet z prémie musí být kladná.")
+    return round(pct * option_price, 2)

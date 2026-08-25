@@ -441,8 +441,24 @@ Nad tabulkou se volí režim cíle, společný všem načteným pozicím:
   rovněž **na podkladu** podle poměru `sl_to_pt_ratio` z konfigurace.
 - **PT na opci v USD/ks** — PT je zisk na jedné opci v USD, společný
   všem pozicím, a SL je ztráta na opci podle téhož poměru. Cílová cena ze
-  souboru se v tomto režimu nepoužívá. Jen zde má smysl zaškrtávátko
-  **SL o zaplacený spread dál** — chová se stejně jako v běžném formuláři.
+  souboru se v tomto režimu nepoužívá.
+- **PT na opci v % prémie** — totéž, ale zadané podílem ze zaplacené prémie.
+  Prémie kontraktu je cena opce krát 100, takže jedno procento prémie je právě
+  cena opce v USD: 30 % z opce za 3,00 (300 USD) je 90 USD na kontrakt, z opce
+  za 0,50 jen 15 USD. Napříč košíkem tak každá pozice riskuje stejný **díl
+  vložených peněz**, což pevná částka v USD nedělá — u levné opce bývá
+  neúměrně velká (a naráží na strop prémie), u drahé zanedbatelná.
+
+  Procento se vztahuje k **odhadované nákupní ceně** opce, tedy k ceně
+  v okamžiku, kdy podklad dosáhne vstupní úrovně. Aplikace ji zjistí tak, že
+  nejprve připraví zadání s cílem ze souboru na podkladu, z vybraného kontraktu
+  vezme odhad ceny a teprve z něj spočítá PT v USD — proto sahá do TWS dvakrát
+  a příprava je o něco pomalejší. Použitá prémie se ukáže ve sloupci *Stav*
+  (`prémie ≈ 300 USD`). Do pole *PT* se zapíše výsledek v USD/ks, takže se dá
+  ručně doladit; dál obchod běží jako běžné zadání na opci.
+
+V obou opčních režimech (USD/ks i % prémie) má smysl zaškrtávátko
+**SL o zaplacený spread dál** — chová se stejně jako v běžném formuláři.
 
 Vedle režimu se zadává **Max. spread [%]** (výchozí z konfigurace). Tlačítkem
 **Přepočítat** se PT, SL i množství u všech dosud nezadaných pozic spočítají

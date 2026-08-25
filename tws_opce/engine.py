@@ -92,6 +92,10 @@ class Preview:
     # Cena vybrané opce pro model (střed kotace, jinak last/close) a její zdroj
     option_price: float | None = None
     option_price_source: str = ""
+    # Odhad ceny, za kterou se opce nakoupí, až podklad dosáhne vstupní úrovně.
+    # Slouží ke stropování ztráty zadané na opci a k převodu úrovní zadaných
+    # procentem z prémie na USD na kontrakt. None, chybí-li podklad pro model.
+    expected_fill_price: float | None = None
     spread_pct: float | None = None
     quantity: int = 1
     risk_amount: float = 0.0
@@ -452,6 +456,9 @@ class FlowEngine:
                 )
             used_delta = delta if delta is not None else self.cfg.trading.default_delta
 
+            # Odhad nákupní ceny opce - čistý výpočet z už načtených kotací
+            preview.expected_fill_price = self._expected_fill_price(preview, entry_price)
+
             # SL buď zadaný uživatelem, nebo dopočtený podle poměru z konfigurace;
             # při smíšeném režimu PT a SL se převádí přes cenu opce, proto až teď,
             # kdy jsou k dispozici kotace vybrané opce
@@ -480,7 +487,7 @@ class FlowEngine:
                 # Kompenzovaný SL zvětšuje ztrátu na kontrakt, takže se musí
                 # promítnout i do množství a do kontroly stropu prémie
                 ztrata = preview.stop_loss + preview.sl_spread_usd
-                cena = self._expected_fill_price(preview, entry_price)
+                cena = preview.expected_fill_price
                 if cena is not None:
                     varovani = self._premium_cap_text(ztrata, cena, preview.min_tick, odhad=True)
                     if varovani is not None:
