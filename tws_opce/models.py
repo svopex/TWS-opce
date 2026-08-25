@@ -12,6 +12,10 @@ from . import calc
 # Popisky typu opce pro zobrazení v UI
 RIGHT_LABELS = {"C": "CALL", "P": "PUT"}
 
+# Násobky původní vzdálenosti cíle od vstupu nabízené v rozhraní - tlačítky
+# pod řádkem obchodu v přehledu i při hromadném zadání ze souboru
+PT_MULTIPLES = (1.0, 1.5, 2.0, 2.5, 3.0)
+
 
 def cislo_text(hodnota: float, desetin: int = 2) -> str:
     """Číslo pro zobrazení - tisíce oddělené mezerou, desetinná čárka jako tečka."""

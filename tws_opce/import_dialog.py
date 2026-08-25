@@ -21,7 +21,7 @@ from .config import AppConfig
 from .engine import FlowEngine, Preview
 from .ib_service import IBService
 from .importer import ImportedPosition
-from .models import FlowRequest, cislo_text
+from .models import PT_MULTIPLES, FlowRequest, cislo_text
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +34,36 @@ REZIM_PREMIUM = "premium"
 # kompenzace SL o zaplacený spread
 REZIMY_NA_OPCI = (REZIM_USD, REZIM_PREMIUM)
 
+# Hodnota volby runneru, která znamená "runner nezapínat"
+RUNNER_VYPNUTO = "0"
+
+
+def runner_volby(kratke: bool = False) -> dict[str, str]:
+    """
+    Nabídka nastavení runneru: vypnuto a násobky původní vzdálenosti cíle.
+    Krátká varianta je pro combobox v řádku tabulky, kde není místo na
+    celou větu.
+    """
+    vypnuto = "Bez" if kratke else "Nepoužít runner"
+    return {RUNNER_VYPNUTO: vypnuto} | {
+        f"{n:g}": f"{n:g}×".replace(".", ",") for n in PT_MULTIPLES
+    }
+
+
+def runner_nasobek(hodnota: Any) -> float | None:
+    """Násobek cíle runneru z hodnoty volby; None znamená runner nezapínat."""
+    text = str(hodnota or RUNNER_VYPNUTO)
+    if text == RUNNER_VYPNUTO:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
 # Popisky sloupců tabulky načtených pozic
-SLOUPCE = ("", "Ticker", "Směr", "Vstup", "Cíl", "Kontrakt", "PT", "SL", "Ks", "Stav")
+SLOUPCE = (
+    "", "Ticker", "Směr", "Vstup", "Cíl", "Kontrakt", "PT", "SL", "Ks", "Runner", "Stav"
+)
 
 
 def fmt(value: float | None, digits: int = 2, suffix: str = "") -> str:
@@ -59,6 +87,7 @@ class RadekPozice:
     pt_input: Any = None
     sl_input: Any = None
     qty_input: Any = None
+    runner_select: Any = None
     stav_label: Any = None
     obnovit_button: Any = None
     # Poslední připravený náhled - drží vybraný kontrakt a určený směr
@@ -99,6 +128,8 @@ class ImportDialog:
         self.engine = engine
         self.ib = ib
         self.on_created = on_created
+        # Zvolené nastavení runneru pro zakládané pozice (klíč tlačítka)
+        self.runner_value: str = RUNNER_VYPNUTO
         # Načtené pozice v pořadí ze souboru
         self.radky: list[RadekPozice] = []
         # Jméno naposledy načteného souboru - ukazuje se nad tabulkou
@@ -239,6 +270,34 @@ class ImportDialog:
                 "spočítanými podle nastavení nad tabulkou."
             )
 
+        # Počáteční nastavení runneru, společné všem zakládaným pozicím.
+        # Runner se zapíná až po založení obchodu, stejně jako tlačítky
+        # v přehledu - před nákupem si volbu obchod jen zapamatuje
+        with ui.row().classes("radek radek-runner"):
+            ui.label("Runner:").classes("popisek-runner-import")
+            napoveda = (
+                "Výchozí nastavení runneru pro všechny načtené pozice - přepíše "
+                "volbu ve sloupci Runner, kde ji lze u každé pozice doladit "
+                "zvlášť. Runner je část pozice "
+                f"({self.cfg.trading.runner_quantity} ks podle konfigurace) "
+                "s vlastním, vzdálenějším cílem na zvoleném násobku původní "
+                "vzdálenosti PT od vstupu. Pozice s menším množstvím runner "
+                "nedostane a dá se to poznat ve sloupci Stav."
+            )
+            self.runner_buttons: dict[str, Any] = {}
+            for hodnota, popisek in runner_volby().items():
+                tlacitko = (
+                    ui.button(
+                        popisek,
+                        on_click=lambda _=None, h=hodnota: self._nastav_runner(h),
+                    )
+                    .props("dense no-caps size=sm")
+                    .classes("tlacitko-runner")
+                )
+                tlacitko.tooltip(napoveda)
+                self.runner_buttons[hodnota] = tlacitko
+            self._zvyrazni_runner()
+
         # Výchozí režim rozhoduje, které pole cíle je vidět a zda je dostupná
         # kompenzace spreadu
         self._on_rezim_change(prepocitat=False)
@@ -375,6 +434,12 @@ class ImportDialog:
             .classes("bunka-import pole-import pole-import-ks")
             .props("outlined dense")
         )
+        # Runner se nastavuje u každé pozice zvlášť; výchozí je globální volba
+        radek.runner_select = (
+            ui.select(runner_volby(kratke=True), value=self.runner_value)
+            .classes("bunka-import pole-import vyber-runner")
+            .props("outlined dense options-dense")
+        )
 
         with ui.row().classes("bunka-import bunka-stav"):
             radek.obnovit_button = (
@@ -412,6 +477,28 @@ class ImportDialog:
         """
         na_podkladu = self.rezim.value == REZIM_PCT
         return na_podkladu, na_podkladu
+
+    def _nastav_runner(self, hodnota: str) -> None:
+        """
+        Zapamatuje výchozí volbu runneru a přenese ji do všech dosud
+        nezadaných řádků; u založených obchodů už by neměla co změnit.
+        """
+        self.runner_value = hodnota
+        self._zvyrazni_runner()
+        for radek in self.radky:
+            if not radek.zadano and radek.runner_select is not None:
+                radek.runner_select.set_value(hodnota)
+
+    def _zvyrazni_runner(self) -> None:
+        """
+        Vybrané tlačítko je plné a oranžové, ostatní zůstávají jen obrysové -
+        stejné rozlišení jako u tlačítek runneru v řádku přehledu.
+        """
+        for hodnota, tlacitko in self.runner_buttons.items():
+            if hodnota == self.runner_value:
+                tlacitko.props(add="color=orange-8", remove="outline")
+            else:
+                tlacitko.props(add="outline color=grey-7")
 
     def _sl_spread(self) -> bool:
         """Kompenzace SL o spread - uplatní se jen při SL zadaném na opci."""
@@ -741,7 +828,30 @@ class ImportDialog:
                 radek.vybrano.set_value(False)
                 radek.vybrano.set_enabled(False)
                 radek.obnovit_button.set_enabled(False)
-                radek.stav(f"Zadáno {flow.id} – {flow.state.label}", "stav-import-ok")
+
+                # Runner se zapíná až na hotovém obchodu. Nezdaří-li se
+                # (typicky málo kontraktů), obchod běží dál - jen se to připíše
+                # do stavu, aby to nezapadlo
+                popis_runneru = ""
+                nasobek = runner_nasobek(radek.runner_select.value)
+                if nasobek is not None:
+                    try:
+                        await self.engine.set_runner(flow.id, nasobek)
+                    except Exception as exc:
+                        radek.stav(
+                            f"Zadáno {flow.id} – {flow.state.label}; runner nezapnut: {exc}",
+                            "stav-import-varovani",
+                        )
+                        zalozeno += 1
+                        continue
+                    popis_runneru = (
+                        f", runner {flow.runner_quantity} ks na {nasobek:g}×"
+                    )
+
+                radek.stav(
+                    f"Zadáno {flow.id} – {flow.state.label}{popis_runneru}",
+                    "stav-import-ok",
+                )
                 zalozeno += 1
         finally:
             self._set_loading(False)

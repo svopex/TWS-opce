@@ -487,6 +487,20 @@ Nad tabulkou se volí režim cíle, společný všem načteným pozicím:
 V obou opčních režimech (USD/ks i % prémie) má smysl zaškrtávátko
 **SL o zaplacený spread dál** — chová se stejně jako v běžném formuláři.
 
+**Runner** se nastavuje u každé pozice zvlášť — comboboxem ve stejnojmenném
+sloupci tabulky (*Bez* / *1×* … *3×*). Sada tlačítek *Nepoužít runner* / *1×* …
+*3×* nad tabulkou slouží jako **výchozí hodnota**: přepne volbu u všech dosud
+nezadaných řádků naráz, takže stačí nastavit ji globálně a jednotlivé pozice
+pak jen doladit. Výchozí stav je *Nepoužít runner*.
+
+Zvolený násobek zapne u založeného obchodu runner (počet kusů podle
+`trading.runner_quantity`) s cílem na tomto násobku původní vzdálenosti PT od
+vstupu — přesně jako tlačítka runneru v řádku přehledu. Zapíná se až na hotovém
+obchodu, takže před nákupem si obchod volbu jen zapamatuje a zajišťovací příkazy
+se po nákupu založí rovnou rozdělené. Pozice s příliš malým množstvím runner
+nedostane (vyžaduje víc kontraktů, než je jeho velikost); obchod se přesto
+založí a důvod se objeví ve sloupci *Stav*.
+
 Vedle režimu se zadává **Max. spread [%]** (výchozí z konfigurace). Tlačítkem
 **Přepočítat** se PT, SL i množství u všech dosud nezadaných pozic spočítají
 znovu; tlačítko ↻ v řádku přepočte jedinou pozici a **ponechá** v ní ručně

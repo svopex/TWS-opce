@@ -15,7 +15,7 @@ from .config import AppConfig
 from .engine import FlowEngine, Preview
 from .ib_service import IBService
 from .import_dialog import ImportDialog
-from .models import Flow, FlowRequest, FlowState, level_text
+from .models import PT_MULTIPLES, Flow, FlowRequest, FlowState, level_text
 
 log = logging.getLogger(__name__)
 
@@ -35,9 +35,6 @@ STATE_CLASSES = {
     FlowState.CANCELLED: "stav-zruseno",
     FlowState.ERROR: "stav-chyba",
 }
-
-# Násobky původní vzdálenosti cíle od vstupu, nabízené tlačítky pod polem PT
-PT_MULTIPLES = (1.0, 1.5, 2.0, 2.5, 3.0)
 
 # Definice sloupců monitorovací tabulky
 TABLE_COLUMNS = [

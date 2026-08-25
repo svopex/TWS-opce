@@ -636,7 +636,7 @@ body.body--dark .log-radek {
    na obsah, takže před načtením souboru zabírá jen tolik místa, kolik je
    potřeba, a s tabulkou naroste nejvýš na její šířku */
 .dialog-import-obal .q-dialog__inner--minimized > div {
-  max-width: min(940px, 94vw);
+  max-width: min(1060px, 94vw);
 }
 
 .dialog-import {
@@ -704,13 +704,40 @@ body.body--dark .log-radek {
   width: auto;
 }
 
+/* Řádek s volbou runneru - popisek a sada tlačítek s násobky cíle */
+.dialog-import .radek-runner {
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.dialog-import .radek-runner .popisek-runner-import {
+  margin-right: 2px;
+}
+
+.dialog-import .popisek-runner-import {
+  color: #475569;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+/* Samostatná tlačítka volby runneru. Násobky mají jednotnou šířku, aby řada
+   nepřeskakovala podle délky popisku (1x vs. 2,5x); delší "Nepoužít runner"
+   se roztáhne podle textu, místa je vpravo dost */
+.dialog-import .tlacitko-runner {
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  min-width: 64px;
+  padding: 4px 12px;
+}
+
 /* Tabulka načtených pozic. Šířky sloupců drží zarovnání buněk, které jsou
    přímými potomky mřížky; poslední sloupec (stav) dobírá zbytek místa */
 .dialog-import .tabulka-import {
   align-items: center;
   gap: 3px 7px;
   grid-template-columns:
-    26px 58px 58px 68px 68px 138px 84px 84px 72px minmax(150px, 1fr);
+    28px 62px 62px 74px 74px 150px 88px 88px 62px 96px minmax(170px, 1fr);
   margin-top: 4px;
   width: 100%;
 }
@@ -749,9 +776,38 @@ body.body--dark .log-radek {
   height: 30px;
 }
 
+/* Modrý rámeček označující vybrané pole kreslí Quasar pseudo-elementem, který
+   přebírá výšku nastavenou o řádek výš. U výběru runneru je pole vyšší než
+   30 px, takže rámeček končil uprostřed a vypadal jako skvrna vedle obrysu -
+   výška se proto vrací na rozměr pole */
+.dialog-import .pole-import .q-field__control::after {
+  height: auto;
+  inset: 0;
+}
+
 .dialog-import .pole-import input {
   font-size: 0.8rem;
   text-align: right;
+}
+
+/* Výběr runneru nese text, ne číslo - zarovnává se doleva a bez odsazení */
+.dialog-import .vyber-runner .q-field__native {
+  font-size: 0.78rem;
+  justify-content: flex-start;
+  padding: 0;
+  text-align: left;
+  white-space: nowrap;
+}
+
+/* Quasar podbarvuje vybrané pole modrým překryvem focusu; v úzké buňce z něj
+   vzniká výrazná skvrna přes popisek, takže stačí samotný obrys pole */
+.dialog-import .vyber-runner .q-focus-helper {
+  display: none;
+}
+
+/* Rozbalovací šipka se drží těsně u textu, ať zbude místo na popisek */
+.dialog-import .vyber-runner .q-field__append {
+  padding-left: 0;
 }
 
 /* Buňka stavu nese tlačítko přepočtu řádku a text stavu vedle sebe */
@@ -819,7 +875,8 @@ body.body--dark .dialog-import .hlavicka-import {
 }
 
 body.body--dark .dialog-import .popis-souboru,
-body.body--dark .dialog-import .souhrn-import {
+body.body--dark .dialog-import .souhrn-import,
+body.body--dark .dialog-import .popisek-runner-import {
   color: #cbd5e1;
 }
 
