@@ -1605,6 +1605,36 @@ class TestZruseniFlow(ZakladTestu):
         self.engine.remove_flow(flow.id)
         self.assertNotIn(flow.id, self.engine.flows)
 
+    async def test_hromadne_vycisteni_vyprazdni_prehled(self):
+        # Tři obchody v různých stavech: běžící před nákupem, běžící v pozici
+        # a jeden už ukončený - po vyčištění nesmí zůstat ani jeden
+        pred_nakupem = await self.zaloz_call()
+        ukonceny = await self.zaloz_put()
+        await self.engine.cancel_flow(ukonceny.id)
+
+        self.ib.price_underlying = 100.0
+        v_pozici = await self.engine.start_flow(
+            FlowRequest(symbol="MSFT", entry_price=102.0, profit_target=105.0)
+        )
+        self.ib.fill(v_pozici.entry_trade, 1, 3.00)
+        await self.engine._tick()
+        await self.engine._tick()
+        self.assertEqual(v_pozici.state, FlowState.EXIT_ARMED)
+
+        zruseno, smazano = await self.engine.cancel_and_clear_all()
+
+        self.assertEqual(zruseno, 2)
+        self.assertEqual(smazano, 3)
+        self.assertEqual(self.engine.flows, {})
+        # Obchod v pozici se trhem neuzavírá, jen se zruší jeho zajištění
+        self.assertEqual(v_pozici.state, FlowState.CANCELLED)
+        self.assertIn("bez zajištění", v_pozici.message)
+        self.assertEqual(pred_nakupem.state, FlowState.CANCELLED)
+
+    async def test_hromadne_vycisteni_prazdneho_prehledu(self):
+        zruseno, smazano = await self.engine.cancel_and_clear_all()
+        self.assertEqual((zruseno, smazano), (0, 0))
+
 
 class TestVicenasobneFlow(ZakladTestu):
     """Souběžné sledování více obchodů."""

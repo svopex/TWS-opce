@@ -79,6 +79,16 @@
   line-height: 1.4;
 }
 
+/* Upozornění na pozice, které po hromadném vyčištění zůstanou otevřené */
+.dialog-pozice .dialog-varovani {
+  background-color: #fef2f2;
+  border-left: 3px solid #b91c1c;
+  border-radius: 4px;
+  color: #991b1b;
+  font-weight: 600;
+  padding: 8px 10px;
+}
+
 .dialog-pozice .dialog-tlacitka {
   gap: 6px;
   margin-top: 8px;
@@ -469,6 +479,13 @@ body.body--dark .popisek-nasobky {
   color: #94a3b8;
 }
 
+/* Varování v dialogu si i v tmavém režimu drží červený podklad; stojí až
+   za obecným pravidlem výše, aby jeho barvu textu přebilo */
+body.body--dark .dialog-pozice .dialog-varovani {
+  background-color: #450a0a;
+  color: #fca5a5;
+}
+
 /* Náhled připraveného obchodu */
 body.body--dark .nahled {
   background-color: #1e293b;
@@ -693,7 +710,7 @@ body.body--dark .log-radek {
   align-items: center;
   gap: 3px 7px;
   grid-template-columns:
-    26px 58px 58px 68px 68px 138px 84px 84px 52px minmax(150px, 1fr);
+    26px 58px 58px 68px 68px 138px 84px 84px 72px minmax(150px, 1fr);
   margin-top: 4px;
   width: 100%;
 }
@@ -784,6 +801,12 @@ body.body--dark .log-radek {
 
 /* Tlačítko otevírající dialog stojí vpravo v nadpisu formuláře */
 .tlacitko-import {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+}
+
+/* Hromadné zrušení a vymazání přehledu vpravo v nadpisu monitoringu */
+.tlacitko-smazat-vse {
   flex: 0 0 auto;
   font-size: 0.72rem;
 }

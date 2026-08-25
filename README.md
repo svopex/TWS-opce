@@ -347,6 +347,12 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    Každý řádek má ve sloupci *Stav*, pod odznakem stavu, akci celého
    obchodu: běžící obchod tlačítko **Zrušit** (drží-li pozici, aplikace se
    nejprve zeptá, co s ní), ukončený obchod **Odstranit z přehledu**.
+   Vpravo v nadpisu přehledu stojí tlačítko **Zrušit a smazat vše**. Po
+   potvrzení zruší všechny běžící obchody i jejich příkazy v TWS a přehled
+   vyprázdní. Držené pozice se přitom trhem neuzavírají — zajišťovací příkazy
+   pro PT a SL zmizí a pozice zůstanou v TWS otevřené bez zajištění, na což
+   potvrzovací dialog výslovně upozorní. Uzavřete je proto ručně, nebo místo
+   hromadné akce použijte **Zrušit** v řádku, kde lze uzavření trhem zvolit.
 
 Aplikace zvládá více obchodů současně; na jednom tickeru může běžet
 zároveň jeden long (CALL) a jeden short (PUT) obchod. Směr zadání určuje

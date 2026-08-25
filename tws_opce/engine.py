@@ -2335,6 +2335,38 @@ class FlowEngine:
         self.flows.pop(flow_id, None)
         self._notify()
 
+    async def cancel_and_clear_all(self) -> tuple[int, int]:
+        """
+        Zruší všechna běžící flow a vyprázdní celý přehled obchodů.
+
+        Pozice se záměrně neuzavírají trhem: uzavírání by obchod nechalo ve
+        stavu CLOSING, tedy dál v přehledu, a hromadné vyčištění by nic
+        nevyčistilo. Držené pozice proto zůstávají v TWS otevřené a bez
+        zajištění - obchodník je na to upozorněn už v potvrzovacím dialogu.
+
+        Vrací dvojici (zrušeno běžících, smazáno položek).
+        """
+        async with self._lock:
+            flows = list(self.flows.values())
+            zruseno = 0
+            for flow in flows:
+                if flow.state.is_active:
+                    self._cancel_locked(flow, close_position=False)
+                    zruseno += 1
+                else:
+                    # Ukončené flow už odběry zpravidla nedrží, uvolnění je
+                    # ale levné a pojistí se tím proti zapomenutému odběru
+                    self._release(flow)
+
+            self.flows.clear()
+            self._lost_leg_warned.clear()
+            self.log_event(
+                f"Přehled obchodů vyprázdněn - zrušeno {zruseno} běžících, "
+                f"smazáno {len(flows)} položek."
+            )
+            self._notify()
+            return zruseno, len(flows)
+
     # ------------------------------------------------------------------
     # Monitorovací smyčka
     # ------------------------------------------------------------------

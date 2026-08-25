@@ -507,6 +507,18 @@ class TradingUI:
         with ui.card().classes("karta karta-tabulka"):
             with ui.row().classes("radek radek-nadpis"):
                 ui.label("Monitoring obchodů").classes("nadpis-sekce")
+                ui.space()
+                # Hromadné zrušení běžících obchodů a vyprázdnění přehledu
+                ui.button(
+                    "Zrušit a smazat vše",
+                    icon="delete_sweep",
+                    on_click=self._on_clear_all,
+                ).props("outline dense color=red-8").classes(
+                    "tlacitko-smazat-vse"
+                ).tooltip(
+                    "Zruší všechny běžící obchody i jejich příkazy v TWS "
+                    "a vymaže všechny položky z přehledu."
+                )
 
             self.table = (
                 ui.table(columns=TABLE_COLUMNS, rows=[], row_key="id")
@@ -1324,6 +1336,64 @@ class TradingUI:
         # Formulář už nemá na co odkazovat, pokud ukazoval právě tento obchod
         if self.form_flow_id == flow.id:
             self.form_flow_id = None
+        self._refresh()
+
+    async def _potvrd_vycisteni(self, bezici: int, s_pozici: int, celkem: int) -> bool:
+        """
+        Vyžádá si potvrzení hromadného zrušení a vymazání přehledu.
+        Vrací True, pokud obchodník akci potvrdil.
+        """
+        with ui.dialog() as dialog, ui.card().classes("dialog-pozice"):
+            ui.label("Zrušit a smazat všechny obchody").classes("dialog-nadpis")
+            ui.label(
+                f"Zruší se {bezici} běžících obchodů včetně jejich příkazů v TWS "
+                f"a z přehledu zmizí všech {celkem} položek."
+            ).classes("dialog-text")
+
+            # Otevřená pozice hromadné vyčištění přežije - na to je potřeba
+            # upozornit dřív, než se obchod z přehledu ztratí
+            if s_pozici:
+                ui.label(
+                    f"POZOR: {s_pozici} obchodů drží otevřenou pozici. Zajišťovací "
+                    f"příkazy pro PT a SL se zruší, ale pozice zůstanou v TWS "
+                    f"otevřené a bez zajištění - uzavřete je ručně."
+                ).classes("dialog-text dialog-varovani")
+
+            with ui.column().classes("dialog-tlacitka"):
+                ui.button(
+                    "Zrušit a smazat vše",
+                    on_click=lambda: dialog.submit(True),
+                ).props("color=red-8").classes("dialog-tlacitko")
+                ui.button("Zpět", on_click=lambda: dialog.submit(False)).props(
+                    "flat"
+                ).classes("dialog-tlacitko")
+
+        return bool(await dialog)
+
+    async def _on_clear_all(self) -> None:
+        """Zruší všechny obchody a vyprázdní monitorovací přehled."""
+        flows = list(self.engine.flows.values())
+        if not flows:
+            ui.notify("Monitoring obchodů je prázdný.", type="info")
+            return
+
+        bezici = [flow for flow in flows if flow.state.is_active]
+        s_pozici = [flow for flow in bezici if flow.fill_price is not None]
+        if not await self._potvrd_vycisteni(len(bezici), len(s_pozici), len(flows)):
+            return
+
+        try:
+            zruseno, smazano = await self.engine.cancel_and_clear_all()
+        except Exception as exc:
+            ui.notify(str(exc), type="negative")
+            return
+
+        # Formulář už nemá na co odkazovat, přehled je prázdný
+        self.form_flow_id = None
+        ui.notify(
+            f"Zrušeno {zruseno} běžících obchodů, smazáno {smazano} položek.",
+            type="warning",
+        )
         self._refresh()
 
     # ------------------------------------------------------------------
