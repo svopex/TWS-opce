@@ -164,6 +164,19 @@ def fmt(value: float | None, digits: int = 2, suffix: str = "") -> str:
     return f"{value:,.{digits}f}{suffix}".replace(",", " ")
 
 
+def pnl_text(cisty: float | None, hruby: float | None) -> str:
+    """
+    Výsledek pozice pro tabulku - hodnota po provizích a v závorce tatáž
+    bez nich, například '-92.00 (-85.00)'. Bez zaplacené provize (obě hodnoty
+    stejné) se závorka vynechává, ať sloupec zbytečně nebobtná.
+    """
+    if cisty is None:
+        return "-"
+    if hruby is None or abs(hruby - cisty) < 0.005:
+        return fmt(cisty)
+    return f"{fmt(cisty)} ({fmt(hruby)})"
+
+
 # Režimy zadání úrovně PT a SL. Podklad je cena podkladu hlídaná podmíněným
 # příkazem, zbylé dva jsou tatáž úroveň na opci - jednou zapsaná přímo v USD
 # na kontrakt, podruhé podílem ze zaplacené prémie. Procento je jen jednotka
@@ -1729,8 +1742,12 @@ class TradingUI:
     def _row(self, flow: Flow) -> dict[str, Any]:
         """Převede flow na řádek monitorovací tabulky."""
         # Sloupec P/L ukazuje jen dosud otevřenou část pozice; celkový
-        # výsledek obchodu zůstává v závěrečné hlášce po uzavření
-        pnl = flow.open_pnl
+        # výsledek obchodu zůstává v závěrečné hlášce po uzavření.
+        # Hlavní hodnota je po odečtení provize zaplacené za nákup těchto
+        # kusů, v závorce tatáž částka bez ní (prodejní provize vznikne
+        # až prodejem, takže v otevřené pozici ještě není)
+        pnl = flow.open_pnl_net
+        pnl_hruby = flow.open_pnl
 
         # Zvýrazní se tlačítko odpovídající aktuálnímu násobku cíle
         aktualni = flow.pt_multiple
@@ -1862,7 +1879,7 @@ class TradingUI:
             "spread_limit": fmt(flow.max_spread_pct, 2, " %"),
             "exp_profit": fmt(flow.expected_profit),
             "exp_loss": fmt(flow.expected_loss),
-            "pnl": fmt(pnl) if pnl is not None else "-",
+            "pnl": pnl_text(pnl, pnl_hruby),
             "state": flow.state.label,
             "state_class": flow.state.css_class,
             # Třída pro barevné odlišení zisku a ztráty

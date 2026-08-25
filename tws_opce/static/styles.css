@@ -1010,13 +1010,38 @@ body.body--dark .dialog-import .stav-import-varovani {
   text-transform: uppercase;
 }
 
-/* Hodnota se přizpůsobuje šířce okna, ať se do dlaždice vejde i velké číslo */
+/* Hodnota se přizpůsobuje šířce okna, ať se do dlaždice vejde i velké číslo.
+   Vedle ní stojí na společné účaří závorka s hodnotou bez provizí */
 .dlazdice-hodnota {
+  align-items: baseline;
+  display: flex;
   font-size: clamp(1rem, 1.55vw, 1.5rem);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  gap: 5px;
   line-height: 1.2;
+  min-width: 0;
   white-space: nowrap;
+}
+
+/* Vlastní číslo dlaždice - nese barvu zisku, resp. ztráty */
+.dlazdice-cislo {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Tatáž částka bez provizí - drobněji a nevýrazně, jen jako doplněk.
+   Používá se v dlaždicích i v řádcích přehledu */
+.hodnota-hrube {
+  color: #64748b;
+  font-size: 0.68rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.hodnota-hrube:empty {
+  display: none;
 }
 
 .dlazdice-popis {
@@ -1119,13 +1144,15 @@ body.body--dark .dialog-import .stav-import-varovani {
 .report-radek-bezici {
   grid-template-columns:
     86px minmax(78px, 1fr) 52px 62px 62px
-    minmax(76px, 130px) 84px minmax(150px, 186px);
+    minmax(66px, 118px) 130px minmax(140px, 176px);
 }
 
+/* Sloupec s výsledkem je širší než ostatní čísla - vejde se do něj
+   i závorka s hodnotou bez provizí */
 .report-radek-uzavreny {
   grid-template-columns:
     44px 86px minmax(78px, 1fr) 34px 116px 54px
-    68px 86px minmax(64px, 116px);
+    68px 132px minmax(56px, 96px);
 }
 
 /* Hlavička seznamu zůstává vidět i při posunu delšího seznamu */
@@ -1170,6 +1197,15 @@ body.body--dark .dialog-import .stav-import-varovani {
 
 .bunka-pnl {
   font-weight: 700;
+}
+
+/* Buňka s výsledkem drží hlavní hodnotu a závorku bez provizí na jednom
+   řádku, zarovnané doprava jako ostatní číselné sloupce */
+.bunka-vysledek {
+  align-items: baseline;
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
 }
 
 /* Číselné sloupce mají popisek zarovnaný stejně jako hodnoty pod ním */
@@ -1305,6 +1341,10 @@ body.body--dark .report-prazdno {
 body.body--dark .bunka-kontrakt,
 body.body--dark .bunka-duvod {
   color: #cbd5e1;
+}
+
+body.body--dark .hodnota-hrube {
+  color: #94a3b8;
 }
 
 body.body--dark .report-dlazdice-polozka {

@@ -341,7 +341,10 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    jen **dosud otevřený zbytek pozice** — realizovaný výsledek prodaných
    částí do nich nevstupuje a po uzavření obchodu zůstává pomlčka.
    P/L oceňuje otevřené kusy BIDem: prodává se tržním příkazem, takže BID
-   odpovídá ceně, za kterou lze pozici právě teď skutečně prodat.
+   odpovídá ceně, za kterou lze pozici právě teď skutečně prodat. Hlavní
+   hodnota je po odečtení provize zaplacené za nákup těchto kusů, v závorce
+   za ní stojí tatáž částka bez ní — `+118.05 (+120.00)`; podrobněji
+   viz [Provize](#provize).
 
    U nakoupené pozice je na konci sekce Cíl tlačítko **Uzavřít pozici** —
    zruší zajišťovací příkaz a prodá hlavní část trhem (bez runneru celou
@@ -476,20 +479,41 @@ Obsah se obnovuje ze stejné smyčky jako tabulka, takže otevřené pozice v n�
 tikají živě. Rozvržení je navržené na jednu obrazovku bez posuvníku — posouvají
 se nejvýš samotné seznamy uvnitř svých panelů.
 
+### Provize
+
+Všechny výsledky v přehledu jsou uvedené **po odečtení provizí**, které
+skutečně naúčtovalo TWS; v závorce za nimi stojí tatáž částka bez nich:
+
+```text
+-92.00 (-85.00)     výsledek s provizí a bez ní
+```
+
+Provize se přebírají z hlášení o vyplnění (`commissionReport`) a vedou se
+po jednotlivých exekucích, takže se nemohou započítat dvakrát. Hlášení dorazí
+z TWS až krátce po vyplnění příkazu — hodnota se proto může o vteřinu opozdit.
+Zaplacené provize se ukládají do stavu obchodů, takže restart aplikace o ně
+nepřijde. Bez zaplacené provize (a bez spojení s TWS) se závorka nevypisuje.
+
+U otevřené pozice je odečtena jen provize za nákup — prodejní vznikne teprve
+prodejem. Uzavřenému obchodu patří obě strany.
+
 ### Souhrnné dlaždice
 
 | Dlaždice | Co ukazuje |
 | --- | --- |
-| Výsledek dne | realizovaný i otevřený výsledek dohromady |
+| Výsledek dne | realizovaný i otevřený výsledek dohromady, v popisku i celkem zaplacené provize |
 | Realizováno | výsledek už prodaných kusů; zvlášť se uvádí část z obchodů, které dosud běží (prodaný runner) |
 | Otevřené pozice | nerealizovaný výsledek otevřených pozic oceněný BIDem |
 | Úspěšnost | podíl ziskových obchodů z ukončených, které skutečně nakoupily |
-| Profit factor | poměr hrubého zisku k hrubé ztrátě, pod ním průměrný zisk a průměrná ztráta |
+| Profit factor | poměr součtu ziskových obchodů ke ztrátovým, pod ním průměrný zisk a průměrná ztráta |
 | Obchody | kolik jich běží, kolik skončilo a kolik se nedostalo k nákupu |
 
 Statistiky úspěšnosti počítají **jen ukončené obchody s nákupem** — běžící
 pozice se do nich nezapočítává, dokud se výsledek může ještě otočit, a
-propásnutý či před vstupem zrušený obchod se nikdy neodehrál.
+propásnutý či před vstupem zrušený obchod se nikdy neodehrál. O tom, zda obchod
+skončil v zisku, rozhoduje výsledek **po provizích** — těsný zisk umí provize
+otočit ve ztrátu a úspěšnost i profit factor by jinak byly optimističtější,
+než jaká byla skutečnost.
 
 ### Panely
 
@@ -500,9 +524,10 @@ propásnutý či před vstupem zrušený obchod se nikdy neodehrál.
 * **Uzavřené obchody** — od nejnovějšího, s dosaženými cenami, dobou držení
   a důvodem výstupu (PT, SL, ručně, propásnuto, zrušeno). Pruh *Porovnání*
   vynáší výsledek proti největšímu výsledku dne — ztráta doleva, zisk doprava.
-* **Průběh dne** — kumulovaný realizovaný výsledek, bod za každý uzavřený obchod.
+* **Průběh dne** — kumulovaný realizovaný výsledek po provizích, bod za každý
+  uzavřený obchod.
 * **Výsledek podle tickeru** — součet realizovaného i otevřeného výsledku
-  po tickerech, seřazený od nejlepšího po nejhorší.
+  po provizích, po tickerech, seřazený od nejlepšího po nejhorší.
 
 ## Načtení pozic ze souboru
 
@@ -664,7 +689,9 @@ tests/                   testy
 ## Stav obchodů a restart
 
 Stav obchodů se průběžně zapisuje do `state.json`, takže restart ani pád
-aplikace o rozpracované obchody nepřipraví. Po startu se uložený stav **vždy
+aplikace o rozpracované obchody nepřipraví. Součástí zápisu jsou i provize
+naúčtované TWS — po novém spojení je TWS pošle jen za dnešní den, takže bez
+uložení by se u starších obchodů ztratily. Po startu se uložený stav **vždy
 srovná se skutečností v TWS** — rozhoduje to, co je v TWS, nikoliv zápis
 v souboru:
 

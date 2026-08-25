@@ -68,6 +68,10 @@ SAVED_FIELDS = (
     "runner_realized_pnl",
     "runner_counted_quantity",
     "runner_counted_value",
+    # Provize účtované TWS - po restartu je TWS pošle jen za dnešní den,
+    # u starších obchodů by se tedy bez uložení ztratily
+    "entry_commissions",
+    "exit_commissions",
     "main_close_requested",
     "runner_close_requested",
     "entry_cancel_requested",

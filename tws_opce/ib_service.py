@@ -15,6 +15,7 @@ from ib_async import (
     IB,
     Contract,
     ContractDetails,
+    Fill,
     LimitOrder,
     MarketOrder,
     Option,
@@ -581,6 +582,45 @@ class IBService:
             if drivejsi is not None and drivejsi.orderStatus.filled >= trade.orderStatus.filled:
                 continue
             nalezene[ref] = trade
+        return nalezene
+
+    def _raw_fills(self) -> list[Fill]:
+        """
+        Vyplnění příkazů, o kterých spojení ví.
+
+        Po navázání spojení si ib_async vyžádá exekuce celého obchodního dne,
+        takže seznam obsahuje i vyplnění z doby před startem aplikace.
+        Vyčleněno do vlastní metody kvůli testům, které TWS nahrazují.
+        """
+        return list(self.ib.fills())
+
+    def commissions(self) -> dict[str, dict[str, tuple[str, float]]]:
+        """
+        Provize skutečně účtované TWS, roztříděné podle obchodů aplikace.
+
+        Vrací identifikátor obchodu -> {execId: (druh příkazu, provize v USD)}.
+        Druh je poslední část značky orderRef ('entry', 'exit', 'runner', ...),
+        podle níž se odliší provize za nákup od provizí za prodeje. Klíčem je
+        identifikátor exekuce, takže opakované načtení téhož vyplnění hodnotu
+        jen přepíše. Cizí příkazy se přeskakují.
+
+        Zpráva o provizi dorazí z TWS až krátce po vyplnění; do té doby je
+        v reportu nula a záznam se sem nedostane.
+        """
+        nalezene: dict[str, dict[str, tuple[str, float]]] = {}
+        for fill in self._raw_fills():
+            rozklad = parse_order_ref(fill.execution.orderRef or "")
+            if rozklad is None:
+                continue
+            castka = fill.commissionReport.commission
+            # TWS u neznámé provize posílá "nenastavenou" hodnotu 1.8e308,
+            # před doručením zprávy je hodnota nulová - obojí se zahazuje
+            if not isinstance(castka, (int, float)) or not math.isfinite(castka):
+                continue
+            if not castka:
+                continue
+            flow_id, druh = rozklad
+            nalezene.setdefault(flow_id, {})[fill.execution.execId] = (druh, float(castka))
         return nalezene
 
     async def positions(self) -> dict[int, PositionInfo]:

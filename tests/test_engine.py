@@ -2043,5 +2043,58 @@ class TestVelikostUctu(ZakladTestu):
         self.assertEqual(druhy.quantity, 47)
 
 
+class TestProvizi(ZakladTestu):
+    """Přebírání skutečně účtovaných provizí z TWS do obchodů."""
+
+    async def test_provize_z_nakupu_i_prodeje_se_rozdeli_podle_prikazu(self):
+        flow = await self.zaloz_call(quantity=2)
+        self.ib.fill(flow.entry_trade, 2, 3.00, commission=1.30)
+        await self.engine._tick()
+        await self.engine._tick()
+
+        self.assertAlmostEqual(flow.entry_commission, 1.30)
+        self.assertAlmostEqual(flow.exit_commission, 0.0)
+
+        # Prodej na PT přinese druhou provizi - tentokrát do prodejního kbelíku
+        self.ib.price_underlying = 235.5
+        self.ib.fill(flow.exit_trade, 2, 4.00, commission=1.30)
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.CLOSED)
+        self.assertAlmostEqual(flow.exit_commission, 1.30)
+        self.assertAlmostEqual(flow.commission, 2.60)
+        # Zisk 200 USD snížený o obě strany provize
+        self.assertAlmostEqual(flow.realized_pnl_net, 197.40)
+
+    async def test_opakovany_pruchod_smyckou_provizi_nezdvojnasobi(self):
+        flow = await self.zaloz_call(quantity=1)
+        self.ib.fill(flow.entry_trade, 1, 3.00, commission=0.65)
+        for _ in range(4):
+            await self.engine._tick()
+
+        self.assertAlmostEqual(flow.entry_commission, 0.65)
+
+    async def test_provize_ciziho_prikazu_se_ignoruje(self):
+        flow = await self.zaloz_call(quantity=1)
+        self.ib.fill(flow.entry_trade, 1, 3.00)
+        # Vyplnění příkazu bez značky aplikace (ruční obchod v TWS)
+        cizi = self.ib.placed[-1]
+        cizi.order.orderRef = "RUCNI"
+        self.ib.record_commission(cizi, 5.0)
+        await self.engine._tick()
+
+        self.assertAlmostEqual(flow.commission, 0.0)
+
+    async def test_castecne_plneni_secte_provize_po_castech(self):
+        flow = await self.zaloz_call(quantity=5)
+        self.ib.fill(flow.entry_trade, 2, 3.00, status="Submitted", commission=1.30)
+        await self.engine._tick()
+        self.ib.fill(flow.entry_trade, 5, 3.00, commission=1.95)
+        await self.engine._tick()
+
+        # Dvě exekuce s vlastním execId se sečtou, nepřepíší
+        self.assertAlmostEqual(flow.entry_commission, 3.25)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

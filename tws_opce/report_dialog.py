@@ -55,6 +55,21 @@ def penize(hodnota: float | None, znamenko: bool = True) -> str:
     return text.replace(",", " ")
 
 
+def penize_s_provizi(cisty: float | None, hruby: float | None) -> str:
+    """
+    Tatáž částka bez provizí do závorky za hlavní hodnotu - '-92.00 (-85.00)'.
+
+    Vrací jen text závorky; hlavní hodnotu vypisuje volající zvlášť, aby si ji
+    mohl obarvit podle výsledku. Bez zaplacené provize (obě hodnoty stejné)
+    je závorka prázdná - opakovat totéž číslo dvakrát nemá smysl.
+    """
+    if cisty is None or hruby is None:
+        return ""
+    if abs(hruby - cisty) < 0.005:
+        return ""
+    return f"({penize(hruby)})"
+
+
 def trida_vysledku(hodnota: float | None) -> str:
     """CSS třída pro obarvení částky - zisk zeleně, ztráta červeně."""
     if hodnota is None or abs(hodnota) < 0.005:
@@ -217,12 +232,18 @@ class ReportDialog:
             ).classes("report-zavrit").tooltip("Zavřít přehled")
 
     def _build_dlazdice(self, klic: str, nadpis: str) -> dict[str, Any]:
-        """Jedna souhrnná dlaždice - nadpis, velká hodnota a popisek pod ní."""
+        """
+        Jedna souhrnná dlaždice - nadpis, velká hodnota a popisek pod ní.
+        Vedle hodnoty stojí drobnější závorka s toutéž částkou bez provizí;
+        u dlaždic, kterých se provize netýkají, zůstává prázdná.
+        """
         with ui.element("div").classes(f"report-dlazdice-polozka dlazdice-{klic}"):
             ui.label(nadpis).classes("dlazdice-nadpis")
-            hodnota = ui.label("-").classes("dlazdice-hodnota")
+            with ui.element("div").classes("dlazdice-hodnota"):
+                hodnota = ui.label("-").classes("dlazdice-cislo")
+                hrube = ui.label("").classes("hodnota-hrube")
             popis = ui.label("").classes("dlazdice-popis")
-        return {"hodnota": hodnota, "popis": popis}
+        return {"hodnota": hodnota, "hrube": hrube, "popis": popis}
 
     def _build_panel(self, nadpis: str, trida: str) -> tuple[Any, Any]:
         """
@@ -275,31 +296,36 @@ class ReportDialog:
     # Souhrnné dlaždice
     # ------------------------------------------------------------------
 
-    def _hodnoty_dlazdic(self, podklad: report.DenniReport) -> dict[str, tuple[str, str, str]]:
+    def _hodnoty_dlazdic(
+        self, podklad: report.DenniReport
+    ) -> dict[str, tuple[str, str, str, str]]:
         """
-        Text, popisek a barevná třída pro každou dlaždici.
-        Vrací slovník klíč -> (hodnota, popis, třída).
+        Text, hodnota bez provizí, popisek a barevná třída pro každou dlaždici.
+        Vrací slovník klíč -> (hodnota, závorka bez provizí, popis, třída);
+        hlavní hodnota je vždy ta po provizích, tedy skutečný výsledek.
         """
         s = podklad.souhrn
 
         # Úspěšnost a profit factor dávají smysl až u uzavřených obchodů
         if s.uspesnost is None:
-            uspesnost = ("-", "zatím nic uzavřeného", "")
+            uspesnost = ("-", "", "zatím nic uzavřeného", "")
         else:
             uspesnost = (
                 f"{s.uspesnost:.0f} %",
+                "",
                 f"{s.ziskovych}× zisk / {s.ztratovych}× ztráta",
                 "zisk" if s.uspesnost >= 50 else "ztrata",
             )
 
         if s.uzavrenych_s_vysledkem == 0:
-            factor = ("-", "zatím nic uzavřeného", "")
+            factor = ("-", "", "zatím nic uzavřeného", "")
         elif s.profit_factor is None:
             # Bez jediné ztráty se poměr nedá spočítat - řekne se to natvrdo
-            factor = ("∞", "žádná ztráta", "zisk")
+            factor = ("∞", "", "žádná ztráta", "zisk")
         else:
             factor = (
                 f"{s.profit_factor:.2f}".replace(".", ","),
+                "",
                 f"Ø {penize(s.prumerny_zisk)} / Ø {penize(-(s.prumerna_ztrata or 0))}",
                 "zisk" if s.profit_factor >= 1 else "ztrata",
             )
@@ -307,23 +333,33 @@ class ReportDialog:
         bez_nakupu = f" · {s.bez_obchodu} bez nákupu" if s.bez_obchodu else ""
 
         # Část realizovaného výsledku může pocházet z obchodů, které dosud běží
-        # (prodaný runner). Bez zmínky by souhrn nesouhlasil se seznamem uzavřených
-        z_bezicich_castka = s.realizovano - sum(
-            flow.realized_pnl or 0.0 for flow in podklad.ukoncene
+        # (prodaný runner). Bez zmínky by souhrn nesouhlasil se seznamem
+        # uzavřených; porovnává se po provizích, stejně jako dlaždice sama
+        z_bezicich_castka = s.realizovano_s_provizi - sum(
+            (flow.realized_pnl or 0.0) - flow.commission
+            for flow in podklad.ukoncene
+            if flow.realized_pnl is not None
         )
         z_bezicich = (
             f" · {penize(z_bezicich_castka)} z běžících"
             if abs(z_bezicich_castka) >= 0.005
             else ""
         )
+        # Zaplacené provize stojí v popisku celkového výsledku na prvním místě.
+        # Popisek se do dlaždice nemusí vejít celý a to, co se z něj ořízne
+        # (realizováno, v pozicích), má stejně vlastní dlaždici vedle
+        provize = f"provize {penize(-s.provize)} · " if s.provize else ""
         return {
             "celkem": (
-                penize(s.celkem),
-                f"realizováno {penize(s.realizovano)} · v pozicích {penize(s.otevreno)}",
-                trida_vysledku(s.celkem),
+                penize(s.celkem_s_provizi),
+                penize_s_provizi(s.celkem_s_provizi, s.celkem),
+                f"{provize}realizováno {penize(s.realizovano_s_provizi)} · "
+                f"v pozicích {penize(s.otevreno_s_provizi)}",
+                trida_vysledku(s.celkem_s_provizi),
             ),
             "realizovano": (
-                penize(s.realizovano),
+                penize(s.realizovano_s_provizi),
+                penize_s_provizi(s.realizovano_s_provizi, s.realizovano),
                 sklonuj(
                     s.uzavrenych_s_vysledkem,
                     "uzavřený obchod",
@@ -331,18 +367,22 @@ class ReportDialog:
                     "uzavřených obchodů",
                 )
                 + z_bezicich,
-                trida_vysledku(s.realizovano),
+                trida_vysledku(s.realizovano_s_provizi),
             ),
             "otevreno": (
-                penize(s.otevreno) if s.otevrenych_pozic else "-",
+                penize(s.otevreno_s_provizi) if s.otevrenych_pozic else "-",
+                penize_s_provizi(s.otevreno_s_provizi, s.otevreno)
+                if s.otevrenych_pozic
+                else "",
                 sklonuj(s.otevrenych_pozic, "pozice", "pozice", "pozic")
                 + f" · {s.otevrenych_kusu} ks",
-                trida_vysledku(s.otevreno) if s.otevrenych_pozic else "",
+                trida_vysledku(s.otevreno_s_provizi) if s.otevrenych_pozic else "",
             ),
             "uspesnost": uspesnost,
             "factor": factor,
             "obchody": (
                 str(s.bezicich + s.ukoncenych),
+                "",
                 f"{s.bezicich} běží · {s.ukoncenych} ukončeno{bez_nakupu}",
                 "",
             ),
@@ -350,10 +390,11 @@ class ReportDialog:
 
     def _vykresli_dlazdice(self, podklad: report.DenniReport) -> None:
         """Přepíše hodnoty souhrnných dlaždic."""
-        for klic, (hodnota, popis, trida) in self._hodnoty_dlazdic(podklad).items():
+        for klic, (hodnota, hrube, popis, trida) in self._hodnoty_dlazdic(podklad).items():
             prvky = self.dlazdice[klic]
             prvky["hodnota"].set_text(hodnota)
             prvky["hodnota"].classes(remove="zisk ztrata", add=trida)
+            prvky["hrube"].set_text(hrube)
             prvky["popis"].set_text(popis)
 
     # ------------------------------------------------------------------
@@ -393,7 +434,11 @@ class ReportDialog:
                     .classes("report-postup")
                     .tooltip("Kde stojí pozice mezi SL (vlevo) a PT (vpravo)")
                 )
-            prvky["pnl"] = ui.label("").classes("bunka bunka-cislo bunka-pnl")
+            # P/L otevřené části: hlavní hodnota po provizích, vedle ní
+            # drobněji tatáž částka bez nich
+            with ui.element("div").classes("bunka bunka-pnl bunka-vysledek"):
+                prvky["pnl"] = ui.label("")
+                prvky["pnl_hrube"] = ui.label("").classes("hodnota-hrube")
             with ui.element("div").classes("bunka bunka-stav"):
                 prvky["stav"] = ui.label("").classes("odznak")
         return prvky
@@ -405,9 +450,12 @@ class ReportDialog:
         prvky["nakup"].set_text(penize(flow.fill_price, znamenko=False))
         prvky["ted"].set_text(penize(flow.option_bid, znamenko=False))
 
-        pnl = flow.open_pnl
+        # Otevřená pozice má zaplacenou jen nákupní provizi - prodejní vznikne
+        # až prodejem, proto v P/L běžícího obchodu ještě není
+        pnl = flow.open_pnl_net
         prvky["pnl"].set_text(penize(pnl))
         prvky["pnl"].classes(remove="zisk ztrata", add=trida_vysledku(pnl))
+        prvky["pnl_hrube"].set_text(penize_s_provizi(pnl, flow.open_pnl))
 
         # Ukazatel postupu se skrývá, dokud pozice neběží nebo chybí odhad
         postup = report.postup_k_cili(flow)
@@ -452,7 +500,7 @@ class ReportDialog:
                 "otevřené pozice",
                 "otevřených pozic",
             )
-            + f" · {penize(souhrn.otevreno)} USD"
+            + f" · {penize(souhrn.otevreno_s_provizi)} USD"
             if souhrn.otevrenych_pozic
             else "žádná otevřená pozice"
         )
@@ -467,7 +515,9 @@ class ReportDialog:
         rovnou; měřítko je největší výsledek dne v absolutní hodnotě a určuje
         délku pruhu, kterým se obchody porovnávají mezi sebou.
         """
-        vysledek = flow.realized_pnl
+        # Uzavřený obchod už zaplatil obě strany provize, výsledek je proto
+        # celý realizovaný a hodnota v závorce ukazuje, kolik z něj provize vzaly
+        vysledek = flow.realized_pnl_net
         with ui.element("div").classes("report-radek report-radek-uzavreny"):
             ui.label(f"{flow.updated_at:%H:%M}").classes("bunka bunka-cas")
             with ui.element("div").classes("bunka bunka-ticker"):
@@ -491,9 +541,13 @@ class ReportDialog:
             ui.label(obchod).classes("bunka bunka-obchod")
             ui.label(doba_drzeni(flow.holding_seconds)).classes("bunka bunka-cislo")
             ui.label(flow.result_reason).classes("bunka bunka-duvod")
-            ui.label(penize(vysledek)).classes(
-                f"bunka bunka-cislo bunka-pnl {trida_vysledku(vysledek)}"
-            )
+            with ui.element("div").classes(
+                f"bunka bunka-pnl bunka-vysledek {trida_vysledku(vysledek)}"
+            ):
+                ui.label(penize(vysledek))
+                ui.label(penize_s_provizi(vysledek, flow.realized_pnl)).classes(
+                    "hodnota-hrube"
+                )
 
             # Rozvážený pruh: ztráta roste doleva od středu, zisk doprava
             with ui.element("div").classes("bunka bunka-pomer"):
@@ -516,7 +570,7 @@ class ReportDialog:
     def _vykresli_uzavrene(self, podklad: report.DenniReport) -> None:
         """Vykreslí seznam ukončených obchodů; mění se jen s novým výsledkem."""
         podpis = tuple(
-            (flow.id, flow.state.value, round(flow.realized_pnl or 0.0, 2))
+            (flow.id, flow.state.value, round(flow.realized_pnl_net or 0.0, 2))
             for flow in podklad.ukoncene
         )
         if podpis != self._podpis_uzavrene:
@@ -524,7 +578,8 @@ class ReportDialog:
             self.telo_uzavrene.clear()
             # Měřítko pruhů je největší výsledek dne v absolutní hodnotě
             meritko = max(
-                (abs(flow.realized_pnl or 0.0) for flow in podklad.ukoncene), default=0.0
+                (abs(flow.realized_pnl_net or 0.0) for flow in podklad.ukoncene),
+                default=0.0,
             )
             with self.telo_uzavrene:
                 if not podklad.ukoncene:
@@ -606,8 +661,8 @@ class ReportDialog:
 
     def _vykresli_krivku(self, podklad: report.DenniReport) -> None:
         """
-        Křivka kumulovaného realizovaného výsledku - jak se den vyvíjel.
-        Začíná v nule, každý další bod patří jednomu uzavřenému obchodu.
+        Křivka kumulovaného realizovaného výsledku po provizích - jak se den
+        vyvíjel. Začíná v nule, každý další bod patří jednomu uzavřenému obchodu.
         """
         # Prázdný graf by ukazoval jen holé osy - místo něj se zobrazí hláška
         self.graf_krivka.set_visibility(bool(podklad.krivka))
@@ -672,19 +727,23 @@ class ReportDialog:
         self.graf_krivka.update()
 
         self.podnadpis_krivka.set_text(
-            "kumulovaný realizovaný výsledek · "
+            "kumulovaný realizovaný výsledek po provizích · "
             + sklonuj(len(podklad.krivka), "obchod", "obchody", "obchodů")
             if podklad.krivka
             else "zatím není co vykreslit"
         )
 
     def _vykresli_tickery(self, podklad: report.DenniReport) -> None:
-        """Sloupcový graf výsledku po tickerech - realizovaný i otevřený."""
+        """
+        Sloupcový graf výsledku po tickerech - realizovaný i otevřený,
+        po odečtení provizí zaplacených obchody daného tickeru.
+        """
         self.graf_tickery.set_visibility(bool(podklad.podle_tickeru))
         self.prazdno_tickery.set_visibility(not podklad.podle_tickeru)
 
         podpis = (self.je_tmavy(),) + tuple(
-            (polozka.symbol, round(polozka.celkem, 0)) for polozka in podklad.podle_tickeru
+            (polozka.symbol, round(polozka.celkem_s_provizi, 0))
+            for polozka in podklad.podle_tickeru
         )
         if podpis == self._podpis_tickery:
             return
@@ -696,7 +755,7 @@ class ReportDialog:
         # od osy, ztráta dolů, popisek vždy na vnější straně sloupce
         data = []
         for polozka in podklad.podle_tickeru:
-            hodnota = round(polozka.celkem, 2)
+            hodnota = round(polozka.celkem_s_provizi, 2)
             kladny = hodnota >= 0
             data.append(
                 {
@@ -711,7 +770,9 @@ class ReportDialog:
 
         # Popisky sloupců stojí vně sloupce, proto osa potřebuje rezervu -
         # jinak by se nejnižší hodnota překrývala s názvem tickeru pod grafem
-        hodnoty = [polozka.celkem for polozka in podklad.podle_tickeru] or [0.0]
+        hodnoty = [
+            polozka.celkem_s_provizi for polozka in podklad.podle_tickeru
+        ] or [0.0]
         osy = self._osy(kategorie, barvy)
         osy["yAxis"]["min"], osy["yAxis"]["max"] = mez_osy(hodnoty)
 
@@ -739,7 +800,7 @@ class ReportDialog:
 
         self.podnadpis_tickery.set_text(
             sklonuj(len(kategorie), "ticker", "tickery", "tickerů")
-            + " · realizovaný i otevřený výsledek"
+            + " · realizovaný i otevřený výsledek po provizích"
             if kategorie
             else "zatím není co vykreslit"
         )

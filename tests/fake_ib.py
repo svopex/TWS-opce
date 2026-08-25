@@ -6,11 +6,14 @@ ib_async; nahrazují se pouze metody, které komunikují se sítí.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from ib_async import (
+    CommissionReport,
     Contract,
     ContractDetails,
+    Execution,
+    Fill,
     Option,
     OptionChain,
     OptionComputation,
@@ -52,6 +55,8 @@ class FakeIBService(IBService):
         # Záznam odeslaných a zrušených příkazů
         self.placed: list[Trade] = []
         self.cancelled: list[Trade] = []
+        # Vyplnění příkazů i s provizemi - test je plní přes fill()
+        self.fills: list[Fill] = []
         # Opční pozice na účtu podle conId - test je nastavuje pro scénáře obnovy
         self.held_positions: dict[int, float] = {}
         # Strike ceny, které řetězec nabízí, ale kontrakt pro ně v TWS neexistuje
@@ -219,6 +224,10 @@ class FakeIBService(IBService):
         """Příkazy označené značkou aplikace, klíčované podle orderRef."""
         return {t.order.orderRef: t for t in self.placed if t.order.orderRef}
 
+    def _raw_fills(self) -> list[Fill]:
+        """Vyplnění zaznamenaná testem místo těch, která by přišla z TWS."""
+        return list(self.fills)
+
     async def positions(self) -> dict[int, PositionInfo]:
         """Držené opční pozice nastavené testem."""
         return {
@@ -233,9 +242,37 @@ class FakeIBService(IBService):
 
     # --- pomocné pro testy ---
 
-    def fill(self, trade: Trade, quantity: int, price: float, status: str = "Filled") -> None:
-        """Simuluje vyplnění příkazu v TWS."""
+    def fill(
+        self,
+        trade: Trade,
+        quantity: int,
+        price: float,
+        status: str = "Filled",
+        commission: float = 0.0,
+    ) -> None:
+        """
+        Simuluje vyplnění příkazu v TWS. Nenulová provize navíc založí záznam
+        exekuce, ze kterého ji engine přebírá stejně jako z ostré služby.
+        """
         trade.orderStatus.status = status
         trade.orderStatus.filled = quantity
         trade.orderStatus.remaining = max(0, int(trade.order.totalQuantity) - quantity)
         trade.orderStatus.avgFillPrice = price
+        if commission:
+            self.record_commission(trade, commission)
+
+    def record_commission(self, trade: Trade, commission: float) -> None:
+        """
+        Přidá vyplnění se zprávou o provizi - jedno na každé volání, aby šlo
+        vyzkoušet i částečné plnění účtované po částech.
+        """
+        exec_id = f"EXEC-{len(self.fills) + 1}"
+        execution = Execution(execId=exec_id, orderRef=trade.order.orderRef)
+        self.fills.append(
+            Fill(
+                contract=trade.contract,
+                execution=execution,
+                commissionReport=CommissionReport(execId=exec_id, commission=commission),
+                time=datetime.now(),
+            )
+        )

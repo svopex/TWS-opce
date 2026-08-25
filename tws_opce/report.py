@@ -48,21 +48,33 @@ class TickerSouhrn:
     symbol: str
     realizovano: float = 0.0
     otevreno: float = 0.0
+    # Provize zaplacené obchody tohoto tickeru (kladné číslo)
+    provize: float = 0.0
 
     @property
     def celkem(self) -> float:
-        """Realizovaný i otevřený výsledek dohromady."""
+        """Realizovaný i otevřený výsledek dohromady, ještě bez provizí."""
         return self.realizovano + self.otevreno
+
+    @property
+    def celkem_s_provizi(self) -> float:
+        """Výsledek tickeru po odečtení provizí - to, co ticker skutečně přinesl."""
+        return self.celkem - self.provize
 
 
 @dataclass
 class Souhrn:
     """Souhrnná čísla obchodního dne pro dlaždice nad přehledem."""
 
-    # Výsledek už prodaných kusů (i u obchodů, které dosud běží)
+    # Výsledek už prodaných kusů (i u obchodů, které dosud běží), bez provizí
     realizovano: float = 0.0
-    # Výsledek dosud otevřených pozic oceněný trhem
+    # Výsledek dosud otevřených pozic oceněný trhem, bez provizí
     otevreno: float = 0.0
+    # Provize skutečně účtované TWS, rozdělené podle toho, ke které části
+    # pozice patří (obojí kladné číslo). Otevřené části patří jen provize
+    # za nákup - prodejní vznikne až prodejem.
+    provize_realizovane: float = 0.0
+    provize_otevrene: float = 0.0
     # Počty obchodů podle stavu
     bezicich: int = 0
     otevrenych_pozic: int = 0
@@ -73,7 +85,8 @@ class Souhrn:
     nulovych: int = 0
     # Bez nákupu, tedy bez výsledku (propásnuté, zrušené před vstupem)
     bez_obchodu: int = 0
-    # Součty pro profit factor a průměry
+    # Součty pro profit factor a průměry - už po odečtení provizí, protože
+    # provize umí těsný zisk otočit ve ztrátu a statistika by pak lhala
     hruby_zisk: float = 0.0
     hruba_ztrata: float = 0.0
     nejlepsi: tuple[str, float] | None = None
@@ -83,8 +96,28 @@ class Souhrn:
 
     @property
     def celkem(self) -> float:
-        """Výsledek dne dohromady - realizovaný i otevřený."""
+        """Výsledek dne dohromady bez provizí - realizovaný i otevřený."""
         return self.realizovano + self.otevreno
+
+    @property
+    def provize(self) -> float:
+        """Provize zaplacené za celý den (kladné číslo)."""
+        return self.provize_realizovane + self.provize_otevrene
+
+    @property
+    def realizovano_s_provizi(self) -> float:
+        """Realizovaný výsledek po odečtení provizí, které na něj připadají."""
+        return self.realizovano - self.provize_realizovane
+
+    @property
+    def otevreno_s_provizi(self) -> float:
+        """Výsledek otevřených pozic snížený o už zaplacenou nákupní provizi."""
+        return self.otevreno - self.provize_otevrene
+
+    @property
+    def celkem_s_provizi(self) -> float:
+        """Výsledek dne po odečtení všech zaplacených provizí."""
+        return self.celkem - self.provize
 
     @property
     def uzavrenych_s_vysledkem(self) -> int:
@@ -106,8 +139,8 @@ class Souhrn:
     @property
     def profit_factor(self) -> float | None:
         """
-        Poměr hrubého zisku k hrubé ztrátě. Bez jediné ztráty nemá smysl
-        (dělení nulou), proto None.
+        Poměr součtu ziskových obchodů k součtu ztrátových, obojí po provizích.
+        Bez jediné ztráty nemá smysl (dělení nulou), proto None.
         """
         if self.hruba_ztrata <= 0:
             return None
@@ -115,14 +148,14 @@ class Souhrn:
 
     @property
     def prumerny_zisk(self) -> float | None:
-        """Průměrný zisk ziskového obchodu."""
+        """Průměrný zisk ziskového obchodu po provizích."""
         if self.ziskovych <= 0:
             return None
         return self.hruby_zisk / self.ziskovych
 
     @property
     def prumerna_ztrata(self) -> float | None:
-        """Průměrná ztráta ztrátového obchodu (kladné číslo)."""
+        """Průměrná ztráta ztrátového obchodu po provizích (kladné číslo)."""
         if self.ztratovych <= 0:
             return None
         return self.hruba_ztrata / self.ztratovych
@@ -136,7 +169,7 @@ class DenniReport:
     bezici: list[Flow] = field(default_factory=list)
     ukoncene: list[Flow] = field(default_factory=list)
     souhrn: Souhrn = field(default_factory=Souhrn)
-    # Kumulovaný realizovaný výsledek v čase - body křivky průběhu dne
+    # Kumulovaný realizovaný výsledek po provizích v čase - body křivky dne
     krivka: list[tuple[datetime, float]] = field(default_factory=list)
     podle_tickeru: list[TickerSouhrn] = field(default_factory=list)
 
@@ -191,6 +224,10 @@ def _spocti_souhrn(bezici: list[Flow], ukoncene: list[Flow]) -> Souhrn:
         otevreno = flow.open_pnl
         if otevreno is not None:
             souhrn.otevreno += otevreno
+        # Provize běžícího obchodu se dělí stejně jako jeho pozice: co je
+        # doprodané, patří k realizovanému výsledku, zbytek k otevřenému
+        souhrn.provize_realizovane += flow.realized_commission
+        souhrn.provize_otevrene += flow.open_commission
         if flow.open_quantity > 0:
             souhrn.otevrenych_pozic += 1
             souhrn.otevrenych_kusu += flow.open_quantity
@@ -203,20 +240,25 @@ def _spocti_souhrn(bezici: list[Flow], ukoncene: list[Flow]) -> Souhrn:
             continue
 
         souhrn.realizovano += vysledek
-        if vysledek > 0:
+        # Uzavřený obchod už nic nedrží, takže mu patří celá zaplacená provize
+        souhrn.provize_realizovane += flow.commission
+
+        # O tom, jestli obchod skončil v zisku, rozhoduje výsledek po provizích
+        cisty = vysledek - flow.commission
+        if cisty > 0:
             souhrn.ziskovych += 1
-            souhrn.hruby_zisk += vysledek
-        elif vysledek < 0:
+            souhrn.hruby_zisk += cisty
+        elif cisty < 0:
             souhrn.ztratovych += 1
-            souhrn.hruba_ztrata += abs(vysledek)
+            souhrn.hruba_ztrata += abs(cisty)
         else:
             souhrn.nulovych += 1
 
         # Nejlepší a nejhorší obchod dne pro dlaždici s extrémy
-        if souhrn.nejlepsi is None or vysledek > souhrn.nejlepsi[1]:
-            souhrn.nejlepsi = (flow.symbol, vysledek)
-        if souhrn.nejhorsi is None or vysledek < souhrn.nejhorsi[1]:
-            souhrn.nejhorsi = (flow.symbol, vysledek)
+        if souhrn.nejlepsi is None or cisty > souhrn.nejlepsi[1]:
+            souhrn.nejlepsi = (flow.symbol, cisty)
+        if souhrn.nejhorsi is None or cisty < souhrn.nejhorsi[1]:
+            souhrn.nejhorsi = (flow.symbol, cisty)
 
     return souhrn
 
@@ -225,8 +267,10 @@ def _krivka(ukoncene: list[Flow]) -> list[tuple[datetime, float]]:
     """
     Kumulovaný realizovaný výsledek v čase - jak se den vyvíjel.
 
-    Body vznikají v čase ukončení obchodu (updated_at) a řadí se vzestupně;
-    obchody bez nákupu se přeskakují, protože výsledkem nepohnuly.
+    Sčítá se výsledek po provizích, aby křivka odpovídala tomu, co obchodní
+    den skutečně přinesl. Body vznikají v čase ukončení obchodu (updated_at)
+    a řadí se vzestupně; obchody bez nákupu se přeskakují, protože výsledkem
+    nepohnuly.
     """
     body: list[tuple[datetime, float]] = []
     soucet = 0.0
@@ -234,7 +278,7 @@ def _krivka(ukoncene: list[Flow]) -> list[tuple[datetime, float]]:
         vysledek = flow.realized_pnl
         if vysledek is None:
             continue
-        soucet += vysledek
+        soucet += vysledek - flow.commission
         body.append((flow.updated_at, soucet))
     return body
 
@@ -255,13 +299,17 @@ def _podle_tickeru(bezici: list[Flow], ukoncene: list[Flow]) -> list[TickerSouhr
     for flow in bezici + ukoncene:
         realizovano = flow.realized_pnl
         otevreno = flow.open_pnl if flow.state.is_active else None
-        if not realizovano and otevreno is None:
+        provize = flow.commission
+        # Obchod bez výsledku i bez provize nemá co ukázat; zaplacená provize
+        # se ale objevit musí, i když sám výsledek vyšel nulový
+        if not realizovano and otevreno is None and not provize:
             continue
         polozka = zaznam(flow.symbol)
         polozka.realizovano += realizovano or 0.0
         polozka.otevreno += otevreno or 0.0
+        polozka.provize += provize
 
-    return sorted(souhrny.values(), key=lambda s: s.celkem, reverse=True)
+    return sorted(souhrny.values(), key=lambda s: s.celkem_s_provizi, reverse=True)
 
 
 def sestav(

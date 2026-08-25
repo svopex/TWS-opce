@@ -288,6 +288,15 @@ class Flow:
     # účtování stejně jako u hlavní části)
     runner_counted_quantity: int = 0
     runner_counted_value: float = 0.0
+
+    # Provize skutečně účtované TWS, vedené po jednotlivých vyplněních podle
+    # jejich identifikátoru (execId). Zpráva o provizi chodí odděleně od
+    # vyplnění a po novém spojení ji TWS pošle za celý den znovu - podle
+    # execId se tedy táž provize nezapočítá dvakrát. Nákup se drží zvlášť
+    # od prodejů, aby šlo provize rozdělit na uzavřenou a otevřenou část pozice.
+    entry_commissions: dict[str, float] = field(default_factory=dict)
+    exit_commissions: dict[str, float] = field(default_factory=dict)
+
     # Vyžádané uzavření trhem - hlavní části, resp. runneru. Podmíněný příkaz
     # se nejprve ruší a tržní prodej se zadává až po potvrzení zrušení.
     main_close_requested: bool = False
@@ -498,6 +507,64 @@ class Flow:
                 * calc.OPTION_MULTIPLIER
             )
         return vysledek
+
+    @property
+    def entry_commission(self) -> float:
+        """Provize zaplacená za nákup opce - všechna jeho vyplnění dohromady."""
+        return sum(self.entry_commissions.values())
+
+    @property
+    def exit_commission(self) -> float:
+        """Provize zaplacené za prodeje - hlavní části i runnerů."""
+        return sum(self.exit_commissions.values())
+
+    @property
+    def commission(self) -> float:
+        """Provize, které obchod dosud skutečně zaplatil (kladné číslo)."""
+        return self.entry_commission + self.exit_commission
+
+    @property
+    def open_commission(self) -> float:
+        """
+        Část nákupní provize připadající na dosud otevřené kusy.
+
+        Prodejní provize se otevřené části netýká - ta se zaplatí až při
+        prodeji, a dokud k němu nedojde, není co započítat.
+        """
+        koupeno = self.filled_quantity
+        if koupeno <= 0:
+            return 0.0
+        return self.entry_commission * self.open_quantity / koupeno
+
+    @property
+    def realized_commission(self) -> float:
+        """
+        Provize připadající na už uzavřenou část obchodu - nákup prodaných
+        kusů a všechny prodeje. Zbytek nákupní provize drží otevřená pozice.
+        """
+        return self.commission - self.open_commission
+
+    @property
+    def realized_pnl_net(self) -> float | None:
+        """
+        Realizovaný výsledek po odečtení provizí. Bez nákupu (a tedy bez
+        čeho realizovat) None, stejně jako realized_pnl.
+        """
+        hruby = self.realized_pnl
+        if hruby is None:
+            return None
+        return hruby - self.realized_commission
+
+    @property
+    def open_pnl_net(self) -> float | None:
+        """
+        Výsledek otevřené části po odečtení nákupní provize, která na ni
+        připadá. Prodejní provize v něm být nemůže - ta ještě nevznikla.
+        """
+        hruby = self.open_pnl
+        if hruby is None:
+            return None
+        return hruby - self.open_commission
 
     @property
     def holding_seconds(self) -> float | None:

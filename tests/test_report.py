@@ -14,7 +14,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tws_opce import report
 from tws_opce.models import Flow, FlowState
-from tws_opce.report_dialog import doba_drzeni, mez_osy, penize, sklonuj, trida_vysledku
+from tws_opce.report_dialog import (
+    doba_drzeni,
+    mez_osy,
+    penize,
+    penize_s_provizi,
+    sklonuj,
+    trida_vysledku,
+)
+from tws_opce.ui import pnl_text
 
 
 def obchod(
@@ -28,6 +36,10 @@ def obchod(
     """
     Připraví obchod pro testy souhrnu - nakoupený za fill a prodaný
     za exit_cena. Další pole (runner, časy) doplní pojmenované argumenty.
+
+    Nezadaný čas poslední změny se odvozuje od času založení, ne od aktuálního
+    času - jinak by řazení ukončených obchodů záviselo na denní době, kdy sada
+    zrovna běží.
     """
     flow = Flow(
         id=zmeny.pop("id", f"{symbol}-1"),
@@ -44,6 +56,8 @@ def obchod(
     )
     for klic, hodnota in zmeny.items():
         setattr(flow, klic, hodnota)
+    if "updated_at" not in zmeny:
+        flow.updated_at = flow.created_at
     return flow
 
 
@@ -81,6 +95,62 @@ class TestRealizovanyVysledek(unittest.TestCase):
         # K prodeji hlavní části se přidá dříve zúčtovaný runner
         flow = obchod(runner_realized_pnl=75.0)
         self.assertAlmostEqual(flow.realized_pnl, 275.0)
+
+
+class TestProvize(unittest.TestCase):
+    """Rozdělení skutečně účtovaných provizí mezi uzavřenou a otevřenou část."""
+
+    def test_bez_provizi_je_cisty_vysledek_shodny_s_hrubym(self):
+        flow = obchod()
+        self.assertEqual(flow.commission, 0.0)
+        self.assertAlmostEqual(flow.realized_pnl_net, flow.realized_pnl)
+
+    def test_uzavreny_obchod_odecte_obe_strany_provize(self):
+        # Nákup 3,00 -> prodej 4,00 na dvou kusech je +200, provize 7 USD
+        flow = obchod(
+            entry_commissions={"E1": 3.5},
+            exit_commissions={"X1": 3.5},
+        )
+        self.assertAlmostEqual(flow.commission, 7.0)
+        self.assertAlmostEqual(flow.realized_pnl_net, 193.0)
+
+    def test_provize_se_nescitaji_pres_stejny_execid(self):
+        # Táž exekuce načtená znovu jen přepíše hodnotu, nepřičte se podruhé
+        flow = obchod(entry_commissions={"E1": 3.5})
+        flow.entry_commissions["E1"] = 3.5
+        self.assertAlmostEqual(flow.entry_commission, 3.5)
+
+    def test_otevrene_pozici_patri_jen_pomerna_cast_nakupni_provize(self):
+        # Ze čtyř kusů je jeden prodán; nákupní provize 2,60 se dělí 3:1
+        flow = obchod(
+            stav=FlowState.EXIT_ARMED,
+            exit_cena=None,
+            mnozstvi=4,
+            main_sold_quantity=1,
+            main_sold_value=4.20,
+            entry_commissions={"E1": 2.60},
+            exit_commissions={"X1": 0.65},
+        )
+        self.assertEqual(flow.open_quantity, 3)
+        self.assertAlmostEqual(flow.open_commission, 1.95)
+        # Zbytek nákupní provize a celá prodejní patří už prodanému kusu
+        self.assertAlmostEqual(flow.realized_commission, 1.30)
+
+    def test_prodejni_provize_otevrenou_cast_nesnizuje(self):
+        # Nakoupeno, nic neprodáno - otevřené části patří celá nákupní provize
+        flow = obchod(
+            stav=FlowState.EXIT_ARMED, exit_cena=None, option_bid=3.40, option_ask=3.50,
+            entry_commissions={"E1": 1.30},
+        )
+        self.assertAlmostEqual(flow.open_pnl, 80.0)
+        self.assertAlmostEqual(flow.open_pnl_net, 78.70)
+        self.assertAlmostEqual(flow.realized_commission, 0.0)
+
+    def test_bez_nakupu_neni_z_ceho_odecitat(self):
+        flow = obchod(fill=None, exit_cena=None, stav=FlowState.MISSED)
+        self.assertIsNone(flow.realized_pnl_net)
+        self.assertIsNone(flow.open_pnl_net)
+        self.assertAlmostEqual(flow.open_commission, 0.0)
 
 
 class TestPostupKCili(unittest.TestCase):
@@ -257,6 +327,74 @@ class TestSouhrn(unittest.TestCase):
         self.assertEqual(podklad.souhrn.celkem, 0.0)
 
 
+class TestSouhrnSProvizemi(unittest.TestCase):
+    """Souhrn dne po odečtení provizí účtovaných TWS."""
+
+    def setUp(self) -> None:
+        self.dnes = date(2026, 8, 25)
+        zaklad = datetime(2026, 8, 25, 15, 0)
+        # Ziskový obchod (+200, provize 7) a ztrátový (-200, provize 7)
+        self.flows = [
+            obchod(symbol="AAPL", id="AAPL-1", exit_cena=4.00, created_at=zaklad,
+                   updated_at=zaklad + timedelta(minutes=10),
+                   entry_commissions={"E1": 3.5}, exit_commissions={"X1": 3.5}),
+            obchod(symbol="TSLA", id="TSLA-1", exit_cena=2.00, created_at=zaklad,
+                   updated_at=zaklad + timedelta(minutes=20),
+                   entry_commissions={"E2": 3.5}, exit_commissions={"X2": 3.5}),
+            # Běžící pozice: nakoupeno za 3,00, BID 3,40, nákupní provize 1,30
+            obchod(symbol="NFLX", id="NFLX-1", stav=FlowState.EXIT_ARMED,
+                   exit_cena=None, option_bid=3.40, option_ask=3.50,
+                   created_at=zaklad, entry_commissions={"E3": 1.30}),
+        ]
+
+    def sestav(self) -> report.DenniReport:
+        """Přehled nad připravenými obchody v rozsahu dnešního dne."""
+        return report.sestav(self.flows, report.ROZSAH_DNES, self.dnes)
+
+    def test_hrube_soucty_provize_neobsahuji(self):
+        souhrn = self.sestav().souhrn
+        self.assertAlmostEqual(souhrn.realizovano, 0.0)
+        self.assertAlmostEqual(souhrn.otevreno, 80.0)
+        self.assertAlmostEqual(souhrn.celkem, 80.0)
+
+    def test_provize_se_deli_na_uzavrenou_a_otevrenou_cast(self):
+        souhrn = self.sestav().souhrn
+        self.assertAlmostEqual(souhrn.provize_realizovane, 14.0)
+        self.assertAlmostEqual(souhrn.provize_otevrene, 1.30)
+        self.assertAlmostEqual(souhrn.provize, 15.30)
+
+    def test_vysledek_dne_je_hruby_soucet_minus_provize(self):
+        souhrn = self.sestav().souhrn
+        self.assertAlmostEqual(souhrn.realizovano_s_provizi, -14.0)
+        self.assertAlmostEqual(souhrn.otevreno_s_provizi, 78.70)
+        self.assertAlmostEqual(souhrn.celkem_s_provizi, 64.70)
+
+    def test_profit_factor_pocita_z_hodnot_po_provizich(self):
+        # Zisk 193, ztráta 207 -> poměr pod jednou, ačkoli hrubě byl den nula
+        souhrn = self.sestav().souhrn
+        self.assertAlmostEqual(souhrn.hruby_zisk, 193.0)
+        self.assertAlmostEqual(souhrn.hruba_ztrata, 207.0)
+        self.assertAlmostEqual(souhrn.profit_factor, 193.0 / 207.0)
+
+    def test_tesny_zisk_umi_provize_prevratit_ve_ztratu(self):
+        # Obchod +100 se sedmidolarovou provizí zůstává ziskový, s provizí 120 ne
+        self.flows = [
+            obchod(symbol="AAPL", id="AAPL-1", exit_cena=3.50,
+                   created_at=datetime(2026, 8, 25, 15, 0),
+                   entry_commissions={"E1": 60.0}, exit_commissions={"X1": 60.0}),
+        ]
+        souhrn = self.sestav().souhrn
+        self.assertEqual(souhrn.ziskovych, 0)
+        self.assertEqual(souhrn.ztratovych, 1)
+        self.assertEqual(souhrn.nejhorsi, ("AAPL", -20.0))
+
+    def test_krivka_i_soucty_podle_tickeru_jsou_po_provizich(self):
+        podklad = self.sestav()
+        self.assertEqual([round(h, 2) for _, h in podklad.krivka], [193.0, -14.0])
+        podle = {p.symbol: round(p.celkem_s_provizi, 2) for p in podklad.podle_tickeru}
+        self.assertEqual(podle, {"AAPL": 193.0, "NFLX": 78.70, "TSLA": -207.0})
+
+
 class TestFormatovani(unittest.TestCase):
     """Pomocné funkce pro zobrazení hodnot v přehledu."""
 
@@ -269,6 +407,19 @@ class TestFormatovani(unittest.TestCase):
 
     def test_chybejici_hodnota_je_pomlcka(self):
         self.assertEqual(penize(None), "-")
+
+    def test_zavorka_ukazuje_hodnotu_bez_provizi(self):
+        self.assertEqual(penize_s_provizi(-92.0, -85.0), "(-85.00)")
+
+    def test_bez_provize_se_zavorka_vynechava(self):
+        self.assertEqual(penize_s_provizi(-85.0, -85.0), "")
+        self.assertEqual(penize_s_provizi(None, -85.0), "")
+        self.assertEqual(penize_s_provizi(-85.0, None), "")
+
+    def test_pnl_v_tabulce_spojuje_obe_hodnoty(self):
+        self.assertEqual(pnl_text(-92.0, -85.0), "-92.00 (-85.00)")
+        self.assertEqual(pnl_text(-85.0, -85.0), "-85.00")
+        self.assertEqual(pnl_text(None, -85.0), "-")
 
     def test_barva_podle_vysledku(self):
         self.assertEqual(trida_vysledku(10.0), "zisk")

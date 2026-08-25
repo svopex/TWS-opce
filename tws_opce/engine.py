@@ -2525,6 +2525,29 @@ class FlowEngine:
                     "pozice se prodává trhem.",
                 )
 
+    def _sync_commissions(self) -> bool:
+        """
+        Promítne provize účtované TWS do obchodů a řekne, zda se něco změnilo.
+
+        Provize se vedou po jednotlivých vyplněních podle jejich execId, takže
+        opakované načtení téhož vyplnění (další průchod smyčkou, obnova po
+        novém spojení) hodnotu jen přepíše a nikdy ji nepřičte podruhé.
+        Provize příkazů obchodu, který už v přehledu není, se zahazují.
+        """
+        zmena = False
+        for flow_id, polozky in self.ib.commissions().items():
+            flow = self.flows.get(flow_id)
+            if flow is None:
+                continue
+            for exec_id, (druh, castka) in polozky.items():
+                # Nákup má vlastní kbelík, všechny ostatní příkazy jsou prodeje
+                cil = flow.entry_commissions if druh == "entry" else flow.exit_commissions
+                if cil.get(exec_id) == castka:
+                    continue
+                cil[exec_id] = castka
+                zmena = True
+        return zmena
+
     async def _tick(self) -> None:
         """Jeden průchod monitoringem všech aktivních flow."""
         # Během obnovy se nemonitoruje - příkazy z minulého spojení nejsou platné
@@ -2548,7 +2571,9 @@ class FlowEngine:
         # Krátce před zavřením burzy se běžící obchody automaticky uzavírají
         await self._auto_close_flows()
 
-        changed = False
+        # Provize dorazí z TWS až po vyplnění příkazu, proto se dobírají průběžně
+        changed = self._sync_commissions()
+
         for flow in list(self.flows.values()):
             if not flow.state.is_active:
                 continue
