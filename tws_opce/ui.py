@@ -33,7 +33,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 # Definice sloupců monitorovací tabulky
 TABLE_COLUMNS = [
     {"name": "live", "label": "", "field": "live", "align": "center"},
-    {"name": "symbol", "label": "Ticker", "field": "symbol", "align": "left", "sortable": True},
+    {"name": "symbol", "label": "Ticker", "field": "symbol", "align": "left"},
     {"name": "contract", "label": "Kontrakt", "field": "contract", "align": "left"},
     {"name": "qty", "label": "Ks", "field": "qty", "align": "right"},
     {"name": "underlying", "label": "Podklad", "field": "underlying", "align": "right"},

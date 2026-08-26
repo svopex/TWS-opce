@@ -1669,6 +1669,30 @@ class TestVicenasobneFlow(ZakladTestu):
         poradi = [f.symbol for f in self.engine.sorted_flows()]
         self.assertEqual(poradi, ["MSFT", "AAPL"])
 
+    async def test_ukoncene_obchody_se_deli_na_dnesni_a_starsi(self):
+        # Tři ukončené obchody: jeden dnešní a dva ze dvou různých starších dnů
+        dnesni = await self.engine.start_flow(
+            FlowRequest(symbol="ZM", entry_price=232.0, profit_target=235.0)
+        )
+        vcerejsi = await self.engine.start_flow(
+            FlowRequest(symbol="MSFT", entry_price=232.0, profit_target=235.0)
+        )
+        predvcerejsi = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        # Aktivní obchod musí zůstat nahoře bez ohledu na abecedu i stáří
+        aktivni = await self.engine.start_flow(
+            FlowRequest(symbol="TSLA", entry_price=232.0, profit_target=235.0)
+        )
+
+        for flow in (dnesni, vcerejsi, predvcerejsi):
+            await self.engine.cancel_flow(flow.id)
+        vcerejsi.created_at -= timedelta(days=1)
+        predvcerejsi.created_at -= timedelta(days=2)
+
+        poradi = [f.symbol for f in self.engine.sorted_flows()]
+        self.assertEqual(poradi, ["TSLA", "ZM", "MSFT", "AAPL"])
+
 
 class TestOcekavanehoVysledku(ZakladTestu):
     """Očekávaný zisk na PT a ztráta na SL."""
