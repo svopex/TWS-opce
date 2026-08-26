@@ -277,6 +277,7 @@ class FlowEngine:
         target: float,
         right: str,
         trading_class: str = "",
+        otm_from: float | None = None,
     ) -> tuple[float, Any, Any]:
         """
         Ověří v TWS opční kontrakt se strike nejblíže cílové ceně.
@@ -286,8 +287,22 @@ class FlowEngine:
         obchodovatelný (např. půlbodové strike jen u týdenních expirací).
         Proto se strike zkoušejí v pořadí podle vzdálenosti od cíle,
         dokud se některý neověří. Vrací trojici (strike, kontrakt, detaily).
+
+        Parametr otm_from udává cenu, vůči které se posuzuje, zda strike leží
+        v penězích. Je-li zadán, mají při stejné vzdálenosti od cíle přednost
+        strike mimo peníze - rastr bývá rovnoměrný, takže náhrada za nedostupný
+        strike je vždy remíza mezi oběma sousedy a bez tohoto pravidla by
+        vyhrál ten nižší, u CALL tedy kontrakt v penězích.
         """
-        kandidati = sorted(strikes, key=lambda s: (abs(s - target), s))[:MAX_STRIKE_ATTEMPTS]
+
+        def poradi(strike: float) -> tuple:
+            """Klíč řazení kandidátů: vzdálenost od cíle, pak strana mimo peníze."""
+            if otm_from is None:
+                return (abs(strike - target), strike)
+            v_penezich = strike < otm_from if right == "C" else strike > otm_from
+            return (abs(strike - target), v_penezich, strike)
+
+        kandidati = sorted(strikes, key=poradi)[:MAX_STRIKE_ATTEMPTS]
         if not kandidati:
             raise ValueError(f"Pro ticker {symbol} nejsou dostupné strike ceny.")
 
@@ -418,14 +433,21 @@ class FlowEngine:
                 )
             preview.profit_target = profit_target
 
-            # Strike se vybírá k cílové úrovni podkladu: při PT na podkladu přímo
-            # k PT, při PT ziskem na opci k úrovni odvozené z ceny opce
+            # Cílová úroveň podkladu: při PT na podkladu je to přímo PT, při PT
+            # zadaném ziskem na opci úroveň odvozená z ceny opce. Do náhledu
+            # patří vždy, jako cíl pro strike jen v režimu "target"
             if pt_on_underlying:
-                cil_strike = profit_target
+                cilova_uroven = profit_target
             else:
-                cil_strike = self._target_level_for_option_pt(
+                cilova_uroven = self._target_level_for_option_pt(
                     preview, entry_price, profit_target, referencni
                 )
+
+            # Strike podle nastaveného režimu - odsazený od vstupu mimo peníze,
+            # nejbližší vstupní ceně, nebo nejbližší cílové úrovni
+            cil_strike = self._strike_target(
+                entry_price, cilova_uroven, preview.right, list(chain.strikes)
+            )
 
             nejblizsi = calc.nearest_strike(sorted(chain.strikes), cil_strike)
             if referencni is not None and nejblizsi == referencni.strike:
@@ -438,7 +460,15 @@ class FlowEngine:
                 )
             else:
                 strike, option, details = await self._qualify_nearest_option(
-                    symbol, expiration, list(chain.strikes), cil_strike, preview.right, chain.tradingClass
+                    symbol,
+                    expiration,
+                    list(chain.strikes),
+                    cil_strike,
+                    preview.right,
+                    chain.tradingClass,
+                    # V režimu "target" leží cíl na PT a náhrada se řídí jen
+                    # vzdáleností jako dosud; jinak se drží strana mimo peníze
+                    otm_from=None if self.cfg.strike.mode == "target" else entry_price,
                 )
             preview.strike = strike
             preview.option = option
@@ -481,6 +511,12 @@ class FlowEngine:
                     f"s náhradní hodnotou {self.cfg.trading.default_delta:g}."
                 )
             used_delta = delta if delta is not None else self.cfg.trading.default_delta
+
+            # Delta vybrané opce se kontroluje proti mezím z konfigurace - není
+            # to kritérium výběru, jen upozornění na kontrakt mimo obvyklé pásmo
+            varovani_delta = self._delta_warning(delta)
+            if varovani_delta is not None:
+                preview.warnings.append(varovani_delta)
 
             # Odhad nákupní ceny opce - čistý výpočet z už načtených kotací
             preview.expected_fill_price = self._expected_fill_price(preview, entry_price)
@@ -707,6 +743,55 @@ class FlowEngine:
             price_source=zdroj,
             delta=delta,
         )
+
+    def _strike_target(
+        self, entry_price: float, cilova_uroven: float, right: str, strikes: list[float]
+    ) -> float:
+        """
+        Cena, ke které se vybírá strike, podle konfigurace strike.mode.
+
+        otm_offset vrací strike odsazený od vstupní ceny na stranu mimo peníze
+        (počet kroků rastru určuje strike.otm_steps), atm nejbližší strike ke
+        vstupu a target cílovou úroveň - tedy tam, kam má cena dojít.
+        Vrácená hodnota jde dál do kvalifikace kontraktu, která z ní vybere
+        nejbližší v TWS obchodovatelný strike.
+        """
+        mode = self.cfg.strike.mode
+        if mode == "target":
+            return cilova_uroven
+
+        # atm je odsazení o nula kroků, tedy nejbližší strike ke vstupní ceně
+        steps = self.cfg.strike.otm_steps if mode == "otm_offset" else 0
+        strike = calc.otm_strike(strikes, entry_price, right, steps)
+        # Prázdný řetězec řeší až kvalifikace kontraktu vlastní chybou
+        return strike if strike is not None else entry_price
+
+    def _delta_warning(self, delta: float | None) -> str | None:
+        """
+        Upozornění, když delta vybrané opce vypadne z mezí v konfiguraci.
+
+        Porovnává se absolutní hodnota, protože u PUT je delta záporná.
+        Mez nastavená na nulu se nekontroluje, stejně jako chybějící delta -
+        na tu upozorňuje samostatné varování.
+        """
+        if delta is None:
+            return None
+
+        velikost = abs(delta)
+        mez_min = self.cfg.strike.delta_warn_min
+        mez_max = self.cfg.strike.delta_warn_max
+
+        if mez_min > 0 and velikost < mez_min:
+            return (
+                f"Delta vybrané opce {velikost:.2f} je pod hranicí {mez_min:g} - opce leží "
+                f"daleko mimo peníze a z pohybu podkladu se zhodnotí jen málo."
+            )
+        if mez_max > 0 and velikost > mez_max:
+            return (
+                f"Delta vybrané opce {velikost:.2f} je nad hranicí {mez_max:g} - opce leží "
+                f"hluboko v penězích a stojí víc, než je pro pákový efekt potřeba."
+            )
+        return None
 
     def _target_level_for_option_pt(
         self,
@@ -1849,6 +1934,11 @@ class FlowEngine:
         Podle konfigurace buď ponechá strike, nebo vybere nový kontrakt.
         """
         if self.cfg.trading.pt_change_strike != "recalculate":
+            return
+
+        # Na cíli závisí strike jen v režimu "target". Vybírá-li se od vstupní
+        # ceny (otm_offset, atm), změna PT s ním nemá co dělat a kontrakt zůstává
+        if self.cfg.strike.mode != "target":
             return
 
         # Cílová úroveň pro strike: PT na podkladu přímo, PT na opci se

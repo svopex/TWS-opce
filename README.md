@@ -86,7 +86,8 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    (druhá úroveň se dopočítá). Aplikace načte cenu podkladu a sama určí zbytek:
    - **PUT/CALL** podle toho, zda vstupní cena leží nad nebo pod aktuální cenou
      (vstup nad trhem = průraz nahoru = CALL, vstup pod trhem = PUT),
-   - **strike** jako nejbližší dostupný k ceně PT,
+   - **strike** odsazený od vstupní ceny na stranu mimo peníze
+     (viz [Výběr strike](#výběr-strike)),
    - **expiraci** podle konfigurace (výchozí je nejbližší),
    - **SL**, pokud nebyl zadán, v poměru k PT z konfigurace (výchozí 1:1),
    - **množství** z velikosti účtu, povoleného rizika a delty opce:
@@ -128,10 +129,13 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    cena** opce, tedy cena v okamžiku, kdy podklad dosáhne vstupní úrovně;
    náhled ji uvádí jako `základ procent: prémie ≈ 317 USD/ks`. Celý přepočet
    drží jednu jedinou prémii — do USD i zpět do procent — takže si PT a SL
-   navzájem odpovídají, i když příprava nakonec vybere jinak drahý strike. Protože aplikace vybírá kontrakt
-   teprve podle zadaných úrovní, sáhne si v tomto režimu do TWS dvakrát —
-   poprvé jen pro odhad ceny opce, podruhé už se skutečnými úrovněmi; jakmile
-   odhad pro daný ticker má, další načtení jsou jednoprůchodová. Dopočítávaná
+   navzájem odpovídají, i když příprava nakonec vybere jinak drahý strike.
+   Protože se procenta převádějí z ceny opce, kterou aplikace teprve musí
+   načíst, sáhne si v tomto režimu do TWS dvakrát — poprvé jen pro odhad ceny
+   opce, podruhé už se skutečnými úrovněmi; jakmile odhad pro daný ticker má,
+   další načtení jsou jednoprůchodová. V režimech `otm_offset` a `atm` je
+   navíc odhad přesný, protože oba průchody vybírají tentýž kontrakt — strike
+   na zadaných úrovních nezávisí. Dopočítávaná
    úroveň se do pole vrací také v procentech. Kompenzace **SL o zaplacený
    spread dál** je dostupná i zde — připočte se k přepočtené částce v USD.
 
@@ -140,11 +144,12 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    vrací v USD, protože procento zná jen formulář — po nákupu je prémie známá
    a pevná, takže USD je přesnější zápis.
 
-   Při PT na opci se strike vybírá k úrovni podkladu, kterou aplikace
-   odvodí z ceny opce: z aktuální kotace opce se strikem u vstupu zjistí
+   Při PT na opci aplikace dopočítá **úroveň podkladu, kde zisk nastane**:
+   z aktuální kotace opce se strikem u vstupu zjistí
    implikovanou volatilitu, spočítá cenu opce v okamžiku vstupu, přičte
-   požadovaný zisk a najde úroveň podkladu, kde opce této ceny dosáhne —
-   strike tedy i tady leží na cílové úrovni. Cena opce pro model se bere
+   požadovaný zisk a najde úroveň podkladu, kde opce této ceny dosáhne.
+   Náhled ji ukazuje jako `cíl na podkladu ≈`; k výběru strike slouží jen
+   v režimu `strike.mode: target`. Cena opce pro model se bere
    ze středu BID/ASK, bez kotací z poslední (last) a nakonec ze závěrečné
    (close) ceny — TWS obvykle pošle závěrečnou cenu dřív než kotace, proto
    se po ní ještě `engine.quotes_grace_sec` počká na BID/ASK. Teprve bez
@@ -212,7 +217,7 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    Dopočítanou úroveň lze vždy přepsat ručně; **Přepočítat** ji spočítá
    znovu — je-li ale prvotní pole prázdné, počítá se naopak z toho vyplněného,
    aby zadání nezmizelo celé. K odeslání proto stačí vstupní cena a kterákoliv
-   z úrovní. Strike se i při dopočteném PT vybírá k jeho úrovni.
+   z úrovní. Na dopočtu PT strike nezávisí — vybírá se od vstupní ceny.
 
    TWS model greeks u opcí neposílá spolehlivě — závisí to na účtu
    a předplatném dat. Chybí-li delta, aplikace ji dopočítá z tržní ceny opce
@@ -300,7 +305,9 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    a tlačítko odpovídající aktuálnímu cíli je barevně zvýrazněné. U nakoupené
    pozice se rovnou upraví podmínka zajišťovacího příkazu; u obchodu před
    nákupem záleží na `trading.pt_change_strike` — buď zůstane původní strike,
-   nebo se podle nového cíle vybere jiný a příkaz se přezadá. Ve formuláři se
+   nebo se podle nového cíle vybere jiný a příkaz se přezadá. Přepočet se
+   uplatní jen v režimu `strike.mode: target`, kde strike na cíli skutečně
+   závisí; při výběru od vstupní ceny kontrakt zůstává. Ve formuláři se
    zadává vždy základní cíl 1:1.
 
    U nakoupené pozice jsou před tlačítky cíle ještě tlačítka **Počáteční SL**
@@ -399,6 +406,53 @@ Aplikace zvládá více obchodů současně; na jednom tickeru může běžet
 zároveň jeden long (CALL) a jeden short (PUT) obchod. Směr zadání určuje
 poloha PT vůči vstupu a nové zadání nahrazuje jen čekající obchod
 stejného směru.
+
+### Výběr strike
+
+Strike se vybírá **od vstupní ceny**, ne od cíle. Rozhoduje `strike.mode`:
+
+| Režim | Strike |
+| --- | --- |
+| `otm_offset` | odsazený od vstupu na stranu mimo peníze (výchozí) |
+| `atm` | nejbližší vstupní ceně, ať leží nad ní, nebo pod ní |
+| `target` | nejbližší cílové úrovni (PT) |
+
+Odsazení v režimu `otm_offset` udává `strike.otm_steps`, a to **v krocích
+rastru** opčního řetězce, ne v bodech — jedna hodnota tak platí pro všechny
+tickery bez ohledu na jejich cenu. Hodnota `1` znamená první strike nad
+vstupem u CALL a první pod vstupem u PUT, `2` ten následující, `0` se chová
+jako `atm`. U SPY (rastr 1) je krok dolar, u AAPL (rastr 2,5) dva a půl,
+u NVDA (rastr 5) pět. Leží-li vstupní cena přesně na striku — což u kulatých
+průrazových úrovní není nic neobvyklého — posune se strike o celý krok dál,
+aby kontrakt zůstal mimo peníze.
+
+Proč od vstupu: opce se kupuje teprve ve chvíli, kdy podklad na vstupní
+úroveň dorazí, takže právě tam bude trh v okamžiku nákupu stát. Mírně OTM
+kontrakt u vstupu má **zdravou deltu** (zhruba 0,30–0,40) a jakmile se cena
+vydá k cíli, přechází do peněz a jeho prémium roste zrychleně, jak stoupá
+delta. Strike posazený až na cílovou úroveň (`mode: target`) naproti tomu
+zůstane po celý obchod mimo peníze: má nízkou deltu, z pohybu podkladu
+vytěží málo a časový rozpad ho stačí sníst dřív, než cíl nastane.
+
+Vzdálenost mezi vstupem a cílem tedy strike neurčuje — promítá se do
+**množství** (`riskovaná částka / (|vstup − SL| × |delta| × 100)`) a do
+úrovní zajišťovacích příkazů. Z toho plyne, že posun cíle u obchodu před
+nákupem strike nemění; `trading.pt_change_strike: recalculate` se uplatní
+jen v režimu `target`.
+
+Není-li vybraný strike pro zvolenou expiraci v TWS obchodovatelný, zkusí se
+sousední. Rastr bývá rovnoměrný, takže oba sousedé leží od cíle stejně
+daleko — přednost pak dostane ten mimo peníze, aby režim dodržel, co slibuje.
+Náhradu aplikace hlásí varováním v náhledu.
+
+**Kontrola delty.** Meze `strike.delta_warn_min` a `strike.delta_warn_max`
+(výchozí 0,25 a 0,60) nejsou kritériem výběru, jen kontrolou: vypadne-li
+delta vybrané opce z pásma, náhled upozorní. Nízká delta znamená kontrakt
+tak daleko mimo peníze, že se z pohybu podkladu skoro nezhodnotí; vysoká
+kontrakt hluboko v penězích, který zbytečně draho platí vnitřní hodnotu.
+Porovnává se absolutní hodnota, protože u PUT je delta záporná. Hodnota `0`
+příslušnou kontrolu vypne. Chybí-li delta úplně, upozorní na to samostatné
+varování a množství se spočítá s náhradní hodnotou `trading.default_delta`.
 
 ### Mimo obchodní hodiny
 
@@ -655,7 +709,8 @@ pochází — `(config)`, nebo `(z TWS)`.
 Vše podstatné je v `config.yaml` (podrobné komentáře u každé položky):
 spojení s TWS, velikost účtu a risk, typ nákupního příkazu
 (`LMT_ASK` / `MKT` / `LMT_MID`), typ prodejního příkazu, limit spreadu,
-poměr SL:PT, výchozí režim PT a SL (na podkladu / na opci) a výběr expirace.
+poměr SL:PT, výchozí režim PT a SL (na podkladu / na opci), výběr expirace
+a výběr strike.
 
 ## Testy
 

@@ -206,6 +206,41 @@ def nearest_strike(strikes: list[float], target: float) -> float | None:
     return min(strikes, key=lambda s: (abs(s - target), s))
 
 
+def otm_strike(strikes: list[float], entry: float, right: str, steps: int) -> float | None:
+    """
+    Strike odsazený od vstupní ceny na stranu mimo peníze (OTM).
+
+    Mimo peníze leží u CALL strike nad vstupní cenou, u PUT pod ní.
+    Parametr steps udává, kolikátý takový strike se vybere: 1 je první
+    strike za vstupem, 2 druhý a tak dál. Odsazení se počítá v krocích
+    rastru řetězce, ne v bodech - u SPY (rastr 1) tak jeden krok znamená
+    dolar, u AAPL (rastr 2,5) dva a půl, takže volba platí pro každý ticker.
+
+    steps <= 0 vrací nejbližší strike ke vstupu (ATM), ať leží kdekoliv.
+    Nemá-li řetězec na požadovaný počet kroků dost striků, vrací ten
+    nejvzdálenější dostupný. Vrací None při prázdném seznamu.
+    """
+    if not strikes:
+        return None
+
+    serazene = sorted(strikes)
+    if steps <= 0:
+        return nearest_strike(serazene, entry)
+
+    # Kandidáti mimo peníze seřazení od vstupu dál: u CALL vzestupně nad
+    # vstupem, u PUT sestupně pod ním
+    if right == "C":
+        kandidati = [s for s in serazene if s > entry]
+    else:
+        kandidati = [s for s in reversed(serazene) if s < entry]
+
+    # Celý řetězec je na opačné straně - zbývá nejbližší strike ke vstupu
+    if not kandidati:
+        return nearest_strike(serazene, entry)
+
+    return kandidati[min(steps, len(kandidati)) - 1]
+
+
 def days_to_expiry(expiration: str, today: date | None = None) -> int:
     """Počet dní do expirace ze zápisu YYYYMMDD."""
     ref = today or date.today()

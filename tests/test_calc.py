@@ -148,6 +148,44 @@ class TestVyberKontraktu(unittest.TestCase):
     def test_prazdny_seznam_strike(self):
         self.assertIsNone(calc.nearest_strike([], 100.0))
 
+    def test_otm_strike_call_nad_vstupem(self):
+        # Rastr 2,5: první strike nad vstupem 232 je 232,5, druhý 235
+        striky = [227.5, 230.0, 232.5, 235.0, 237.5]
+        self.assertEqual(calc.otm_strike(striky, 232.0, "C", 1), 232.5)
+        self.assertEqual(calc.otm_strike(striky, 232.0, "C", 2), 235.0)
+
+    def test_otm_strike_put_pod_vstupem(self):
+        # U PUT leží mimo peníze strike pod vstupem, pořadí je tedy sestupné
+        striky = [222.5, 225.0, 227.5, 230.0, 232.5]
+        self.assertEqual(calc.otm_strike(striky, 229.0, "P", 1), 227.5)
+        self.assertEqual(calc.otm_strike(striky, 229.0, "P", 2), 225.0)
+
+    def test_otm_strike_vstup_presne_na_striku(self):
+        # Vstup na kulaté úrovni bývá průraz - strike se posune celý krok dál,
+        # aby kontrakt zůstal mimo peníze
+        striky = [227.5, 230.0, 232.5, 235.0]
+        self.assertEqual(calc.otm_strike(striky, 230.0, "C", 1), 232.5)
+        self.assertEqual(calc.otm_strike(striky, 230.0, "P", 1), 227.5)
+
+    def test_otm_strike_nula_kroku_je_atm(self):
+        # Nula kroků znamená nejbližší strike ke vstupu, i když leží v penězích
+        striky = [227.5, 230.0, 232.5, 235.0]
+        self.assertEqual(calc.otm_strike(striky, 230.4, "C", 0), 230.0)
+        self.assertEqual(calc.otm_strike(striky, 232.4, "P", 0), 232.5)
+
+    def test_otm_strike_nedostatek_kroku_vrati_krajni(self):
+        # Řetězec na deset kroků nestačí - zbývá nejvzdálenější dostupný strike
+        striky = [227.5, 230.0, 232.5, 235.0]
+        self.assertEqual(calc.otm_strike(striky, 232.0, "C", 10), 235.0)
+
+    def test_otm_strike_cely_retezec_v_penezich(self):
+        # Žádný strike neleží mimo peníze - vrací se nejbližší ke vstupu
+        striky = [220.0, 222.5, 225.0]
+        self.assertEqual(calc.otm_strike(striky, 240.0, "C", 1), 225.0)
+
+    def test_otm_strike_prazdny_seznam(self):
+        self.assertIsNone(calc.otm_strike([], 232.0, "C", 1))
+
     def test_nejblizsi_expirace(self):
         dnes = date(2026, 8, 18)
         vyber = calc.select_expiration(["20260820", "20260828", "20260918"], "nearest", 0, today=dnes)

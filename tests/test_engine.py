@@ -44,8 +44,8 @@ class TestZalozeniFlow(ZakladTestu):
 
         self.assertEqual(flow.right, "C")
         self.assertEqual(flow.state, FlowState.ARMED)
-        # Strike odpovídá nejbližší dostupné ceně k PT (235)
-        self.assertEqual(flow.strike, 235.0)
+        # Strike je první mimo peníze za vstupem 232 (rastr 2,5), ne u PT 235
+        self.assertEqual(flow.strike, 232.5)
         # SL se dopočítal 1:1 vůči PT, tedy 232 − 3
         self.assertAlmostEqual(flow.stop_loss, 229.0)
 
@@ -229,15 +229,26 @@ class TestVyberuStrike(ZakladTestu):
     """Výběr strike, když nejbližší cena z řetězce není v TWS obchodovatelná."""
 
     async def test_nedostupny_strike_se_nahradi_nejblizsim_obchodovatelnym(self):
-        # Řetězec strike 235 nabízí, ale kontrakt pro něj v TWS neexistuje
-        self.ib.unavailable_strikes = {235.0}
+        # Řetězec strike 232,5 nabízí, ale kontrakt pro něj v TWS neexistuje
+        self.ib.unavailable_strikes = {232.5}
         preview = await self.engine.prepare("AAPL", 232.0, 235.0)
 
-        # Vybral se další strike v pořadí podle vzdálenosti od PT
-        self.assertEqual(preview.strike, 232.5)
+        # Sousedé 230 a 235 jsou od cíle stejně daleko - přednost má ten
+        # mimo peníze, protože 230 by u CALL se vstupem 232 leželo v penězích
+        self.assertEqual(preview.strike, 235.0)
         # SL se počítá z cen podkladu (vstup a PT), náhradní strike ho nemění
         self.assertAlmostEqual(preview.stop_loss, 229.0)
         # Náhrada se obchodníkovi hlásí varováním
+        self.assertTrue(any("232.5" in varovani for varovani in preview.warnings))
+
+    async def test_nahrada_v_rezimu_target_se_ridi_jen_vzdalenosti(self):
+        # Původní režim preferenci strany nezná - rozhoduje jen vzdálenost
+        # od cíle a při shodě nižší strike
+        self.cfg.strike.mode = "target"
+        self.ib.unavailable_strikes = {235.0}
+        preview = await self.engine.prepare("AAPL", 232.0, 235.0)
+
+        self.assertEqual(preview.strike, 232.5)
         self.assertTrue(any("235" in varovani for varovani in preview.warnings))
 
     async def test_bez_obchodovatelneho_strike_priprava_selze(self):
@@ -245,6 +256,89 @@ class TestVyberuStrike(ZakladTestu):
         self.ib.unavailable_strikes = set(self.ib._strikes())
         with self.assertRaises(ValueError):
             await self.engine.prepare("AAPL", 232.0, 235.0)
+
+
+class TestRezimuVyberuStrike(ZakladTestu):
+    """Režimy strike.mode - podle čeho se vybírá strike opčního kontraktu."""
+
+    async def test_otm_offset_vybere_prvni_strike_za_vstupem(self):
+        # Výchozí režim: podklad 230, vstup 232, rastr 2,5 -> první strike
+        # nad vstupem je 232,5. Cíl 235 do výběru nemluví
+        preview = await self.engine.prepare("AAPL", 232.0, 235.0)
+        self.assertEqual(preview.strike, 232.5)
+
+    async def test_otm_offset_u_put_vybira_pod_vstupem(self):
+        # U PUT leží mimo peníze strike pod vstupní cenou
+        preview = await self.engine.prepare("AAPL", 229.0, 226.0)
+        self.assertEqual(preview.right, "P")
+        self.assertEqual(preview.strike, 227.5)
+
+    async def test_vice_kroku_posune_strike_dal_od_penez(self):
+        self.cfg.strike.otm_steps = 2
+        preview = await self.engine.prepare("AAPL", 232.0, 235.0)
+        self.assertEqual(preview.strike, 235.0)
+
+    async def test_atm_vybere_nejblizsi_strike_ke_vstupu(self):
+        # Vstup 230,4 má nejblíž strike 230, i když u CALL leží v penězích
+        self.cfg.strike.mode = "atm"
+        preview = await self.engine.prepare("AAPL", 230.4, 235.0)
+        self.assertEqual(preview.strike, 230.0)
+
+    async def test_nula_kroku_se_chova_jako_atm(self):
+        self.cfg.strike.mode = "otm_offset"
+        self.cfg.strike.otm_steps = 0
+        preview = await self.engine.prepare("AAPL", 230.4, 235.0)
+        self.assertEqual(preview.strike, 230.0)
+
+    async def test_rezim_target_vybira_podle_cile(self):
+        # Původní chování zůstává dostupné - strike na cílové úrovni
+        self.cfg.strike.mode = "target"
+        preview = await self.engine.prepare("AAPL", 232.0, 235.0)
+        self.assertEqual(preview.strike, 235.0)
+
+    async def test_zmena_cile_strike_nemeni(self):
+        # Strike na cíli nezávisí, takže recalculate nemá co přepočítávat
+        self.cfg.trading.pt_change_strike = "recalculate"
+        flow = await self.zaloz_call()
+        puvodni_prikaz = flow.entry_trade
+
+        await self.engine.change_profit_target(flow.id, 240.0)
+
+        self.assertEqual(flow.strike, 232.5)
+        self.assertIs(flow.entry_trade, puvodni_prikaz)
+        self.assertNotIn(puvodni_prikaz, self.ib.cancelled)
+
+
+class TestKontrolyDelty(ZakladTestu):
+    """Upozornění, když delta vybrané opce vypadne z mezí v konfiguraci."""
+
+    async def test_nizka_delta_vyvola_varovani(self):
+        self.ib.greek_delta = 0.10
+        preview = await self.engine.prepare("AAPL", 232.0, 235.0)
+        self.assertTrue(any("pod hranicí" in v for v in preview.warnings))
+
+    async def test_vysoka_delta_vyvola_varovani(self):
+        self.ib.greek_delta = 0.85
+        preview = await self.engine.prepare("AAPL", 232.0, 235.0)
+        self.assertTrue(any("nad hranicí" in v for v in preview.warnings))
+
+    async def test_delta_v_pasmu_je_bez_varovani(self):
+        self.ib.greek_delta = 0.35
+        preview = await self.engine.prepare("AAPL", 232.0, 235.0)
+        self.assertFalse(any("hranicí" in v for v in preview.warnings))
+
+    async def test_u_put_se_porovnava_absolutni_hodnota(self):
+        # Delta PUT je záporná, mez se přesto vyhodnotí správně
+        self.ib.greek_delta = -0.35
+        preview = await self.engine.prepare("AAPL", 229.0, 226.0)
+        self.assertEqual(preview.right, "P")
+        self.assertFalse(any("hranicí" in v for v in preview.warnings))
+
+    async def test_nulova_mez_kontrolu_vypne(self):
+        self.cfg.strike.delta_warn_min = 0.0
+        self.ib.greek_delta = 0.05
+        preview = await self.engine.prepare("AAPL", 232.0, 235.0)
+        self.assertFalse(any("hranicí" in v for v in preview.warnings))
 
 
 class TestSmeruVstupu(ZakladTestu):
@@ -779,7 +873,10 @@ class TestZmenyCile(ZakladTestu):
         self.assertIn("běžícího obchodu", str(ctx.exception))
 
     async def test_prepocet_strike_zada_prikaz_znovu(self):
-        # Nastavení recalculate vybere podle nového cíle jiný kontrakt
+        # Nastavení recalculate vybere podle nového cíle jiný kontrakt.
+        # Na cíli závisí strike jen v režimu "target", jinak se přepočet
+        # neuplatní - kontrakt se vybírá od vstupní ceny
+        self.cfg.strike.mode = "target"
         self.cfg.trading.pt_change_strike = "recalculate"
         flow = await self.zaloz_call()
         puvodni_strike = flow.strike

@@ -59,13 +59,15 @@ class TestZadaniNaOpci(ZakladRezimu):
         self.assertTrue(flow.pt_on_underlying)
         self.assertTrue(flow.sl_on_underlying)
         self.assertFalse(flow.exit_split)
-        self.assertEqual(flow.strike, 235.0)
+        # Strike je první mimo peníze za vstupem 232, cíl 235 ho neurčuje
+        self.assertEqual(flow.strike, 232.5)
         self.assertAlmostEqual(flow.stop_loss, 229.0)
 
     async def test_pt_na_opci_vybere_strike_na_odvozene_urovni(self):
         # Zisk 10 USD = posun ceny opce o 0,10; podklad se musí pohnout jen
         # o zlomek bodu, takže cílová úroveň leží těsně nad vstupem 232
         # a strike je nejbližší k ní (232,5), nikoliv někde u 235 jako při PT 235
+        self.cfg.strike.mode = "target"
         flow = await self.zaloz(False, True, 10.0)
         self.assertFalse(flow.pt_on_underlying)
         self.assertEqual(flow.strike, 232.5)
@@ -78,7 +80,8 @@ class TestZadaniNaOpci(ZakladRezimu):
 
     async def test_vetsi_zisk_posune_strike_dal(self):
         # Zisk 300 USD = posun ceny opce o 3 body vyžaduje výrazný pohyb
-        # podkladu - strike se vybírá dál od vstupu
+        # podkladu - v režimu "target" se strike vybírá dál od vstupu
+        self.cfg.strike.mode = "target"
         flow = await self.zaloz(False, False, 300.0)
         self.assertGreater(flow.strike, 232.5)
 
@@ -88,6 +91,7 @@ class TestZadaniNaOpci(ZakladRezimu):
         self.ib.price_ask = None
         self.ib.greek_delta = 0.5
         self.cfg.trading.entry_order_type = "MKT"
+        self.cfg.strike.mode = "target"
         flow = await self.zaloz(False, False, 100.0)
         # Posun ceny opce 1,00 / delta 0,5 = 2 body -> cíl 234, strike 235
         self.assertEqual(flow.strike, 235.0)
@@ -895,7 +899,8 @@ class TestDopoctuPtZeSl(ZakladRezimu):
         flow = await self.zaloz_se_sl(True, True, 229.0)
         self.assertAlmostEqual(flow.profit_target, 235.0)
         self.assertAlmostEqual(flow.original_profit_target, 235.0)
-        self.assertEqual(flow.strike, 235.0)
+        # Strike se vybírá od vstupu 232, dopočtené PT ho neposouvá
+        self.assertEqual(flow.strike, 232.5)
         self.assertEqual(flow.right, "C")
 
     async def test_pomer_se_uplatni(self):
@@ -946,7 +951,7 @@ class TestDopoctuPtZeSl(ZakladRezimu):
         nahled = await self.engine.prepare("AAPL", 232.0, None, 229.0)
         self.assertAlmostEqual(nahled.profit_target, 235.0)
         self.assertAlmostEqual(nahled.stop_loss, 229.0)
-        self.assertEqual(nahled.strike, 235.0)
+        self.assertEqual(nahled.strike, 232.5)
 
     async def test_nahled_bez_urovni_vraci_jen_cenu(self):
         self.ib.price_underlying = 230.0

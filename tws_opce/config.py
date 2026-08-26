@@ -23,6 +23,8 @@ EXIT_ORDER_TYPES = ("MKT", "LMT")
 PRIMARY_LEVELS = ("pt", "sl")
 # Povolené režimy výběru expirace
 EXPIRATION_MODES = ("nearest", "fixed")
+# Povolené režimy výběru strike ceny opčního kontraktu
+STRIKE_MODES = ("otm_offset", "atm", "target")
 
 
 @dataclass
@@ -139,6 +141,26 @@ class ExpirationConfig:
 
 
 @dataclass
+class StrikeConfig:
+    """Výběr strike ceny opčního kontraktu."""
+
+    # Podle čeho se strike vybírá:
+    #   otm_offset = odsazený od vstupní ceny na stranu mimo peníze (výchozí)
+    #   atm        = nejbližší strike ke vstupní ceně
+    #   target     = nejbližší strike k cílové úrovni (PT)
+    mode: str = "otm_offset"
+    # Kolikátý strike za vstupní cenou se vybere při mode = otm_offset.
+    # Počítá se v krocích rastru řetězce, takže platí pro každý ticker:
+    # 1 = první strike nad vstupem u CALL, pod vstupem u PUT.
+    otm_steps: int = 1
+    # Meze delty vybrané opce, mimo které náhled upozorní. Nejde o kritérium
+    # výběru, jen o kontrolu - příliš nízká delta znamená opci, která se
+    # z pohybu podkladu skoro nezhodnotí. Nula obě kontroly vypíná.
+    delta_warn_min: float = 0.25
+    delta_warn_max: float = 0.60
+
+
+@dataclass
 class EngineConfig:
     """Časování monitorovací smyčky."""
 
@@ -183,6 +205,7 @@ class AppConfig:
     account: AccountConfig = field(default_factory=AccountConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
     expiration: ExpirationConfig = field(default_factory=ExpirationConfig)
+    strike: StrikeConfig = field(default_factory=StrikeConfig)
     engine: EngineConfig = field(default_factory=EngineConfig)
     state: StateConfig = field(default_factory=StateConfig)
     ui: UiConfig = field(default_factory=UiConfig)
@@ -240,6 +263,7 @@ def load_config(path: str | Path) -> AppConfig:
         account=_build(AccountConfig, raw.get("account", {}), "account"),
         trading=_build(TradingConfig, raw.get("trading", {}), "trading"),
         expiration=_build(ExpirationConfig, raw.get("expiration", {}), "expiration"),
+        strike=_build(StrikeConfig, raw.get("strike", {}), "strike"),
         engine=_build(EngineConfig, raw.get("engine", {}), "engine"),
         state=_build(StateConfig, raw.get("state", {}), "state"),
         ui=_build(UiConfig, raw.get("ui", {}), "ui"),
@@ -317,6 +341,22 @@ def validate_config(cfg: AppConfig) -> None:
             problems.append(
                 "expiration.fixed_date musí být ve formátu YYYYMMDD při expiration.mode = fixed"
             )
+
+    if cfg.strike.mode not in STRIKE_MODES:
+        problems.append(
+            f"strike.mode musí být jedna z {STRIKE_MODES}, nalezeno '{cfg.strike.mode}'"
+        )
+    if cfg.strike.otm_steps < 0:
+        problems.append("strike.otm_steps nesmí být záporné")
+    # Meze delty se zadávají v absolutní hodnotě, u PUT se porovnává |delta|
+    for nazev, hodnota in (
+        ("delta_warn_min", cfg.strike.delta_warn_min),
+        ("delta_warn_max", cfg.strike.delta_warn_max),
+    ):
+        if not 0.0 <= hodnota <= 1.0:
+            problems.append(f"strike.{nazev} musí ležet mezi 0 a 1, nalezeno {hodnota:g}")
+    if 0.0 < cfg.strike.delta_warn_max < cfg.strike.delta_warn_min:
+        problems.append("strike.delta_warn_max nesmí být menší než strike.delta_warn_min")
 
     if cfg.account.size < 0:
         problems.append("account.size nesmí být záporná (0 = převzít z TWS)")
