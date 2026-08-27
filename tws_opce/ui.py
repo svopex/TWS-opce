@@ -16,12 +16,17 @@ from .engine import FlowEngine, Preview
 from .ib_service import IBService
 from .import_dialog import ImportDialog
 from .models import (
+    MODE_PREMIUM,
+    MODE_UNDERLYING,
+    MODE_USD,
+    MODES_ON_OPTION,
     PT_MULTIPLES,
     Flow,
     FlowRequest,
     FlowState,
     level_text,
     pomer_z_rrr,
+    rezim_urovne,
     rrr_z_pomeru,
 )
 from .report_dialog import ReportDialog
@@ -177,19 +182,8 @@ def pnl_text(cisty: float | None, hruby: float | None) -> str:
     return f"{fmt(cisty)} ({fmt(hruby)})"
 
 
-# Režimy zadání úrovně PT a SL. Podklad je cena podkladu hlídaná podmíněným
-# příkazem, zbylé dva jsou tatáž úroveň na opci - jednou zapsaná přímo v USD
-# na kontrakt, podruhé podílem ze zaplacené prémie. Procento je jen jednotka
-# formuláře: před odesláním se z ceny opce převede na USD, takže engine i stav
-# obchodu pracují s USD stejně jako dosud.
-MODE_UNDERLYING = "underlying"
-MODE_USD = "usd"
-MODE_PREMIUM = "premium"
-
-# Režimy, ve kterých úroveň leží na opci
-MODES_ON_OPTION = (MODE_USD, MODE_PREMIUM)
-
-# Popisky polí PT a SL podle režimu zadání
+# Popisky polí PT a SL podle režimu zadání (režimy samotné žijí v models.py,
+# sdílí je i hromadné načtení pozic ze souboru)
 PT_LABELS = {
     MODE_UNDERLYING: "PT na podkladu",
     MODE_USD: "PT na opci [USD/ks]",
@@ -209,18 +203,6 @@ def popisek_urovne(druh: str, rezim: str) -> str:
     a napovídá i umístění pole - zadávaná úroveň stojí vždy vedle vstupu.
     """
     return (PT_LABELS if druh == "pt" else SL_LABELS)[rezim]
-
-
-def rezim_urovne(na_podkladu: bool, v_procentech: bool = False) -> str:
-    """
-    Režim odpovídající uloženým příznakům obchodu.
-
-    Na podkladu procento nedává smysl - úroveň je cena podkladu, ne podíl
-    z prémie -, proto se příznak procenta uplatní jen u úrovně na opci.
-    """
-    if na_podkladu:
-        return MODE_UNDERLYING
-    return MODE_PREMIUM if v_procentech else MODE_USD
 
 
 def format_countdown(sekundy: float) -> str:

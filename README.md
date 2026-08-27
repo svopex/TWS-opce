@@ -687,9 +687,22 @@ jednotce a po kliknutí na řádek v přehledu se ve formuláři ukážou souhla
 | *PT na opci v USD/ks* | *na opci (zisk / ztráta v USD/ks)* |
 | *PT na opci v % prémie* | *na opci (% prémie)* |
 
-SL se sice v obou opčních režimech dopočítává z PT podle *RRR* a do tabulky se
-zapisuje v USD/ks, ale jednotka zadání se na něj přenáší z cíle — stejně jako
-v běžném formuláři, kde přepínač *% prémie* platí i pro dopočítanou úroveň.
+Běžný formulář má pro PT a SL **dva samostatné přepínače** a dá se v něm
+nastavit každá úroveň jinak; dialog obě úrovně záměrně sváže do jediné volby,
+protože dopočítaný SL tu vlastní přepínač nemá a bez svázání by se do obchodu
+uložil v jiné jednotce než cíl.
+
+Do tabulky se PT i SL zapisují vždy v jednotce, se kterou počítá aplikace —
+v režimu na podkladu je to cena podkladu, v obou opčních režimech **USD/ks**.
+Jednotku nese hlavička sloupce (*PT [USD/ks]*, *SL [USD/ks]*). Procento prémie
+je jen jednotka zadání: v tabulce je už přepočtené na USD/ks, ale obchod si ji
+pamatuje, takže tytéž úrovně ukáže běžný formulář zase v procentech — a tedy
+jiným číslem než dialog.
+
+Řádek, jehož čísla vznikla ještě v předchozím režimu (typicky proto, že byl
+při přepnutí zamčený otevřenou pozicí), nebo u kterého příprava selhala, se
+sám nezaškrtne a tlačítko *Zadat* jej odmítne s výzvou k přepočtu — jinak by
+úroveň odešla do trhu ve špatné jednotce.
 
 V obou opčních režimech (USD/ks i % prémie) má smysl zaškrtávátko
 **SL o zaplacený spread dál** — chová se stejně jako v běžném formuláři.
@@ -720,14 +733,19 @@ Tabulka ukazuje u každé pozice směr ze souboru, vstupní i cílovou cenu, vyb
 opční kontrakt a **editovatelná pole PT, SL a Ks**. Skutečný směr určuje
 aplikace z aktuální ceny podkladu jako vždy; liší-li se od směru daného souborem,
 trh už vstupní úroveň překonal — takový řádek se označí jako *Vstup propásnut*
-a **odškrtne**, aby se omylem nezaložil obchod na opačnou stranu. Zaškrtnutím
-jej lze přesto zadat.
+a **odškrtne**, aby se omylem nezaložil obchod na opačnou stranu. Zároveň se
+zahodí dopočet (*SL* a *Ks*) — patřil by k opačnému kontraktu, než jaký by
+obchod koupil. Samotné zaškrtnutí proto k zadání nestačí: řádek jde poslat do
+trhu, až když se hodnoty vyplní ručně, nebo se přepočet podaří ve správném
+směru.
 
 Tlačítko **Zadat vybrané pozice do trhu** založí obchody postupně, každý stejným
 způsobem jako ruční zadání formulářem — včetně všech kontrol. Chyba jedné pozice
-ostatní nezastaví, zapíše se do jejího sloupce *Stav*. Bez spojení s TWS se pozice
-načtou a PT vyplní (je to čistý výpočet ze zadání), SL ani množství se ale
-dopočítat nedají.
+ostatní nezastaví, zapíše se do jejího sloupce *Stav*. Po dobu zakládání je
+tlačítko zakázané, takže druhý stisk nespustí souběžnou dávku a tytéž pozice
+neodejdou do trhu dvakrát; zadávat nelze ani během probíhajícího přepočtu. Bez
+spojení s TWS se pozice načtou a PT vyplní (je to čistý výpočet ze zadání),
+SL ani množství se ale dopočítat nedají.
 
 ### Opakované zadání téže pozice
 

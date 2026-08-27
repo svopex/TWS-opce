@@ -5,22 +5,33 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.fake_ib import FakeIBService
-from tws_opce import importer
+from tws_opce import import_dialog, importer
 from tws_opce.config import AppConfig
 from tws_opce.engine import FlowEngine
 from tws_opce.import_dialog import (
     REZIM_PCT,
     REZIM_PREMIUM,
     REZIM_USD,
+    RUNNER_VYPNUTO,
     ImportDialog,
     RadekPozice,
-    rezimy_urovni,
+    uroven_cile,
 )
-from tws_opce.models import Flow, FlowState
+from tws_opce.importer import ImportedPosition
+from tws_opce.models import (
+    MODE_PREMIUM,
+    MODE_UNDERLYING,
+    MODE_USD,
+    Flow,
+    FlowRequest,
+    FlowState,
+    urovne_z_rezimu,
+)
 
 
 class Zaskrtavatko:
@@ -38,20 +49,57 @@ class Zaskrtavatko:
 
 
 class Pole:
-    """Náhrada číselného pole řádku (množství)."""
+    """Náhrada číselného pole řádku (PT, SL, množství) i pole nad tabulkou."""
 
-    def __init__(self, value: float | None = None) -> None:
+    def __init__(self, value: float | str | None = None) -> None:
+        self.value = value
+
+    def set_value(self, value: float | str | None) -> None:
+        self.value = value
+
+
+class Prepinac:
+    """Náhrada přepínače režimu cíle nad tabulkou."""
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def set_value(self, value: str) -> None:
         self.value = value
 
 
 class Popisek:
-    """Náhrada popisku, do kterého se zapisuje souhrn pod tabulkou."""
+    """
+    Náhrada popisku - souhrnu pod tabulkou i sloupce Stav v řádku.
+    Barvy ani bublinu test nesleduje, jen si je nechá spolknout.
+    """
 
     def __init__(self) -> None:
         self.text = ""
+        self.visible = True
 
     def set_text(self, text: str) -> None:
         self.text = text
+
+    def set_visibility(self, visible: bool) -> None:
+        self.visible = visible
+
+    def classes(self, **kwargs: object) -> "Popisek":
+        return self
+
+    def tooltip(self, text: str) -> "Popisek":
+        return self
+
+
+class Okno:
+    """Náhrada okna dialogu - _zadej je po úspěšné dávce zavírá."""
+
+    def __init__(self) -> None:
+        self.value = True
+
+    def close(self) -> None:
+        self.value = False
+
 
 # Zkrácená obdoba skutečného souboru: ke každému obchodu je starší varianta
 # bez plusu (ta se má přeskočit) i „plus" položka, ze které se čerpá
@@ -255,14 +303,39 @@ class TestRezimuUrovni(unittest.TestCase):
     ve stejné jednotce, aby se obchod vrátil do formuláře souhlasně.
     """
 
-    def test_procento_drahy_da_obe_urovne_na_podkladu(self):
-        self.assertEqual(rezimy_urovni(REZIM_PCT), (True, False))
+    def test_procento_drahy_je_uroven_na_podkladu(self):
+        self.assertEqual(uroven_cile(REZIM_PCT), MODE_UNDERLYING)
 
-    def test_usd_na_opci_neni_v_procentech(self):
-        self.assertEqual(rezimy_urovni(REZIM_USD), (False, False))
+    def test_usd_na_opci_je_uroven_v_usd(self):
+        self.assertEqual(uroven_cile(REZIM_USD), MODE_USD)
 
-    def test_procento_premie_da_obe_urovne_v_procentech(self):
-        self.assertEqual(rezimy_urovni(REZIM_PREMIUM), (False, True))
+    def test_procento_premie_je_uroven_v_procentech(self):
+        self.assertEqual(uroven_cile(REZIM_PREMIUM), MODE_PREMIUM)
+
+    def test_neznamy_rezim_neprojde_tise(self):
+        # Tiché uhnutí k výchozí hodnotě by z úrovně na opci udělalo cenu
+        # podkladu a projevilo by se až špatně zadaným obchodem
+        with self.assertRaises(KeyError):
+            uroven_cile("procenta")
+
+    def test_jedna_volba_urcuje_pt_i_sl(self):
+        # Rozbalení režimu na příznaky zadání smí žít jen na jednom místě,
+        # jinak se dá polovina dvojice snadno vynechat
+        for rezim in (MODE_UNDERLYING, MODE_USD, MODE_PREMIUM):
+            with self.subTest(rezim=rezim):
+                urovne = urovne_z_rezimu(rezim, premie=3.00)
+                self.assertEqual(
+                    urovne["pt_on_underlying"], urovne["sl_on_underlying"]
+                )
+                self.assertEqual(urovne["pt_in_premium"], urovne["sl_in_premium"])
+
+    def test_procenta_bez_ceny_opce_zustanou_v_usd(self):
+        # Ručně přepsané PT prémii zahazuje - bez ní se procenta nedají
+        # převést zpět, takže obchod nese úroveň jako částku v USD
+        urovne = urovne_z_rezimu(MODE_PREMIUM, premie=None)
+        self.assertFalse(urovne["pt_in_premium"])
+        self.assertFalse(urovne["sl_in_premium"])
+        self.assertIsNone(urovne["premium_base"])
 
 
 class TestSkutecnySoubor(unittest.TestCase):
@@ -374,9 +447,11 @@ class TestZamekRadku(unittest.TestCase):
         volny = self.radek(FlowState.ARMED)
         volny.vybrano = Zaskrtavatko(False)
         volny.qty_input = Pole(2)
+        volny.rezim_hodnot = REZIM_PCT
         zamceny = RadekPozice(pozice=self.pozice, flow_id="TSLA-1")
         zamceny.vybrano = Zaskrtavatko(True)
         zamceny.qty_input = Pole(3)
+        zamceny.rezim_hodnot = REZIM_PCT
         self.engine.flows["TSLA-1"] = Flow(
             id="TSLA-1",
             symbol="TSLA",
@@ -388,6 +463,7 @@ class TestZamekRadku(unittest.TestCase):
             state=FlowState.EXIT_ARMED,
         )
         self.dialog.radky = [volny, zamceny]
+        self.dialog.rezim = Prepinac(REZIM_PCT)
         self.dialog.souhrn_label = Popisek()
         self.dialog.engine._live_account_size = 6000.0
 
@@ -395,12 +471,204 @@ class TestZamekRadku(unittest.TestCase):
         self.assertTrue(volny.vybrano.value)
         self.assertFalse(zamceny.vybrano.value)
 
+    def test_otevreni_nezaskrtne_radek_z_jineho_rezimu(self):
+        # Řádek zamčený v okamžiku přepnutí režimu si podržel úrovně
+        # v původní jednotce; po odemčení se nesmí sám nabídnout k zadání
+        radek = self.radek(FlowState.CLOSED)
+        radek.vybrano = Zaskrtavatko(False)
+        radek.qty_input = Pole(2)
+        radek.rezim_hodnot = REZIM_PREMIUM
+        self.dialog.radky = [radek]
+        self.dialog.rezim = Prepinac(REZIM_PCT)
+        self.dialog.souhrn_label = Popisek()
+        self.dialog.engine._live_account_size = 6000.0
+
+        self.dialog._vyber_vse()
+        self.assertFalse(radek.vybrano.value)
+
     def test_poznamka_o_nezapnutem_runneru_prezije_obnovu(self):
         radek = self.radek(FlowState.ARMED)
         radek.poznamka = "runner nezapnut: málo kontraktů"
         text, trida = self.dialog._stav_zadaneho(radek)
         self.assertIn("runner nezapnut", text)
         self.assertEqual(trida, "stav-import-varovani")
+
+
+class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
+    """
+    Co dialog skutečně pošle do enginu po stisku „Zadat vybrané pozice".
+
+    Testuje se sestavené FlowRequest, ne jen pomocná funkce nad režimy -
+    vynechání poloviny dvojice příznaků (třeba sl_in_premium) by se jinak
+    v testech vůbec neprojevilo.
+    """
+
+    def setUp(self) -> None:
+        cfg = AppConfig()
+        cfg.state.enabled = False
+        self.engine = FlowEngine(cfg, FakeIBService(cfg))
+        self.engine._live_account_size = 6000.0
+        self.dialog = ImportDialog(cfg, self.engine, self.engine.ib, None)
+        self.pozice = ImportedPosition(
+            key="AMZN Long+", symbol="AMZN", entry_price=266.4, target_price=269.33
+        )
+
+        # Prvky dialogu, na které zadávání sahá; rozhraní se nevykresluje
+        self.dialog.rezim = Prepinac(REZIM_PREMIUM)
+        self.dialog.spread_input = Pole(5.0)
+        self.dialog.rrr_input = Pole(2.0)
+        self.dialog.sl_spread_compensated = Zaskrtavatko(False)
+        self.dialog.loading_label = Popisek()
+        self.dialog.souhrn_label = Popisek()
+        self.dialog.zadat_button = Zaskrtavatko(True)
+        self.dialog.dialog = Okno()
+
+        # Hlášky dialogu potřebují vykresleného klienta, test je jen spolkne
+        hlaska = mock.patch.object(import_dialog.ui, "notify")
+        hlaska.start()
+        self.addCleanup(hlaska.stop)
+
+        # Místo skutečného založení obchodu se zadání jen zaznamená
+        self.zadani: list[FlowRequest] = []
+
+        async def start_flow(request: FlowRequest) -> Flow:
+            self.zadani.append(request)
+            flow = Flow(
+                id=f"AMZN-{len(self.zadani)}",
+                symbol=request.symbol,
+                entry_price=request.entry_price,
+                profit_target=request.profit_target or 0.0,
+                stop_loss=request.stop_loss or 0.0,
+                quantity=request.quantity or 1,
+                max_spread_pct=request.max_spread_pct or 0.0,
+                state=FlowState.ARMED,
+            )
+            self.engine.flows[flow.id] = flow
+            return flow
+
+        self.engine.start_flow = start_flow
+
+    def radek(
+        self,
+        pt: float | None = 90.0,
+        sl: float | None = 45.0,
+        premie: float | None = 3.00,
+        rezim: str | None = None,
+    ) -> RadekPozice:
+        """Připravený a zaškrtnutý řádek; rezim=None znamená režim dialogu."""
+        radek = RadekPozice(
+            pozice=self.pozice,
+            premie=premie,
+            rezim_hodnot=self.dialog.rezim.value if rezim is None else rezim,
+        )
+        radek.vybrano = Zaskrtavatko(True)
+        radek.pt_input = Pole(pt)
+        radek.sl_input = Pole(sl)
+        radek.qty_input = Pole(4)
+        radek.runner_select = Pole(RUNNER_VYPNUTO)
+        radek.stav_label = Popisek()
+        radek.obnovit_button = Zaskrtavatko(True)
+        return radek
+
+    async def zadej(self, *radky: RadekPozice) -> None:
+        """Pošle dané řádky do trhu tak, jak to dělá tlačítko dialogu."""
+        self.dialog.radky = list(radky)
+        await self.dialog._zadej()
+
+    async def test_procenta_premie_plati_pro_pt_i_sl(self):
+        # Jádro opravy: SL se do obchodu ukládá v téže jednotce jako PT,
+        # jinak by formulář každou úroveň ukázal jinak
+        await self.zadej(self.radek())
+        zadani = self.zadani[0]
+        self.assertTrue(zadani.pt_in_premium)
+        self.assertTrue(zadani.sl_in_premium)
+        self.assertEqual(zadani.premium_base, 3.00)
+        self.assertFalse(zadani.pt_on_underlying)
+        self.assertFalse(zadani.sl_on_underlying)
+
+    async def test_usd_na_opci_nechava_obe_urovne_v_usd(self):
+        self.dialog.rezim.set_value(REZIM_USD)
+        await self.zadej(self.radek(premie=None))
+        zadani = self.zadani[0]
+        self.assertFalse(zadani.pt_in_premium)
+        self.assertFalse(zadani.sl_in_premium)
+        self.assertFalse(zadani.pt_on_underlying)
+        self.assertFalse(zadani.sl_on_underlying)
+        self.assertIsNone(zadani.premium_base)
+
+    async def test_procento_drahy_da_obe_urovne_na_podkladu(self):
+        self.dialog.rezim.set_value(REZIM_PCT)
+        await self.zadej(self.radek(pt=269.33, sl=265.0, premie=None))
+        zadani = self.zadani[0]
+        self.assertTrue(zadani.pt_on_underlying)
+        self.assertTrue(zadani.sl_on_underlying)
+        self.assertFalse(zadani.pt_in_premium)
+        self.assertFalse(zadani.sl_in_premium)
+
+    async def test_rucne_prepsane_pt_jde_do_trhu_v_usd(self):
+        # Ruční úprava PT prémii zahodila, takže se procenta nemají čeho chytit
+        await self.zadej(self.radek(premie=None))
+        zadani = self.zadani[0]
+        self.assertFalse(zadani.pt_in_premium)
+        self.assertFalse(zadani.sl_in_premium)
+        self.assertIsNone(zadani.premium_base)
+
+    async def test_prvotni_uroven_je_zadany_cil(self):
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani[0].primary_level, "pt")
+
+    async def test_bez_pt_je_prvotni_urovni_sl(self):
+        # Obchod si nemá pamatovat úroveň, kterou obchodník nezadal - jinak
+        # by formulář při načtení přepsal ručně zadaný SL dopočtem z PT
+        await self.zadej(self.radek(pt=None))
+        self.assertEqual(self.zadani[0].primary_level, "sl")
+
+    async def test_radek_z_jineho_rezimu_se_neposle(self):
+        # Řádek spočítaný v jiném režimu by odešel ve špatné jednotce
+        radek = self.radek(rezim=REZIM_USD)
+        await self.zadej(radek)
+        self.assertEqual(self.zadani, [])
+        self.assertIn("přepočítejte", radek.stav_label.text.lower())
+
+    async def test_radek_po_neuspesne_priprave_se_neposle(self):
+        # Neúspěšná příprava nechává řádek bez platných hodnot
+        radek = self.radek(rezim="")
+        await self.zadej(radek)
+        self.assertEqual(self.zadani, [])
+
+    async def test_druhy_stisk_behem_davky_neposle_pozici_podruhe(self):
+        # Bez zámku by druhý běh pracoval se snímkem výběru pořízeným ještě
+        # před odškrtnutím řádků a poslal tytéž pozice do trhu znovu
+        radek = self.radek()
+        puvodni = self.engine.start_flow
+        stisknuto_znovu = False
+
+        async def start_flow_a_znovu_stisk(request: FlowRequest) -> Flow:
+            nonlocal stisknuto_znovu
+            flow = await puvodni(request)
+            # Jen jednou - bez zámku by se stisky řetězily až k RecursionError
+            # a test by místo jasného selhání spadl na hloubce zásobníku
+            if not stisknuto_znovu:
+                stisknuto_znovu = True
+                await self.dialog._zadej()
+            return flow
+
+        self.engine.start_flow = start_flow_a_znovu_stisk
+        await self.zadej(radek)
+        self.assertTrue(stisknuto_znovu)
+        self.assertEqual(len(self.zadani), 1)
+
+    async def test_behem_pripravy_se_nezadava(self):
+        # Rozpracovaný přepočet nechává v polích čísla z obou výpočtů
+        self.dialog.priprava = True
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani, [])
+
+    async def test_zadany_radek_se_odskrtne_a_zapamatuje_obchod(self):
+        radek = self.radek()
+        await self.zadej(radek)
+        self.assertFalse(radek.vybrano.value)
+        self.assertEqual(radek.flow_id, "AMZN-1")
 
 
 if __name__ == "__main__":

@@ -42,6 +42,77 @@ def rrr_z_pomeru(pomer: float) -> float:
     return round(1.0 / pomer, 2) if pomer > 0 else pomer
 
 
+# Režimy zadání úrovně PT a SL. Podklad je cena podkladu hlídaná podmíněným
+# příkazem, zbylé dva jsou tatáž úroveň na opci - jednou zapsaná přímo v USD
+# na kontrakt, podruhé podílem ze zaplacené prémie. Procento je jen jednotka
+# zadání: před odesláním se z ceny opce převede na USD, takže engine i stav
+# obchodu pracují s USD stejně jako dosud.
+#
+# Slovník režimů je společný celé aplikaci - běžný formulář si drží režim PT
+# a SL zvlášť, hromadné načtení ze souboru odvozuje oba z jediné volby cíle.
+MODE_UNDERLYING = "underlying"
+MODE_USD = "usd"
+MODE_PREMIUM = "premium"
+
+# Režimy, ve kterých úroveň leží na opci
+MODES_ON_OPTION = (MODE_USD, MODE_PREMIUM)
+
+# Příznaky (na podkladu, v procentech prémie), kterými se režim ukládá
+# k obchodu. Jediná tabulka pro oba směry převodu, aby se nemohly rozejít
+LEVEL_FLAGS = {
+    MODE_UNDERLYING: (True, False),
+    MODE_USD: (False, False),
+    MODE_PREMIUM: (False, True),
+}
+
+
+def rezim_urovne(na_podkladu: bool, v_procentech: bool = False) -> str:
+    """
+    Režim odpovídající uloženým příznakům obchodu.
+
+    Na podkladu procento nedává smysl - úroveň je cena podkladu, ne podíl
+    z prémie -, proto se příznak procenta uplatní jen u úrovně na opci.
+    """
+    if na_podkladu:
+        return MODE_UNDERLYING
+    return MODE_PREMIUM if v_procentech else MODE_USD
+
+
+def priznaky_urovne(rezim: str) -> tuple[bool, bool]:
+    """
+    Příznaky (na podkladu, v procentech prémie) pro daný režim - opačný
+    převod k rezim_urovne.
+
+    Neznámý režim je chyba volajícího, ne důvod tiše zvolit výchozí hodnotu:
+    ticho by z úrovně na opci udělalo cenu podkladu a naopak, což se pozná
+    až na špatně zadaném obchodu. Proto padá na KeyError.
+    """
+    return LEVEL_FLAGS[rezim]
+
+
+def urovne_z_rezimu(rezim: str, premie: float | None = None) -> dict[str, Any]:
+    """
+    Příznaky úrovní do FlowRequest pro zadání, kde PT i SL vznikly v jednom
+    režimu - tak zadává hromadné načtení pozic ze souboru.
+
+    Jediná volba se tu rozbaluje na všechny čtyři příznaky zadání i na základ
+    prémie, takže se PT a SL nemohou rozejít ani se nedá vynechat polovina
+    dvojice. Procento prémie potřebuje cenu opce, ze které vyšlo; bez ní se
+    úroveň zapíše jako prostá částka v USD na kontrakt.
+
+    Vrací pojmenované argumenty pro FlowRequest, určené k rozbalení (**).
+    """
+    na_podkladu, v_premiu = priznaky_urovne(rezim)
+    v_premiu = v_premiu and bool(premie)
+    return {
+        "pt_on_underlying": na_podkladu,
+        "sl_on_underlying": na_podkladu,
+        "pt_in_premium": v_premiu,
+        "sl_in_premium": v_premiu,
+        "premium_base": premie if v_premiu else None,
+    }
+
+
 def level_text(
     druh: str,
     hodnota: float,

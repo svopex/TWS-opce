@@ -21,7 +21,19 @@ from .config import AppConfig
 from .engine import FlowEngine, Preview
 from .ib_service import IBService
 from .importer import ImportedPosition
-from .models import PT_MULTIPLES, FlowRequest, cislo_text, pomer_z_rrr, rrr_z_pomeru
+from .models import (
+    MODE_PREMIUM,
+    MODE_UNDERLYING,
+    MODE_USD,
+    MODES_ON_OPTION,
+    PT_MULTIPLES,
+    FlowRequest,
+    cislo_text,
+    pomer_z_rrr,
+    priznaky_urovne,
+    rrr_z_pomeru,
+    urovne_z_rezimu,
+)
 
 log = logging.getLogger(__name__)
 
@@ -30,26 +42,48 @@ REZIM_PCT = "pct"
 REZIM_USD = "usd"
 REZIM_PREMIUM = "premium"
 
+# Režim úrovní (viz models.MODE_*), který z každé volby cíle vyplyne. PT i SL
+# sdílejí jednu volbu záměrně - u hromadného zadání se dopočítaný SL nemá jak
+# přepnout zvlášť, takže by se obchod do běžného formuláře vrátil s každou
+# úrovní v jiné jednotce
+UROVNE_CILE = {
+    REZIM_PCT: MODE_UNDERLYING,
+    REZIM_USD: MODE_USD,
+    REZIM_PREMIUM: MODE_PREMIUM,
+}
+
 # Režimy, ve kterých jsou PT i SL zadané na opci - jen u nich má smysl
 # kompenzace SL o zaplacený spread
-REZIMY_NA_OPCI = (REZIM_USD, REZIM_PREMIUM)
+REZIMY_NA_OPCI = tuple(
+    rezim for rezim, uroven in UROVNE_CILE.items() if uroven in MODES_ON_OPTION
+)
+
+# Jednotka, ve které tabulka dialogu ukazuje PT a SL. V obou opčních režimech
+# je to USD na kontrakt i tehdy, když se cíl zadával v procentech prémie -
+# procento je jen jednotka zadání, kterou si pamatuje až založený obchod
+JEDNOTKY_UROVNI = {
+    MODE_UNDERLYING: "podklad",
+    MODE_USD: "USD/ks",
+    MODE_PREMIUM: "USD/ks",
+}
 
 # Hodnota volby runneru, která znamená "runner nezapínat"
 RUNNER_VYPNUTO = "0"
 
 
-def rezimy_urovni(rezim: str) -> tuple[bool, bool]:
+def uroven_cile(rezim: str) -> str:
     """
-    Volby režimu úrovní pro založený obchod podle režimu cíle nad tabulkou.
-    Vrací dvojici (na podkladu, v procentech prémie), která platí shodně pro
-    PT i SL - SL se řídí toutéž volbou jako cíl, takže se ve formuláři obě
-    úrovně vrátí ve stejné jednotce:
+    Režim úrovní PT i SL pro zvolený režim cíle nad tabulkou:
 
       cíl v % dráhy k cíli -> obojí na podkladu (cena podkladu)
       cíl v USD/ks         -> obojí na opci v USD na kontrakt
       cíl v % prémie       -> obojí na opci v procentech prémie
+
+    Neznámý režim je chyba volajícího a padá na KeyError stejně jako
+    _zadana_hodnota - tiché uhnutí k výchozí hodnotě by z úrovně na opci
+    udělalo cenu podkladu a projevilo by se až špatně zadaným obchodem.
     """
-    return rezim == REZIM_PCT, rezim == REZIM_PREMIUM
+    return UROVNE_CILE[rezim]
 
 
 def runner_volby(kratke: bool = False) -> dict[str, str]:
@@ -74,10 +108,14 @@ def runner_nasobek(hodnota: Any) -> float | None:
     except ValueError:
         return None
 
-# Popisky sloupců tabulky načtených pozic
+# Popisky sloupců tabulky načtených pozic. Hlavičky PT a SL se doplňují
+# o jednotku podle zvoleného režimu cíle - viz _popis_hlavicky
 SLOUPCE = (
     "", "Ticker", "Směr", "Vstup", "Cíl", "Kontrakt", "PT", "SL", "Ks", "Runner", "Stav"
 )
+
+# Sloupce s úrovněmi, jejichž hlavička nese jednotku
+SLOUPCE_UROVNI = ("PT", "SL")
 
 
 def fmt(value: float | None, digits: int = 2, suffix: str = "") -> str:
@@ -108,6 +146,10 @@ class RadekPozice:
     preview: Preview | None = None
     # Odhad nákupní ceny opce, ze kterého vyšel PT zadaný procentem prémie
     premie: float | None = None
+    # Režim cíle, ve kterém platí čísla v polích řádku. Prázdné znamená, že
+    # řádek nemá platnou přípravu - buď selhala, nebo se od ní změnil režim
+    # a úrovně by šly do trhu ve špatné jednotce. Takový řádek se nezadává
+    rezim_hodnot: str = ""
     # Id obchodu, který z řádku vznikl; prázdné, dokud se nezadal. Podle
     # stavu tohoto obchodu se pozná, zda jde řádek zadat znovu
     flow_id: str = ""
@@ -156,6 +198,15 @@ class ImportDialog:
         self.radky: list[RadekPozice] = []
         # Jméno naposledy načteného souboru - ukazuje se nad tabulkou
         self.nazev_souboru: str = ""
+        # Hlavičky sloupců s úrovněmi; jejich popisek nese jednotku, která se
+        # mění s režimem cíle. Vznikají až s prvním načteným souborem
+        self.hlavicky: dict[str, Any] = {}
+        # Právě běží dávkové zadávání do trhu - druhý stisk tlačítka by
+        # pracoval se zastaralým výběrem a poslal tytéž pozice podruhé
+        self.zadavani: bool = False
+        # Právě běží příprava řádků - zadávat se smí až po ní, jinak by šla
+        # do trhu čísla z rozpracovaného přepočtu
+        self.priprava: bool = False
 
     # ------------------------------------------------------------------
     # Sestavení dialogu
@@ -363,9 +414,10 @@ class ImportDialog:
 
     def _on_rezim_change(self, prepocitat: bool = True) -> None:
         """
-        Přepnutí režimu cíle: ukáže se pole odpovídající zvolenému režimu
-        a kompenzace spreadu se zpřístupní jen u SL na opci. Načtené pozice
-        se rovnou přepočítají, protože se mění význam všech úrovní.
+        Přepnutí režimu cíle: ukáže se pole odpovídající zvolenému režimu,
+        kompenzace spreadu se zpřístupní jen u SL na opci a hlavičky úrovní
+        dostanou novou jednotku. Načtené pozice se rovnou přepočítají,
+        protože se mění význam všech úrovní.
         """
         rezim = self.rezim.value
         self.pct_input.set_visibility(rezim == REZIM_PCT)
@@ -373,14 +425,22 @@ class ImportDialog:
         self.premium_input.set_visibility(rezim == REZIM_PREMIUM)
         # Kompenzace spreadu patří k SL na opci - tedy k oběma opčním režimům
         self.sl_spread_compensated.set_enabled(rezim in REZIMY_NA_OPCI)
-        # Úrovně z předchozího režimu mají jiný význam, proto se pole vyprázdní
-        if prepocitat and self.radky:
-            for radek in self.radky:
-                if not self._zamceno(radek):
-                    radek.pt_input.set_value(None)
-                    radek.sl_input.set_value(None)
-                    radek.premie = None
-            self._naplanuj_pripravu()
+        self._popis_hlavicky()
+        if not (prepocitat and self.radky):
+            return
+
+        # Úrovně z předchozího režimu mají jiný význam, proto se pole
+        # vyprázdní. Zamčený řádek popisuje běžící obchod a přepsat se nedá,
+        # jeho čísla ale zůstávají v jednotce původního režimu - označí se
+        # tedy za neplatná a po odemčení se musí přepočítat, jinak by šla
+        # do trhu jako úroveň v jiné jednotce
+        for radek in self.radky:
+            if self._zamceno(radek):
+                radek.rezim_hodnot = ""
+                continue
+            self._vycisti_urovne(radek)
+            radek.premie = None
+        self._naplanuj_pripravu()
 
     async def _on_upload(self, event: Any) -> None:
         """
@@ -431,21 +491,49 @@ class ImportDialog:
     def _vykresli_tabulku(self, pozice: list[ImportedPosition]) -> None:
         """Postaví tabulku načtených pozic - hlavičku a řádek pro každou pozici."""
         self.radky = []
+        self.hlavicky = {}
         self.tabulka.clear()
         self.tabulka.set_visibility(bool(pozice))
-        self.zadat_button.set_enabled(bool(pozice))
+        # Probíhající dávka drží tlačítko zakázané, dokud nedoběhne
+        self.zadat_button.set_enabled(bool(pozice) and not self.zadavani)
         self.souhrn_label.set_text("")
         if not pozice:
             return
 
+        napoveda_urovni = (
+            "Úrovně se v tabulce ukazují v jednotce, se kterou počítá "
+            "aplikace: v režimu na podkladu je to cena podkladu, v obou "
+            "opčních režimech USD na kontrakt. Cíl zadaný v procentech "
+            "prémie je do USD už přepočtený - jednotku zadání si pamatuje "
+            "založený obchod, takže ji běžný formulář ukáže zase "
+            "v procentech."
+        )
         with self.tabulka:
             for popisek in SLOUPCE:
-                ui.label(popisek).classes("hlavicka-import")
+                label = ui.label(popisek).classes("hlavicka-import")
+                # Hlavičky úrovní nesou jednotku, která se mění s režimem -
+                # popisek se proto drží stranou a přepisuje se v _popis_hlavicky
+                if popisek in SLOUPCE_UROVNI:
+                    label.tooltip(napoveda_urovni)
+                    self.hlavicky[popisek] = label
 
             for polozka in pozice:
                 self.radky.append(self._vykresli_radek(polozka))
 
+        self._popis_hlavicky()
         self._obnov_souhrn()
+
+    def _popis_hlavicky(self) -> None:
+        """
+        Doplní do hlaviček PT a SL jednotku podle zvoleného režimu cíle -
+        bez ní není v tabulce poznat, že tatáž úroveň se v běžném formuláři
+        může ukázat jako procento prémie, tedy jiným číslem.
+        """
+        if not self.hlavicky:
+            return
+        jednotka = JEDNOTKY_UROVNI[uroven_cile(self.rezim.value)]
+        for druh, label in self.hlavicky.items():
+            label.set_text(f"{druh} [{jednotka}]")
 
     def _vykresli_radek(self, pozice: ImportedPosition) -> RadekPozice:
         """
@@ -479,6 +567,12 @@ class ImportDialog:
             .classes("bunka-import pole-import pole-import-ks")
             .props("outlined dense")
         )
+        # Ručně vyplněné číslo platí v právě zvoleném režimu, takže řádek
+        # zase zadatelným udělá - i tehdy, když předtím příprava selhala.
+        # Obsluha běží i při programovém zápisu, proto se příznak neplatnosti
+        # ve _vycisti_urovne a _zahod_dopocet nastavuje až po zápisu do polí
+        for pole in (radek.pt_input, radek.sl_input, radek.qty_input):
+            pole.on_value_change(lambda _=None, r=radek: self._rucni_zmena(r))
         # Runner se nastavuje u každé pozice zvlášť; výchozí je globální volba
         radek.runner_select = (
             ui.select(runner_volby(kratke=True), value=self.runner_value)
@@ -514,13 +608,60 @@ class ImportDialog:
         except (TypeError, ValueError):
             return None
 
+    def _rucni_zmena(self, radek: RadekPozice) -> None:
+        """Čísla vyplněná v řádku platí v právě zvoleném režimu cíle."""
+        radek.rezim_hodnot = self.rezim.value
+
+    def _pripraveno(self, radek: RadekPozice) -> bool:
+        """
+        True, pokud čísla v řádku platí v právě zvoleném režimu cíle - tedy
+        vznikla úspěšnou přípravou (nebo ruční úpravou) po poslední změně
+        režimu. Jen takový řádek se smí poslat do trhu; jinak by úroveň
+        z předchozího režimu odešla ve špatné jednotce.
+        """
+        return bool(radek.rezim_hodnot) and radek.rezim_hodnot == self.rezim.value
+
+    def _vycisti_urovne(self, radek: RadekPozice) -> None:
+        """
+        Vyprázdní PT, SL i množství řádku a označí jeho čísla za neplatná.
+        Volá se při změně režimu cíle, kdy úrovně z předchozí volby dostávají
+        jiný význam. Zaškrtnutí zůstává - řádek se hned nato přepočítá.
+        """
+        radek.preview = None
+        radek.pt_input.set_value(None)
+        radek.sl_input.set_value(None)
+        radek.qty_input.set_value(None)
+        # Až po zápisu do polí: set_value spouští obsluhu ruční změny, která
+        # by řádek zase označila za platný
+        radek.rezim_hodnot = ""
+
+    def _zahod_dopocet(self, radek: RadekPozice) -> None:
+        """
+        Neúspěšná příprava: zahodí náhled, dopočítaný SL i množství a označí
+        čísla řádku za neplatná, takže se nedají zadat do trhu.
+
+        Bez toho by v polích zůstala čísla z minulého, už neplatného výpočtu
+        - třeba SL spočítaný k polovičnímu PT - a zaškrtnutý řádek by je
+        poslal do trhu. PT se nemaže: je vidět i bez spojení s TWS a dá se
+        doladit ručně, čímž se řádek zase stane zadatelným.
+
+        Zaškrtnutí se nesundává - po obnoveném spojení stačí Přepočítat
+        a výběr zůstane, jak si ho obchodník nastavil.
+        """
+        radek.preview = None
+        radek.sl_input.set_value(None)
+        radek.qty_input.set_value(None)
+        # Až po zápisu do polí: set_value spouští obsluhu ruční změny, která
+        # by řádek zase označila za platný
+        radek.rezim_hodnot = ""
+
     def _rezimy(self) -> tuple[bool, bool]:
         """
         Režim PT a SL podle volby dialogu: True = na podkladu.
         Procento prémie je jen jiný způsob zápisu úrovně na opci, proto se
         engine v obou opčních režimech chová stejně.
         """
-        na_podkladu, _ = rezimy_urovni(self.rezim.value)
+        na_podkladu, _ = priznaky_urovne(uroven_cile(self.rezim.value))
         return na_podkladu, na_podkladu
 
     def _nastav_runner(self, hodnota: str) -> None:
@@ -637,6 +778,7 @@ class ImportDialog:
 
         cekajici = [radek for radek in self.radky if not self._zamceno(radek)]
         celkem = len(cekajici)
+        self.priprava = True
         try:
             for poradi, radek in enumerate(cekajici, 1):
                 self._set_loading(
@@ -644,6 +786,7 @@ class ImportDialog:
                 )
                 await self._priprav_radek(radek)
         finally:
+            self.priprava = False
             self._set_loading(False)
         self._obnov_souhrn()
 
@@ -658,9 +801,11 @@ class ImportDialog:
             ui.notify("Není navázáno spojení s TWS.", type="negative")
             return
         self._set_loading(True, f"Připravuji {radek.pozice.symbol}…")
+        self.priprava = True
         try:
             await self._priprav_radek(radek, zachovat_pt=True)
         finally:
+            self.priprava = False
             self._set_loading(False)
         self._obnov_souhrn()
 
@@ -722,6 +867,7 @@ class ImportDialog:
         if zachovat_pt:
             pt = self._cislo(radek.pt_input.value)
             if pt is None:
+                self._zahod_dopocet(radek)
                 radek.stav("Vyplňte PT", "stav-import-chyba")
                 return
             # Ručně přepsané PT už z prémie nevychází, poznámka o ní by mátla
@@ -731,6 +877,7 @@ class ImportDialog:
             # V režimu procenta z prémie se PT dopočítá až z ceny opce (níže),
             # jinak prázdná hodnota znamená nevyplněné zadání
             if pt is None and self.rezim.value != REZIM_PREMIUM:
+                self._zahod_dopocet(radek)
                 return
 
         # Známé PT patří do pole hned - nezávisí na kotacích, tak ať je vidět
@@ -738,6 +885,7 @@ class ImportDialog:
         if pt is not None:
             radek.pt_input.set_value(round(pt, 2))
         if not self.ib.connected:
+            self._zahod_dopocet(radek)
             radek.kontrakt_label.set_text("-")
             radek.stav(
                 "Bez spojení s TWS - "
@@ -755,6 +903,7 @@ class ImportDialog:
         if pt is None:
             pt = await self._pt_z_premie(radek)
             if pt is None:
+                self._zahod_dopocet(radek)
                 return
             radek.pt_input.set_value(pt)
 
@@ -771,7 +920,7 @@ class ImportDialog:
                 self._pomer(),
             )
         except Exception as exc:
-            radek.preview = None
+            self._zahod_dopocet(radek)
             radek.kontrakt_label.set_text("-")
             radek.stav(f"Chyba přípravy: {exc}", "stav-import-chyba")
             return
@@ -779,6 +928,7 @@ class ImportDialog:
         radek.preview = preview
 
         if not preview.expiration:
+            self._zahod_dopocet(radek)
             radek.kontrakt_label.set_text("-")
             radek.stav(
                 "Kontrakt se nepodařilo určit - zkontrolujte odběr tržních dat.",
@@ -796,6 +946,10 @@ class ImportDialog:
         # od směru daného souborem, trh už vstupní úroveň překonal - takový
         # řádek se odškrtne, aby se omylem nezaložil obchod na opačnou stranu
         if preview.current_price is not None and preview.right != radek.pozice.right:
+            # Dopočet patří k opačnému kontraktu, než jaký by obchod koupil -
+            # zahodí se a řádek se odškrtne, aby ho ani znovuotevření dialogu
+            # nemohlo poslat do trhu
+            self._zahod_dopocet(radek)
             radek.vybrano.set_value(False)
             radek.stav(
                 f"Vstup propásnut - podklad je na {fmt(preview.current_price)}, "
@@ -803,6 +957,11 @@ class ImportDialog:
                 "stav-import-chyba",
             )
             return
+
+        # Čísla v řádku od téhle chvíle platí ve zvoleném režimu, takže se
+        # smí zadat do trhu. Nastavuje se výslovně: set_value obsluhu ruční
+        # změny nespustí, když se hodnota oproti minulé přípravě nezměnila
+        radek.rezim_hodnot = self.rezim.value
 
         # U PT odvozeného z prémie se uvede, z jaké ceny opce se počítalo
         zaklad = (
@@ -882,13 +1041,17 @@ class ImportDialog:
 
     def _vyber_vse(self) -> None:
         """
-        Zaškrtne všechny řádky, které lze zadat. Zamčený řádek (obchod už
-        drží pozici) zůstává odškrtnutý - zadat se stejně nedá.
+        Zaškrtne všechny řádky, které lze zadat. Odškrtnutý zůstává zamčený
+        řádek (obchod už drží pozici) i řádek, jehož čísla neplatí v právě
+        zvoleném režimu - ten by šel do trhu s úrovní ve špatné jednotce,
+        nebo s hodnotami z výpočtu, který selhal.
         """
         if not self.radky:
             return
         for radek in self.radky:
-            radek.vybrano.set_value(not self._zamceno(radek))
+            radek.vybrano.set_value(
+                not self._zamceno(radek) and self._pripraveno(radek)
+            )
         self._obnov_souhrn()
 
     def refresh(self) -> None:
@@ -926,9 +1089,38 @@ class ImportDialog:
 
     async def _zadej(self) -> None:
         """
-        Založí obchody pro vybrané řádky - každý stejným voláním jako běžný
-        formulář. Chyba jedné pozice ostatní nezastaví, zapíše se do jejího
-        stavu; už založený řádek se podruhé nezadává.
+        Obsluha tlačítka „Zadat vybrané pozice do trhu".
+
+        Dávka smí běžet jen jedna a až po dokončené přípravě: druhý stisk
+        tlačítka by pracoval s výběrem pořízeným ještě před odškrtnutím
+        řádků, takže by tytéž pozice poslal do trhu podruhé. Tlačítko se
+        proto na dobu běhu zakáže.
+        """
+        if self.zadavani:
+            ui.notify("Zadávání do trhu už probíhá.", type="warning")
+            return
+        if self.priprava:
+            ui.notify(
+                "Počkejte na dokončení přípravy - do trhu by šla "
+                "rozpracovaná čísla.",
+                type="warning",
+            )
+            return
+
+        self.zadavani = True
+        self.zadat_button.set_enabled(False)
+        try:
+            await self._zadej_davku()
+        finally:
+            self.zadavani = False
+            self.zadat_button.set_enabled(bool(self.radky))
+
+    async def _zadej_davku(self) -> None:
+        """
+        Vlastní dávka: pro každý vybraný řádek se založí obchod stejným
+        voláním jako z běžného formuláře. Chyba jedné pozice ostatní
+        nezastaví, zapíše se do jejího stavu; už založený řádek se podruhé
+        nezadává.
         """
         vybrane = [
             radek
@@ -939,10 +1131,14 @@ class ImportDialog:
             ui.notify("Není vybrána žádná pozice k zadání.", type="warning")
             return
 
+        # Všechna společná nastavení se čtou jednou pro celou dávku - ovládací
+        # prvky zůstávají během zadávání živé a jejich změna uprostřed by
+        # rozešla jednotku úrovní s příznaky, které už jsou zafixované
         max_spread = self._cislo(self.spread_input.value)
-        pt_on, sl_on = self._rezimy()
         sl_spread = self._sl_spread()
         pomer = self._pomer()
+        rezim_cile = self.rezim.value
+        rezim_urovni = uroven_cile(rezim_cile)
 
         zalozeno = 0
         chyb = 0
@@ -953,6 +1149,18 @@ class ImportDialog:
                 self._set_loading(
                     True, f"Zadávám {radek.pozice.symbol} ({poradi}/{celkem})…"
                 )
+                # Čísla spočítaná v jiném režimu, nebo zbylá po neúspěšné
+                # přípravě, by odešla do trhu ve špatné jednotce - takový
+                # řádek se přeskočí, dokud ho obchodník nepřepočítá
+                if radek.rezim_hodnot != rezim_cile:
+                    radek.stav(
+                        "Hodnoty neplatí ve zvoleném režimu cíle - "
+                        "přepočítejte řádek.",
+                        "stav-import-chyba",
+                    )
+                    chyb += 1
+                    continue
+
                 pt = self._cislo(radek.pt_input.value)
                 sl = self._cislo(radek.sl_input.value)
                 qty = self._cislo(radek.qty_input.value)
@@ -961,13 +1169,6 @@ class ImportDialog:
                     chyb += 1
                     continue
 
-                # Jednotka zadání se přenáší na PT i SL, aby formulář ukázal
-                # obě úrovně souhlasně - buď obojí v procentech prémie, nebo
-                # obojí v USD na kontrakt. Nese se s ní i cena opce, ze které
-                # se procenta počítala; ručně přepsané PT ji zahazuje, takže
-                # takový řádek se do procent nevrací
-                _, v_procentech = rezimy_urovni(self.rezim.value)
-                v_procentech = v_procentech and bool(radek.premie)
                 request = FlowRequest(
                     symbol=radek.pozice.symbol,
                     entry_price=radek.pozice.entry_price,
@@ -975,15 +1176,18 @@ class ImportDialog:
                     stop_loss=sl,
                     quantity=int(qty) if qty else None,
                     max_spread_pct=max_spread,
-                    pt_on_underlying=pt_on,
-                    sl_on_underlying=sl_on,
                     sl_spread_compensated=sl_spread,
                     sl_to_pt_ratio=pomer,
-                    pt_in_premium=v_procentech,
-                    sl_in_premium=v_procentech,
-                    premium_base=radek.premie if v_procentech else None,
-                    # V dialogu se zadává vždy cíl, SL se dopočítá podle RRR
-                    primary_level="pt",
+                    # Jediná volba cíle určuje režim PT i SL a na příznaky
+                    # zadání se rozbaluje jedním voláním, takže se úrovně
+                    # nemohou rozejít. Procenta prémie se přenášejí jen
+                    # s cenou opce, ze které vyšla - ručně přepsané PT ji
+                    # zahazuje, takže takový řádek jde do trhu v USD/ks
+                    **urovne_z_rezimu(rezim_urovni, radek.premie),
+                    # Zadanou úrovní je v dialogu cíl, SL se dopočítá podle
+                    # RRR. U řádku s prázdným PT je to naopak - prvotní je
+                    # SL, ať si obchod nepamatuje úroveň, kterou nikdo nezadal
+                    primary_level="pt" if pt is not None else "sl",
                 )
                 try:
                     flow = await self.engine.start_flow(request)
