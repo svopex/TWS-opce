@@ -175,6 +175,9 @@ class FlowRequest:
     # Poměr SL:PT pro dopočet chybějící úrovně. None znamená "vzít
     # z konfigurace" - formulář sem posílá hodnotu ze svého pole
     sl_to_pt_ratio: float | None = None
+    # Která úroveň se zadávala jako prvotní: 'sl' (PT se dopočítá), nebo 'pt'.
+    # Prázdné znamená "neuvedeno" - viz Flow.primary_level
+    primary_level: str = ""
     # Jednotka, ve které byla úroveň na opci zadána: True = procento zaplacené
     # prémie. Engine i obchod pracují vždy s USD na kontrakt, tohle je jen
     # paměť formuláře - viz Flow.pt_in_premium
@@ -229,6 +232,17 @@ class Flow:
     # převod musí vyjít z téže hodnoty, jinak by se zadaná procenta posunula
     # podle aktuální kotace. None znamená, že se procenta nepoužila
     premium_base: float | None = None
+
+    # Prvotní úroveň zadání: 'sl' znamená, že obchodník zadal SL a PT se
+    # dopočítalo, 'pt' naopak. Z uložených úrovní to poznat nejde (obě se
+    # ukládají stejně), přitom formulář to při načtení obchodu potřebuje.
+    # Prázdné znamená "neuvedeno" - obchod ze starší verze aplikace
+    primary_level: str = ""
+    # Poměr SL:PT, kterým obchod skutečně vznikl - buď z pole RRR ve
+    # formuláři, nebo (nebylo-li vyplněné) z konfigurace. Zpětně se z úrovní
+    # dopočítat nedá: ve smíšeném režimu nejde o podíl dvou srovnatelných
+    # čísel a posun cíle násobkem by ho stejně změnil
+    sl_to_pt_ratio: float | None = None
 
     # PT zadané při založení obchodu; násobky cíle se počítají z něj,
     # aby opakovaná změna nevycházela z už posunuté hodnoty

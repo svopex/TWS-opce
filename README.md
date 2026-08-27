@@ -219,7 +219,8 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    poměr zisku ku riziku — *RRR 2* znamená, že PT je dvakrát dál než SL —
    tedy obráceně než konfigurační `sl_to_pt_ratio`, ze kterého vychází
    výchozí hodnota pole (`RRR = 1 / sl_to_pt_ratio`). Prázdné či nekladné
-   pole se vrací ke konfiguraci.
+   pole se vrací ke konfiguraci; obchod si pak uloží poměr, který se
+   z konfigurace skutečně vzal, takže se do pole při načtení vrátí vyplněný.
    Dopočítanou úroveň lze vždy přepsat ručně; **Přepočítat** ji spočítá
    znovu — je-li ale prvotní pole prázdné, počítá se naopak z toho vyplněného,
    aby zadání nezmizelo celé. K odeslání proto stačí vstupní cena a kterákoliv
@@ -244,10 +245,20 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    z TWS běží, ukazuje formulář pulzující text „Načítám data z TWS…".
 
    Běží-li na zadaném tickeru obchod, **Načíst** naplní formulář jeho
-   parametry — i přes ručně zadané hodnoty. Přechod na ticker bez obchodu
-   pole naopak vyprázdní, aby se do nového zadání nepřenesly ceny toho
-   předchozího; limit spreadu se vrátí na hodnotu z konfigurace. Samotné
-   opuštění pole hodnoty nikdy nepřepisuje, mění je jen změna tickeru.
+   parametry — i přes ručně zadané hodnoty. Totéž udělá kliknutí na řádek
+   v přehledu obchodů, jen se obchod nehledá podle tickeru, ale vezme se ten
+   kliknutý. Vrací se **celé zadání**: ticker, vstup, obě úrovně, množství,
+   limit spreadu, oba přepínače režimu PT a SL (včetně jednotky *% prémie*),
+   kompenzace spreadu, volba prvotní úrovně *Zadává se SL / PT* i pole
+   *RRR (PT:SL)*. Prvotní úroveň a poměr se z uložených čísel dopočítat nedají
+   — obě úrovně se ukládají stejně a poměr by po posunu cíle násobkem vyšel
+   jinak —, proto si je obchod pamatuje ze zadání. Obchody z verzí, které je
+   ještě neukládaly, obě volby nechávají tak, jak právě jsou.
+
+   Přechod na ticker bez obchodu pole naopak vyprázdní, aby se do nového
+   zadání nepřenesly ceny toho předchozího; limit spreadu se vrátí na hodnotu
+   z konfigurace. Samotné opuštění pole hodnoty nikdy nepřepisuje, mění je
+   jen změna tickeru.
 
 2. **Nákup** — příkaz se do trhu zadá jen tehdy, pokud cena podkladu vstupní
    úroveň ještě nepřekonala: u CALL musí být pod vstupem, u PUT nad ním.

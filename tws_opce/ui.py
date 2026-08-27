@@ -964,6 +964,14 @@ class TradingUI:
             pt_pct,
             sl_pct,
         )
+        # Prvotní úroveň přeskládá pole PT a SL mezi řádky, proto ještě
+        # před zápisem hodnot; obchod ze starší verze ji nezná a volba
+        # tedy zůstane, jak je
+        if flow.primary_level in ("sl", "pt"):
+            self._set_primary(flow.primary_level)
+        # RRR se ukládá jako poměr SL:PT, formulář se ptá na převrácenou hodnotu
+        if flow.sl_to_pt_ratio and flow.sl_to_pt_ratio > 0:
+            self.rrr_input.set_value(rrr_z_pomeru(flow.sl_to_pt_ratio))
         self.entry_input.set_value(round(flow.entry_price, 2))
         self.pt_input.set_value(self._uroven_do_pole(flow.profit_target, pt_pct))
         self._zapis_sl(flow)
@@ -1569,6 +1577,7 @@ class TradingUI:
             pt_in_premium=pt_mode == MODE_PREMIUM,
             sl_in_premium=sl_mode == MODE_PREMIUM,
             premium_base=premie,
+            primary_level=self._form_primary(),
         )
 
         # Založení obchodu si znovu načítá data z TWS, indikace platí i zde

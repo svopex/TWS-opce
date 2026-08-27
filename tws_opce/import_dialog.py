@@ -964,6 +964,8 @@ class ImportDialog:
                     sl_to_pt_ratio=pomer,
                     pt_in_premium=v_procentech,
                     premium_base=radek.premie if v_procentech else None,
+                    # V dialogu se zadává vždy cíl, SL se dopočítá podle RRR
+                    primary_level="pt",
                 )
                 try:
                     flow = await self.engine.start_flow(request)

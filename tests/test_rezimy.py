@@ -1669,6 +1669,25 @@ class TestJednotkyZadani(ZakladRezimu):
         self.assertFalse(flow.sl_in_premium)
         self.assertIsNone(flow.premium_base)
 
+    async def test_obchod_si_pamatuje_prvotni_uroven(self):
+        flow = await self.zaloz(False, False, 60.0, 30.0, primary_level="pt")
+
+        self.assertEqual(flow.primary_level, "pt")
+
+    async def test_zadany_pomer_si_obchod_nese(self):
+        self.cfg.trading.sl_to_pt_ratio = 1.0
+        flow = await self.zaloz(False, False, 10.0, sl_to_pt_ratio=0.5)
+
+        self.assertAlmostEqual(flow.sl_to_pt_ratio, 0.5)
+
+    async def test_nevyplneny_pomer_bere_hodnotu_z_konfigurace(self):
+        # Prázdné pole RRR znamená "vezmi poměr z konfigurace" - obchod si
+        # ukládá tu skutečně použitou hodnotu, ne prázdno
+        self.cfg.trading.sl_to_pt_ratio = 0.25
+        flow = await self.zaloz(False, False, 10.0, sl_to_pt_ratio=None)
+
+        self.assertAlmostEqual(flow.sl_to_pt_ratio, 0.25)
+
     async def test_jednotka_prezije_ulozeni_stavu(self):
         flow = await self.zaloz(
             False,
@@ -1685,6 +1704,17 @@ class TestJednotkyZadani(ZakladRezimu):
         self.assertTrue(obnovene.pt_in_premium)
         self.assertTrue(obnovene.sl_in_premium)
         self.assertAlmostEqual(obnovene.premium_base, 3.00)
+
+    async def test_prvotni_uroven_i_pomer_prezijou_ulozeni_stavu(self):
+        self.cfg.trading.sl_to_pt_ratio = 1.0
+        flow = await self.zaloz(
+            False, False, 60.0, 30.0, primary_level="pt", sl_to_pt_ratio=0.5
+        )
+
+        obnovene = store.dict_to_flow(store.flow_to_dict(flow))
+
+        self.assertEqual(obnovene.primary_level, "pt")
+        self.assertAlmostEqual(obnovene.sl_to_pt_ratio, 0.5)
 
 
 if __name__ == "__main__":

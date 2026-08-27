@@ -43,6 +43,8 @@ SAVED_FIELDS = (
     "pt_in_premium",
     "sl_in_premium",
     "premium_base",
+    "primary_level",
+    "sl_to_pt_ratio",
     "expiration",
     "strike",
     "option_conid",

@@ -1243,10 +1243,15 @@ class FlowEngine:
                 sl_on_underlying=request.sl_on_underlying,
                 sl_spread_compensated=preview.sl_spread_compensated,
                 # Jednotka zadání úrovní si jede s obchodem, aby ji formulář
-                # při načtení obchodu nabídl znovu
+                # při načtení obchodu nabídl znovu; totéž platí pro prvotní
+                # úroveň a poměr, kterým se ta druhá dopočítala
                 pt_in_premium=request.pt_in_premium,
                 sl_in_premium=request.sl_in_premium,
                 premium_base=request.premium_base,
+                primary_level=request.primary_level,
+                # Z náhledu, ne ze zadání - ten už má doplněnou hodnotu
+                # z konfigurace pro případ nevyplněného pole RRR
+                sl_to_pt_ratio=preview.sl_to_pt_ratio,
                 expiration=preview.expiration,
                 strike=preview.strike,
                 min_tick=preview.min_tick,
