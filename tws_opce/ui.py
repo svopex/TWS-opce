@@ -182,6 +182,61 @@ def pnl_text(cisty: float | None, hruby: float | None) -> str:
     return f"{fmt(cisty)} ({fmt(hruby)})"
 
 
+# Meze, nad kterými se ukazatel kvality spojení v hlavičce zbarví do oranžova.
+# Odezva: TWS na tomtéž stroji odpovídá v jednotkách milisekund, přes síť
+# v desítkách - půl sekundy už znamená, že aplikace nestíhá. Stáří dat:
+# během seance chodí kotace nepřetržitě, takže delší ticho není normální
+RTT_VAROVANI_MS = 500.0
+STARI_KOTACI_VAROVANI_SEC = 15.0
+
+
+def stari_text(sekundy: float | None) -> str:
+    """
+    Stáří tržních dat pro hlavičku. Do deseti sekund se hodí desetina
+    sekundy (je vidět, že data tečou), výš už jen celé sekundy a od minuty
+    se přechází na minuty - přesnost tam nic neřekne.
+    """
+    if sekundy is None:
+        return "-"
+    if sekundy < 10:
+        return f"{sekundy:.1f} s".replace(".", ",")
+    if sekundy < 60:
+        return f"{sekundy:.0f} s"
+    return f"{sekundy / 60:.0f} min"
+
+
+def stav_linky_text(rtt_ms: float | None, stari_sec: float | None) -> str:
+    """
+    Popis kvality spojení do hlavičky: odezva TWS a stáří tržních dat,
+    například 'TWS 0,8 ms · data 0,4 s'.
+
+    Chybějící hodnota se píše pomlčkou - u odezvy znamená neúspěšné nebo
+    vypnuté měření, u dat to, že se zatím nic neodebírá.
+    """
+    odezva = f"{rtt_ms:.1f} ms".replace(".", ",") if rtt_ms is not None else "-"
+    return f"TWS {odezva} · data {stari_text(stari_sec)}"
+
+
+def linka_varuje(
+    rtt_ms: float | None, stari_sec: float | None, trh_otevren: bool
+) -> bool:
+    """
+    Má se ukazatel kvality spojení zvýraznit?
+
+    Pomalá odezva TWS platí vždy - je to známka nestíhající aplikace bez
+    ohledu na denní dobu. Stojící kotace se hlásí jen během seance: mimo
+    obchodní hodiny trh nic neposílá, takže by varování svítilo pořád
+    a přestalo cokoliv znamenat.
+    """
+    if rtt_ms is not None and rtt_ms > RTT_VAROVANI_MS:
+        return True
+    return (
+        trh_otevren
+        and stari_sec is not None
+        and stari_sec > STARI_KOTACI_VAROVANI_SEC
+    )
+
+
 # Popisky polí PT a SL podle režimu zadání (režimy samotné žijí v models.py,
 # sdílí je i hromadné načtení pozic ze souboru)
 PT_LABELS = {
@@ -273,9 +328,14 @@ class TradingUI:
         self.import_dialog = ImportDialog(self.cfg, self.engine, self.ib, self._refresh)
         self.import_dialog.build()
 
-        # Popup s přehledem výsledků dne; grafy v něm se řídí zvoleným vzhledem
+        # Popup s přehledem výsledků dne; grafy v něm se řídí zvoleným
+        # vzhledem a přepnout se dá i zevnitř - přehled je přes celou
+        # obrazovku, takže tlačítko v hlavičce stránky pod ním zmizí
         self.report_dialog = ReportDialog(
-            self.cfg, self.engine, lambda: bool(self.dark_mode.value)
+            self.cfg,
+            self.engine,
+            lambda: bool(self.dark_mode.value),
+            self._toggle_dark,
         )
         self.report_dialog.build()
 
@@ -292,6 +352,11 @@ class TradingUI:
 
         # Periodická aktualizace zobrazovaných dat
         ui.timer(self.cfg.ui.refresh_interval_sec, self._refresh)
+
+        # Odezva TWS se měří vlastním, řidším tempem - je to dotaz do TWS,
+        # ne čtení z paměti jako zbytek obnovy. Nulový interval měření vypne
+        if self.cfg.ui.latency_interval_sec > 0:
+            ui.timer(self.cfg.ui.latency_interval_sec, self._measure_link)
 
     def _build_header(self) -> None:
         """Hlavička s názvem aplikace, přepínačem vzhledu a stavem spojení na TWS."""
@@ -314,6 +379,16 @@ class TradingUI:
                 ui.tooltip("Přepnout světlý/tmavý vzhled")
             self._refresh_dark_button()
             self.status_label = ui.label().classes("stav-spojeni")
+            # Kvalita spojení: odezva TWS a stáří tržních dat. Ukazuje, že
+            # spojení nejen stojí, ale i žije - odpojené se skrývá
+            self.link_label = ui.label().classes("stav-linky")
+            self.link_label.tooltip(
+                "Odezva TWS je doba, za kterou odpoví na dotaz na čas - měří "
+                "tedy samotnou aplikaci, ne síť k IB. Stáří dat je doba od "
+                "nejčerstvější kotace ze všech odebíraných kontraktů; mimo "
+                "obchodní hodiny přirozeně roste, protože trh nic neposílá."
+            )
+            self.link_label.set_visibility(False)
             self.connect_button = ui.button("Připojit", on_click=self._toggle_connection).props("flat")
 
     def _toggle_dark(self) -> None:
@@ -1838,6 +1913,34 @@ class TradingUI:
             self.status_label.set_text(f"Odpojeno ({conn.host}:{conn.port})")
             self.status_label.classes(add="spojeni-chyba", remove="spojeni-ok")
             self.connect_button.set_text("Připojit")
+        self._refresh_link()
+
+    def _refresh_link(self) -> None:
+        """
+        Ukazatel kvality spojení v hlavičce - odezva TWS a stáří tržních dat.
+        Bez spojení nemá co ukazovat, proto se skrývá.
+        """
+        if not self.ib.connected:
+            self.link_label.set_visibility(False)
+            return
+
+        stari = self.ib.quotes_age()
+        self.link_label.set_visibility(True)
+        self.link_label.set_text(stav_linky_text(self.ib.rtt_ms, stari))
+
+        # Trh je otevřený, když odpočet do jeho otevření nemá co ukazovat
+        trh_otevren = self.engine.market_open_seconds() is None
+        if linka_varuje(self.ib.rtt_ms, stari, trh_otevren):
+            self.link_label.classes(add="linka-varovani")
+        else:
+            self.link_label.classes(remove="linka-varovani")
+
+    async def _measure_link(self) -> None:
+        """
+        Změří odezvu TWS. Běží vlastním, řidším tempem než obnova hlavičky -
+        na rozdíl od ní jde o skutečný dotaz do TWS.
+        """
+        await self.ib.measure_rtt()
 
     def _row(self, flow: Flow) -> dict[str, Any]:
         """Převede flow na řádek monitorovací tabulky."""

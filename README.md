@@ -540,6 +540,30 @@ odpočet míří na otevření následujícího obchodního dne, proto se u del�
 vypisuje i počet dní; svátky aplikace nezná. Během seance je odpočet skrytý
 a nastavení nijak neovlivňuje obchodování.
 
+### Kvalita spojení
+
+Mezi stavem spojení a tlačítkem *Odpojit* stojí ukazatel ve tvaru
+`TWS 0,8 ms · data 0,4 s`. Odpojená aplikace jej skrývá.
+
+**TWS** je odezva na dotaz na aktuální čas — nejlevnější zprávu API, která jde
+tam a zpět bez tržních dat. Měří tedy **samotnou aplikaci TWS**, ne síť k IB:
+běží-li TWS na témže počítači, jsou to jednotky milisekund a hodnota říká
+hlavně to, že TWS není zatuhlá. Přes síť je to desítky milisekund. Měří se
+vlastním, řidším tempem než překreslování tabulky — interval určuje
+`ui.latency_interval_sec` (výchozí 5 s), hodnota `0` měření vypne a místo
+odezvy se ukáže pomlčka.
+
+**data** je stáří nejčerstvější kotace ze všech odebíraných kontraktů, tedy
+odpověď na otázku, zda proud dat teče. Bere se nejnovější čas, ne nejstarší:
+nelikvidní opce se aktualizuje zřídka i při zcela zdravém spojení, kdežto
+stojící maximum znamená, že nepřichází nic. Bez odběrů je i tady pomlčka.
+
+Ukazatel **zoranžoví** při odezvě nad 500 ms nebo když kotace stojí déle než
+15 s. Stará data se hlásí jen během seance — mimo obchodní hodiny trh nic
+neposílá a trvale svítící varování by ztratilo význam.
+
+Údaj o kvalitě spojení je informativní; obchodování neovlivňuje.
+
 ### Stavy obchodu
 
 | Stav | Význam |
@@ -588,6 +612,11 @@ Přepínač **Dnes / Vše** v pravém horním rohu určuje rozsah. *Dnes* bere o
 založené dnešního dne a k nim všechny, které stále běží (aplikace může běžet
 přes noc nebo obnovit stav z předchozího dne). *Vše* ukazuje celý obsah
 monitoringu bez ohledu na datum.
+
+Vedle něj je **přepínač světlého a tmavého vzhledu** — tentýž, jaký stojí
+v hlavičce stránky, jen ji přehled přes celou obrazovku zakrývá. Přepíná
+vzhled celé aplikace včetně barev grafů, volba se pamatuje mezi spuštěními
+(výchozí hodnota je `ui.dark` v konfiguraci) a přehled se překreslí ihned.
 
 Obsah se obnovuje ze stejné smyčky jako tabulka, takže otevřené pozice v něm
 tikají živě. Rozvržení je navržené na jednu obrazovku bez posuvníku — posouvají

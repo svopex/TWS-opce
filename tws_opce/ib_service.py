@@ -8,7 +8,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable
 
 from ib_async import (
@@ -41,6 +43,10 @@ ORDER_REF_PREFIX = "TWSOPCE"
 # a po dobu zpracování je blokuje proti přeplnění. Oproti typu 1 (zrušit
 # vše) tak po částečném prodeji na PT zůstává zbytek pozice dál krytý SL.
 OCA_TYPE_REDUCE_WITH_BLOCK = 2
+
+# Jak dlouho se čeká na odpověď při měření odezvy TWS. Delší čekání už nemá
+# co změřit - nedostavší se odpověď v této lhůtě znamená, že TWS nestíhá
+RTT_TIMEOUT_SEC = 3.0
 
 
 def order_ref(flow_id: str, druh: str) -> str:
@@ -105,6 +111,10 @@ class IBService:
         self._connect_lock = asyncio.Lock()
         self._chain_cache: dict[str, Any] = {}
         self.on_status_change: Callable[[], None] | None = None
+        # Poslední naměřená odezva TWS v milisekundách; None znamená, že se
+        # zatím neměřilo, nebo že poslední pokus neuspěl. Drží se tady, aby
+        # ji synchronní obnova hlavičky mohla jen přečíst
+        self.rtt_ms: float | None = None
 
         self.ib.disconnectedEvent += self._on_disconnected
         self.ib.errorEvent += self._on_error
@@ -162,6 +172,8 @@ class IBService:
         log.warning("Spojení s TWS bylo přerušeno.")
         self._tickers.clear()
         self._subscribers.clear()
+        # Naměřená odezva patřila ke ztracenému spojení
+        self.rtt_ms = None
         # Po novém spojení začínají tržní data od nuly - odklad se čeká znovu
         self._quotes_grace_done.clear()
         self._notify_status()
@@ -185,6 +197,60 @@ class IBService:
                 self.on_status_change()
             except Exception:
                 log.exception("Chyba při notifikaci změny stavu spojení.")
+
+    # ------------------------------------------------------------------
+    # Kvalita spojení
+    # ------------------------------------------------------------------
+
+    async def measure_rtt(self) -> float | None:
+        """
+        Změří odezvu TWS v milisekundách a zapamatuje ji do self.rtt_ms.
+
+        Dotaz na aktuální čas je nejlevnější zpráva API - jde tam a zpět bez
+        tržních dat, takže měří, jak rychle TWS odpovídá. Neměří síť k IB:
+        běží-li TWS na tomtéž stroji, je to odezva samotné aplikace, tedy
+        ukazatel, že není zatuhlá.
+
+        Nedostupná odpověď (odpojení, vypršení lhůty) vrací None a nic
+        neloguje - je to údaj o spojení, ne chyba, a měření se opakuje.
+        """
+        if not self.ib.isConnected():
+            self.rtt_ms = None
+            return None
+
+        start = time.perf_counter()
+        try:
+            await asyncio.wait_for(self.ib.reqCurrentTimeAsync(), RTT_TIMEOUT_SEC)
+        except Exception:
+            self.rtt_ms = None
+            return None
+
+        self.rtt_ms = (time.perf_counter() - start) * 1000
+        return self.rtt_ms
+
+    def quotes_age(self) -> float | None:
+        """
+        Stáří tržních dat v sekundách - kolik uplynulo od nejčerstvější
+        kotace napříč všemi odebíranými kontrakty.
+
+        Odpovídá na otázku „teče proud dat?". Bere se nejnovější čas, ne
+        nejstarší: jednotlivá nelikvidní opce se aktualizuje zřídka i při
+        zcela zdravém spojení, kdežto stojící maximum znamená, že nepřichází
+        nic. Mimo obchodní hodiny proto hodnota přirozeně roste.
+
+        None znamená, že se nic neodebírá nebo že žádný ticker zatím čas
+        nemá - tedy že se není z čeho ptát.
+        """
+        casy = [t.time for t in self._tickers.values() if t.time is not None]
+        if not casy:
+            return None
+
+        nejnovejsi = max(casy)
+        # ib_async dodává časy v UTC s časovou zónou; testovací náhrady je
+        # mívají bez ní, proto se „teď" bere ve stejné podobě jako kotace
+        ted = datetime.now(nejnovejsi.tzinfo)
+        # Hodiny TWS mohou být napřed - záporné stáří by mátlo víc než nula
+        return max(0.0, (ted - nejnovejsi).total_seconds())
 
     # ------------------------------------------------------------------
     # Účet

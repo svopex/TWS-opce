@@ -143,12 +143,20 @@ class ReportDialog:
     """
 
     def __init__(
-        self, cfg: AppConfig, engine: FlowEngine, je_tmavy: Callable[[], bool]
+        self,
+        cfg: AppConfig,
+        engine: FlowEngine,
+        je_tmavy: Callable[[], bool],
+        prepni_vzhled: Callable[[], None],
     ) -> None:
         self.cfg = cfg
         self.engine = engine
-        # Vzhled grafů se řídí přepínačem světlý/tmavý režim v hlavičce
+        # Vzhled grafů se řídí přepínačem světlý/tmavý režim. Přehled se
+        # otevírá přes celou obrazovku, takže přepínač v hlavičce stránky
+        # není vidět - dialog má proto vlastní tlačítko, které přepíná touž
+        # volbu (stav i jeho uložení drží hlavní rozhraní)
         self.je_tmavy = je_tmavy
+        self.prepni_vzhled = prepni_vzhled
         self.rozsah = report.ROZSAH_DNES
 
         # Podpisy naposledy vykreslených dat. Seznamy a grafy se překreslují
@@ -211,7 +219,10 @@ class ReportDialog:
                             ).classes("report-prazdno")
 
     def _build_hlavicka(self) -> None:
-        """Horní lišta dialogu - nadpis, přepínač rozsahu a zavření."""
+        """
+        Horní lišta dialogu - nadpis, přepínač rozsahu, přepínač vzhledu
+        a zavření.
+        """
         with ui.element("div").classes("report-hlavicka"):
             ui.label("Výsledky").classes("report-nadpis")
             self.datum_label = ui.label("").classes("report-datum")
@@ -227,9 +238,42 @@ class ReportDialog:
                     "běží. Vše: celý obsah monitoringu bez ohledu na datum."
                 )
             )
+            # Přepínač vzhledu - přehled zakrývá hlavičku stránky, kde stojí
+            # ten hlavní, a v tmavém sále se čte tmavý přehled lépe
+            self.tlacitko_vzhledu = (
+                ui.button(on_click=self._prepni_vzhled)
+                .props("flat round dense")
+                .classes("report-vzhled")
+            )
+            with self.tlacitko_vzhledu:
+                ui.tooltip("Přepnout světlý/tmavý vzhled")
+            self._obnov_tlacitko_vzhledu()
+
             ui.button(icon="close", on_click=self.dialog.close).props(
                 "flat round dense"
             ).classes("report-zavrit").tooltip("Zavřít přehled")
+
+    def _obnov_tlacitko_vzhledu(self) -> None:
+        """
+        Ikona ukazuje režim, do kterého se lze přepnout - stejně jako
+        tlačítko v hlavičce stránky.
+        """
+        ikona = "light_mode" if self.je_tmavy() else "dark_mode"
+        self.tlacitko_vzhledu.props(f"icon={ikona}")
+
+    def _prepni_vzhled(self) -> None:
+        """
+        Přepne světlý/tmavý vzhled celé aplikace a přehled hned překreslí.
+
+        Barvy grafů si vzhled nesou v podpisu vykreslených dat, takže by se
+        samy srovnaly až s dalším během obnovovací smyčky - podpisy se proto
+        zahodí a kreslí se rovnou.
+        """
+        self.prepni_vzhled()
+        self._obnov_tlacitko_vzhledu()
+        self._podpis_krivka = None
+        self._podpis_tickery = None
+        self.refresh()
 
     def _build_dlazdice(self, klic: str, nadpis: str) -> dict[str, Any]:
         """
@@ -264,6 +308,8 @@ class ReportDialog:
     def open(self) -> None:
         """Otevře přehled a rovnou jej naplní aktuálními daty."""
         self.dialog.open()
+        # Vzhled se mezitím mohl přepnout tlačítkem v hlavičce stránky
+        self._obnov_tlacitko_vzhledu()
         self.refresh()
 
     def _on_rozsah(self, event: Any) -> None:

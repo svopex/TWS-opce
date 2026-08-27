@@ -410,6 +410,11 @@ ui:
   # Jak často (v sekundách) se překresluje monitorovací tabulka a ceny.
   refresh_interval_sec: 1.0
 
+  # Jak často (v sekundách) se měří odezva TWS pro ukazatel v hlavičce.
+  # Je to skutečný dotaz do TWS, proto řidší tempo než překreslování.
+  # 0 měření vypne a v hlavičce zůstane jen stáří tržních dat.
+  latency_interval_sec: 5.0
+
   # true = tmavý vzhled rozhraní.
   dark: false
 

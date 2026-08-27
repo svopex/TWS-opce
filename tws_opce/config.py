@@ -195,6 +195,10 @@ class UiConfig:
     refresh_interval_sec: float = 1.0
     dark: bool = False
     log_lines: int = 300
+    # Jak často se měří odezva TWS pro ukazatel v hlavičce. Je to dotaz do
+    # TWS, ne čtení z paměti jako zbytek obnovy, proto vlastní, řidší tempo;
+    # 0 měření vypne a v hlavičce zůstane jen stáří tržních dat
+    latency_interval_sec: float = 5.0
 
 
 @dataclass
