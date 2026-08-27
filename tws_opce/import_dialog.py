@@ -947,6 +947,10 @@ class ImportDialog:
                     chyb += 1
                     continue
 
+                # PT dopočítané z procenta prémie si nese i cenu opce, ze
+                # které vyšlo - formulář pak obchod nabídne zase v procentech.
+                # Ručně přepsané PT prémii zahazuje, takže se sem nedostane
+                v_procentech = bool(radek.premie and not pt_on)
                 request = FlowRequest(
                     symbol=radek.pozice.symbol,
                     entry_price=radek.pozice.entry_price,
@@ -958,6 +962,8 @@ class ImportDialog:
                     sl_on_underlying=sl_on,
                     sl_spread_compensated=sl_spread,
                     sl_to_pt_ratio=pomer,
+                    pt_in_premium=v_procentech,
+                    premium_base=radek.premie if v_procentech else None,
                 )
                 try:
                     flow = await self.engine.start_flow(request)

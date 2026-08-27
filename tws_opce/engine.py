@@ -1242,6 +1242,11 @@ class FlowEngine:
                 pt_on_underlying=request.pt_on_underlying,
                 sl_on_underlying=request.sl_on_underlying,
                 sl_spread_compensated=preview.sl_spread_compensated,
+                # Jednotka zadání úrovní si jede s obchodem, aby ji formulář
+                # při načtení obchodu nabídl znovu
+                pt_in_premium=request.pt_in_premium,
+                sl_in_premium=request.sl_in_premium,
+                premium_base=request.premium_base,
                 expiration=preview.expiration,
                 strike=preview.strike,
                 min_tick=preview.min_tick,

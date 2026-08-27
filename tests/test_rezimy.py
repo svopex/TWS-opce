@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.fake_ib import OPTION_CONID, UNDERLYING_CONID
 from tests.zaklad import ZakladEnginu, ZakladSeStavem
+from tws_opce import store
 from tws_opce.engine import FlowEngine
 from tws_opce.models import FlowRequest, FlowState
 
@@ -1633,6 +1634,57 @@ class TestKompenzaceSpreadu(ZakladRezimu):
 
         self.assertAlmostEqual(flow.runner_stop_loss, 40.0)
         self.assertAlmostEqual(flow.runner_sl_trade.order.auxPrice, 2.70)
+
+
+class TestJednotkyZadani(ZakladRezimu):
+    """
+    Paměť jednotky, ve které byly úrovně na opci zadané. Engine s ní nepočítá,
+    ale obchod si ji nese, aby formulář nabídl při načtení tutéž jednotku.
+    """
+
+    async def test_obchod_si_pamatuje_procenta_premie(self):
+        # Opce za 3,00 dává 3 USD na kontrakt za procento: PT 60 USD je 20 %,
+        # SL 30 USD je 10 % zaplacené prémie
+        flow = await self.zaloz(
+            False,
+            False,
+            60.0,
+            30.0,
+            pt_in_premium=True,
+            sl_in_premium=True,
+            premium_base=3.00,
+        )
+
+        self.assertTrue(flow.pt_in_premium)
+        self.assertTrue(flow.sl_in_premium)
+        self.assertAlmostEqual(flow.premium_base, 3.00)
+        # Úrovně samotné zůstávají v USD na kontrakt - procento je jen jednotka zadání
+        self.assertAlmostEqual(flow.profit_target, 60.0)
+        self.assertAlmostEqual(flow.stop_loss, 30.0)
+
+    async def test_zadani_v_usd_zadnou_premii_nedrzi(self):
+        flow = await self.zaloz(False, False, 60.0, 30.0)
+
+        self.assertFalse(flow.pt_in_premium)
+        self.assertFalse(flow.sl_in_premium)
+        self.assertIsNone(flow.premium_base)
+
+    async def test_jednotka_prezije_ulozeni_stavu(self):
+        flow = await self.zaloz(
+            False,
+            False,
+            60.0,
+            30.0,
+            pt_in_premium=True,
+            sl_in_premium=True,
+            premium_base=3.00,
+        )
+
+        obnovene = store.dict_to_flow(store.flow_to_dict(flow))
+
+        self.assertTrue(obnovene.pt_in_premium)
+        self.assertTrue(obnovene.sl_in_premium)
+        self.assertAlmostEqual(obnovene.premium_base, 3.00)
 
 
 if __name__ == "__main__":

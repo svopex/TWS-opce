@@ -141,9 +141,14 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    spread dál** je dostupná i zde — připočte se k přepočtené částce v USD.
 
    Odeslání bez načtených dat z TWS přepočet provést nemůže a formulář na to
-   upozorní; stačí kliknout na *Načíst*. Načtený běžící obchod se do formuláře
-   vrací v USD, protože procento zná jen formulář — po nákupu je prémie známá
-   a pevná, takže USD je přesnější zápis.
+   upozorní; stačí kliknout na *Načíst*. Načtený běžící obchod — ať tlačítkem
+   *Načíst*, nebo kliknutím na řádek v přehledu — se do formuláře vrací
+   **v téže jednotce, v jaké byl zadán**: obchod si s sebou nese i cenu opce,
+   ze které se procenta počítala, takže se přepínač nastaví zpět na *% prémie*
+   a úrovně se přepočtou na procenta. Základem zůstává původní prémie, ne
+   aktuální kotace — jinak by se zapsaná procenta při každém načtení posunula.
+   Obchody z verzí, které si jednotku zadání ještě nepamatovaly, se vrací
+   v USD na kontrakt.
 
    Při PT na opci aplikace dopočítá **úroveň podkladu, kde zisk nastane**:
    z aktuální kotace opce se strikem u vstupu zjistí
@@ -658,7 +663,9 @@ Nad tabulkou se volí režim cíle, společný všem načteným pozicím:
   vezme odhad ceny a teprve z něj spočítá PT v USD — proto sahá do TWS dvakrát
   a příprava je o něco pomalejší. Použitá prémie se ukáže ve sloupci *Stav*
   (`prémie ≈ 300 USD`). Do pole *PT* se zapíše výsledek v USD/ks, takže se dá
-  ručně doladit; dál obchod běží jako běžné zadání na opci.
+  ručně doladit; dál obchod běží jako běžné zadání na opci. Použitá prémie jde
+  s obchodem dál, takže se v běžném formuláři vrátí zase v procentech —
+  s výjimkou ručně přepsaného PT, které už z prémie nevychází.
 
 V obou opčních režimech (USD/ks i % prémie) má smysl zaškrtávátko
 **SL o zaplacený spread dál** — chová se stejně jako v běžném formuláři.

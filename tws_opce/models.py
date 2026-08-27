@@ -175,6 +175,13 @@ class FlowRequest:
     # Poměr SL:PT pro dopočet chybějící úrovně. None znamená "vzít
     # z konfigurace" - formulář sem posílá hodnotu ze svého pole
     sl_to_pt_ratio: float | None = None
+    # Jednotka, ve které byla úroveň na opci zadána: True = procento zaplacené
+    # prémie. Engine i obchod pracují vždy s USD na kontrakt, tohle je jen
+    # paměť formuláře - viz Flow.pt_in_premium
+    pt_in_premium: bool = False
+    sl_in_premium: bool = False
+    # Cena opce (USD za kus), ze které se procenta na USD převáděla
+    premium_base: float | None = None
 
 
 @dataclass
@@ -211,6 +218,17 @@ class Flow:
     # Kolik USD na kontrakt už bylo k SL připočteno; formulář o to zapsanou
     # hodnotu zase snižuje, aby se navýšení při dalším zadání neřetězilo
     sl_spread_usd: float = 0.0
+
+    # Jednotka, ve které obchodník úroveň na opci zadal: True = procento
+    # zaplacené prémie. Obchod i engine počítají výhradně s USD na kontrakt,
+    # tenhle příznak slouží jen formuláři - při načtení obchodu se úroveň
+    # nabídne v téže jednotce, v jaké vznikla, a ne přepočtená na USD
+    pt_in_premium: bool = False
+    sl_in_premium: bool = False
+    # Cena opce (USD za kus), ze které se procenta na USD převáděla. Zpětný
+    # převod musí vyjít z téže hodnoty, jinak by se zadaná procenta posunula
+    # podle aktuální kotace. None znamená, že se procenta nepoužila
+    premium_base: float | None = None
 
     # PT zadané při založení obchodu; násobky cíle se počítají z něj,
     # aby opakovaná změna nevycházela z už posunuté hodnoty

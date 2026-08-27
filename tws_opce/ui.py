@@ -211,9 +211,16 @@ def popisek_urovne(druh: str, rezim: str) -> str:
     return (PT_LABELS if druh == "pt" else SL_LABELS)[rezim]
 
 
-def rezim_urovne(na_podkladu: bool) -> str:
-    """Režim odpovídající uloženému příznaku obchodu (ten procento nezná)."""
-    return MODE_UNDERLYING if na_podkladu else MODE_USD
+def rezim_urovne(na_podkladu: bool, v_procentech: bool = False) -> str:
+    """
+    Režim odpovídající uloženým příznakům obchodu.
+
+    Na podkladu procento nedává smysl - úroveň je cena podkladu, ne podíl
+    z prémie -, proto se příznak procenta uplatní jen u úrovně na opci.
+    """
+    if na_podkladu:
+        return MODE_UNDERLYING
+    return MODE_PREMIUM if v_procentech else MODE_USD
 
 
 def format_countdown(sekundy: float) -> str:
@@ -805,19 +812,22 @@ class TradingUI:
         pt_on_underlying: bool,
         sl_on_underlying: bool,
         sl_spread_compensated: bool | None = None,
+        pt_in_premium: bool = False,
+        sl_in_premium: bool = False,
     ) -> None:
         """
         Nastaví volby režimu bez vedlejších účinků jejich obsluhy -
         při programovém nastavení se hodnoty polí nesmí mazat.
         Bez zadané kompenzace (None) se její přepínač nechává být.
 
-        Přebírá pravdivostní hodnoty, protože obchod ani konfigurace procento
-        neznají - úroveň na opci se proto vždy nastaví jako zápis v USD.
+        Příznaky pt_in_premium a sl_in_premium říkají, že úroveň na opci
+        byla zadaná procentem prémie; konfigurace je nezná, proto výchozí
+        nastavení formuláře vždy sáhne po zápisu v USD.
         """
         self._modes_locked = True
         try:
-            self.pt_mode.set_value(rezim_urovne(pt_on_underlying))
-            self.sl_mode.set_value(rezim_urovne(sl_on_underlying))
+            self.pt_mode.set_value(rezim_urovne(pt_on_underlying, pt_in_premium))
+            self.sl_mode.set_value(rezim_urovne(sl_on_underlying, sl_in_premium))
             if sl_spread_compensated is not None:
                 self.sl_spread_compensated.set_value(sl_spread_compensated)
         finally:
@@ -943,15 +953,56 @@ class TradingUI:
         self.form_flow_id = flow.id
         self.symbol_input.set_value(flow.symbol)
         self._set_direction(flow.right)
+        # Cena opce, ze které obchod procenta počítal, musí platit dřív než
+        # se úrovně zapíšou - podle ní se vrací zpět do procent
+        pt_pct, sl_pct = self._prevezmi_premii(flow)
         # Režimy se nastavují před hodnotami - jejich změna pole maže
         self._set_modes(
-            flow.pt_on_underlying, flow.sl_on_underlying, flow.sl_spread_compensated
+            flow.pt_on_underlying,
+            flow.sl_on_underlying,
+            flow.sl_spread_compensated,
+            pt_pct,
+            sl_pct,
         )
         self.entry_input.set_value(round(flow.entry_price, 2))
-        self.pt_input.set_value(round(flow.profit_target, 2))
+        self.pt_input.set_value(self._uroven_do_pole(flow.profit_target, pt_pct))
         self._zapis_sl(flow)
         self.spread_input.set_value(flow.max_spread_pct)
         self.qty_input.set_value(flow.quantity)
+
+    def _prevezmi_premii(self, flow: Flow) -> tuple[bool, bool]:
+        """
+        Převezme z obchodu cenu opce, ze které se počítala procenta prémie,
+        a vrátí, zda se PT a SL do formuláře vrací v procentech.
+
+        Zpětný převod i případné nové zadání musí vyjít z téže ceny jako
+        původní zadání - jinak by se zapsaná procenta pokaždé posunula podle
+        aktuální kotace. Obchod bez uložené ceny (starší stav nebo zadání
+        v USD) procento nabídnout nemůže, takže zůstane u USD na kontrakt.
+        """
+        if not flow.premium_base or flow.premium_base <= 0:
+            return False, False
+
+        self.premium_estimate = flow.premium_base
+        self.premium_symbol = flow.symbol
+        self.premium_used = flow.premium_base
+        # Úroveň na podkladu je cena, ne podíl z prémie - procento se na ni nevztahuje
+        return (
+            flow.pt_in_premium and not flow.pt_on_underlying,
+            flow.sl_in_premium and not flow.sl_on_underlying,
+        )
+
+    def _uroven_do_pole(self, hodnota: float, v_procentech: bool) -> float:
+        """
+        Úroveň obchodu (cena podkladu, nebo USD na kontrakt) v jednotce pole.
+        V režimu procenta prémie se přepočte cenou opce; bez ní se zapíše
+        původní hodnota v USD, aby pole nezůstalo prázdné.
+        """
+        if v_procentech:
+            pct = self._usd_na_pct(hodnota, self.premium_used)
+            if pct is not None:
+                return pct
+        return round(hodnota, 2)
 
     def _zapis_sl(self, flow: Flow) -> None:
         """
@@ -968,7 +1019,12 @@ class TradingUI:
         if not flow.sl_on_underlying and flow.stop_loss <= 0:
             self.sl_input.set_value(None)
             return
-        self.sl_input.set_value(round(flow.stop_loss - flow.sl_spread_usd, 2))
+        _, sl_mode = self._form_level_modes()
+        self.sl_input.set_value(
+            self._uroven_do_pole(
+                flow.stop_loss - flow.sl_spread_usd, sl_mode == MODE_PREMIUM
+            )
+        )
 
     def _clear_inputs(self) -> None:
         """
@@ -1116,7 +1172,12 @@ class TradingUI:
         # Načtení se vyžaduje buď tlačítkem, nebo přechodem na jiný ticker
         if bezici is not None and (rezim == "nacist" or zmena_tickeru):
             self._fill_from_flow(bezici)
-            entry, pt, sl = bezici.entry_price, bezici.profit_target, bezici.stop_loss
+            # Obchod drží úrovně na opci v USD na kontrakt, další výpočet ale
+            # pracuje s jednotkami formuláře - ten je může vést v procentech prémie
+            pt_mode, sl_mode = self._form_level_modes()
+            entry = bezici.entry_price
+            pt = self._uroven_do_pole(bezici.profit_target, pt_mode == MODE_PREMIUM)
+            sl = self._uroven_do_pole(bezici.stop_loss, sl_mode == MODE_PREMIUM)
             ui.notify(f"Načten běžící obchod {bezici.id}.", type="info")
         elif bezici is None and zmena_tickeru:
             # Ticker bez jednoznačného obchodu - hodnoty se nesmí přenést
@@ -1332,7 +1393,8 @@ class TradingUI:
         )
         # Formulář může ukazovat tento obchod, hodnotu je třeba srovnat
         if self.form_flow_id == flow.id:
-            self.pt_input.set_value(novy_pt)
+            pt_mode, _ = self._form_level_modes()
+            self.pt_input.set_value(self._uroven_do_pole(novy_pt, pt_mode == MODE_PREMIUM))
         self._refresh()
 
     async def _on_set_sl(self, event: Any) -> None:
@@ -1473,9 +1535,12 @@ class TradingUI:
             return
 
         # Úroveň zadaná procentem prémie se odesílá převedená na USD na
-        # kontrakt - obchod ani engine procento neznají. Převod potřebuje odhad
-        # nákupní ceny opce z náhledu; bez něj nelze zadání sestavit
-        if MODE_PREMIUM in self._form_level_modes():
+        # kontrakt - engine procento nezná. Cena opce, ze které se převádělo,
+        # putuje s obchodem dál, aby se úroveň dala vrátit zpět do procent.
+        # Převod potřebuje odhad z náhledu; bez něj nelze zadání sestavit
+        pt_mode, sl_mode = self._form_level_modes()
+        premie: float | None = None
+        if MODE_PREMIUM in (pt_mode, sl_mode):
             premie = self.premium_used or self._premie_pro(symbol)
             if premie is None:
                 ui.notify(
@@ -1501,6 +1566,9 @@ class TradingUI:
             sl_on_underlying=sl_on,
             sl_spread_compensated=self._form_sl_spread(),
             sl_to_pt_ratio=self._form_ratio(),
+            pt_in_premium=pt_mode == MODE_PREMIUM,
+            sl_in_premium=sl_mode == MODE_PREMIUM,
+            premium_base=premie,
         )
 
         # Založení obchodu si znovu načítá data z TWS, indikace platí i zde
