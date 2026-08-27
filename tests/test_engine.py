@@ -77,16 +77,17 @@ class TestZalozeniFlow(ZakladTestu):
         self.assertAlmostEqual(podminka.price, 228.0)
 
     async def test_mnozstvi_se_spocita_z_rizika_a_delty(self):
-        # Riziko 50 USD, pohyb ke SL 3 USD, delta 0,35 -> 50 / 105 = 0 -> minimum 1
+        # Počítá se s deltou při vstupu (0,49), ne s dnešní z TWS (0,35):
+        # riziko 50 USD, pohyb ke SL 3 USD -> 50 / 147 = 0 -> minimum 1
         flow = await self.zaloz_call()
         self.assertEqual(flow.quantity, 1)
 
-        # Při větším účtu vyjde více kontraktů: riziko 500 / 105 = 4
+        # Při větším účtu vyjde více kontraktů: riziko 500 / 147 = 3
         self.cfg.account.size = 50000.0
         flow2 = await self.engine.start_flow(
             FlowRequest(symbol="MSFT", entry_price=232.0, profit_target=235.0)
         )
-        self.assertEqual(flow2.quantity, 4)
+        self.assertEqual(flow2.quantity, 3)
 
     async def test_zadane_mnozstvi_ma_prednost(self):
         flow = await self.zaloz_call(quantity=7)
@@ -313,12 +314,17 @@ class TestKontrolyDelty(ZakladTestu):
     """Upozornění, když delta vybrané opce vypadne z mezí v konfiguraci."""
 
     async def test_nizka_delta_vyvola_varovani(self):
-        self.ib.greek_delta = 0.10
-        preview = await self.engine.prepare("AAPL", 232.0, 235.0)
+        # Strike 250 je od vstupu 232 daleko - při vstupu vyjde delta 0,26,
+        # zatímco TWS hlásí pro dnešní cenu podkladu 0,35 a mezí by prošla
+        self.cfg.strike.mode = "target"
+        self.cfg.strike.delta_warn_min = 0.30
+        preview = await self.engine.prepare("AAPL", 232.0, 250.0)
+        self.assertEqual(preview.strike, 250.0)
         self.assertTrue(any("pod hranicí" in v for v in preview.warnings))
 
     async def test_vysoka_delta_vyvola_varovani(self):
-        self.ib.greek_delta = 0.85
+        # Delta při vstupu je 0,49; dnešní z TWS (0,35) by mezí prošla
+        self.cfg.strike.delta_warn_max = 0.40
         preview = await self.engine.prepare("AAPL", 232.0, 235.0)
         self.assertTrue(any("nad hranicí" in v for v in preview.warnings))
 
@@ -335,10 +341,64 @@ class TestKontrolyDelty(ZakladTestu):
         self.assertFalse(any("hranicí" in v for v in preview.warnings))
 
     async def test_nulova_mez_kontrolu_vypne(self):
+        # Týž scénář jako u nízké delty, jen s vypnutou dolní mezí
+        self.cfg.strike.mode = "target"
         self.cfg.strike.delta_warn_min = 0.0
-        self.ib.greek_delta = 0.05
+        preview = await self.engine.prepare("AAPL", 232.0, 250.0)
+        self.assertFalse(any("hranicí" in v for v in preview.warnings))
+
+
+class TestDeltyPriVstupu(ZakladTestu):
+    """
+    Delta se pro množství i kontrolu mezí bere ve chvíli nákupu, ne z dnešní
+    ceny podkladu - opce se kupuje teprve na vstupní úrovni.
+    """
+
+    async def test_nahled_nese_obe_delty(self):
+        # Podklad 230, vstup 232: TWS hlásí deltu pro dnešek, model dopočítá
+        # tu při vstupu, kde je opce blíž penězům a delta vyšší
+        preview = await self.engine.prepare("AAPL", 232.0, 235.0)
+        self.assertAlmostEqual(preview.delta, 0.35)
+        self.assertAlmostEqual(preview.entry_delta, 0.49, places=2)
+
+    async def test_delta_pri_vstupu_je_u_put_zaporna(self):
+        self.ib.greek_delta = -0.35
+        preview = await self.engine.prepare("AAPL", 229.0, 226.0)
+        self.assertEqual(preview.right, "P")
+        self.assertLess(preview.entry_delta, 0)
+
+    async def test_nizka_delta_z_tws_neovlivni_kontrolu(self):
+        # Zadání daleko od trhu: TWS hlásí deltu 0,07, protože opce je dnes
+        # hluboko mimo peníze. Při vstupu ale bude u peněz, takže varovat
+        # se nemá - právě tohle dřív hlásilo planě
+        self.ib.greek_delta = 0.07
         preview = await self.engine.prepare("AAPL", 232.0, 235.0)
         self.assertFalse(any("hranicí" in v for v in preview.warnings))
+
+    async def test_mnozstvi_vychazi_z_delty_pri_vstupu(self):
+        # Množství se nesmí řídit dnešní deltou: ta je nižší, ztráta na
+        # kontrakt by z ní vyšla menší a kontraktů by se koupilo víc,
+        # než odpovídá riziku
+        self.cfg.account.size = 50000.0
+        self.ib.greek_delta = 0.07
+        preview = await self.engine.prepare("AAPL", 232.0, 235.0)
+
+        # Riziko 500 USD, pohyb ke SL 3 USD, delta při vstupu 0,49 -> 3 ks.
+        # S deltou 0,07 z TWS by vyšlo 23 kontraktů
+        self.assertEqual(preview.quantity, 3)
+
+    async def test_bez_ceny_opce_zbyva_delta_z_tws(self):
+        # Bez kotací nelze implikovanou volatilitu spočítat - model odpadá
+        # a rozhoduje delta, kterou poslalo TWS
+        self.ib.price_bid = None
+        self.ib.price_ask = None
+        self.ib.price_last = None
+        self.ib.price_close = None
+        self.ib.greek_delta = 0.35
+        self.cfg.trading.entry_order_type = "MKT"
+        preview = await self.engine.prepare("AAPL", 232.0, 235.0)
+        self.assertIsNone(preview.entry_delta)
+        self.assertAlmostEqual(preview.delta, 0.35)
 
 
 class TestSmeruVstupu(ZakladTestu):
@@ -2148,7 +2208,7 @@ class TestVelikostUctu(ZakladTestu):
         self.assertAlmostEqual(self.engine.account_size, 20000.0)
 
     async def test_mnozstvi_se_pocita_z_velikosti_prevzate_z_tws(self):
-        # Riziko 123,45 USD, pohyb 3 USD, delta 0,35 -> 123,45 / 105 = 1 kontrakt
+        # Riziko 123,45 USD, pohyb 3 USD, delta při vstupu 0,49 -> 123,45 / 147 = 1
         self.cfg.account.size = 0
         await self.engine._tick()
         flow = await self.zaloz_call()
@@ -2161,7 +2221,7 @@ class TestVelikostUctu(ZakladTestu):
         druhy = await self.engine.start_flow(
             FlowRequest(symbol="MSFT", entry_price=232.0, profit_target=235.0)
         )
-        self.assertEqual(druhy.quantity, 47)
+        self.assertEqual(druhy.quantity, 33)
 
 
 class TestProvizi(ZakladTestu):

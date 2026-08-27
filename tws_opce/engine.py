@@ -90,6 +90,10 @@ class Preview:
     delta: float | None = None
     # True, pokud delta nepřišla z TWS a byla dopočítána z ceny opce
     delta_estimated: bool = False
+    # Delta opce v okamžiku nákupu, tedy až podklad dosáhne vstupní úrovně.
+    # Podle ní se počítá množství i kontrola mezí - delta výše platí pro
+    # dnešní cenu podkladu, která bývá od vstupu daleko. None, chybí-li model.
+    entry_delta: float | None = None
     option_bid: float | None = None
     option_ask: float | None = None
     # Cena vybrané opce pro model (střed kotace, jinak last/close) a její zdroj
@@ -505,16 +509,25 @@ class FlowEngine:
                     preview.delta = delta
                     preview.delta_estimated = True
 
-            if delta is None:
+            # Delta z TWS i dopočet z ceny opce platí pro dnešní cenu podkladu,
+            # jenže opce se kupuje teprve na vstupní úrovni. Leží-li vstup od
+            # trhu daleko, je dnešní delta výrazně nižší - rozhoduje proto ta
+            # při vstupu, dnešní zbývá jen tam, kde model spočítat nelze
+            preview.entry_delta = self._entry_delta(preview, entry_price)
+            rozhodna_delta = preview.entry_delta if preview.entry_delta is not None else delta
+
+            if rozhodna_delta is None:
                 preview.warnings.append(
                     f"Deltu opce se nepodařilo získat ani dopočítat - množství je spočítáno "
                     f"s náhradní hodnotou {self.cfg.trading.default_delta:g}."
                 )
-            used_delta = delta if delta is not None else self.cfg.trading.default_delta
+            used_delta = (
+                rozhodna_delta if rozhodna_delta is not None else self.cfg.trading.default_delta
+            )
 
             # Delta vybrané opce se kontroluje proti mezím z konfigurace - není
             # to kritérium výběru, jen upozornění na kontrakt mimo obvyklé pásmo
-            varovani_delta = self._delta_warning(delta)
+            varovani_delta = self._delta_warning(rozhodna_delta)
             if varovani_delta is not None:
                 preview.warnings.append(varovani_delta)
 
@@ -961,6 +974,31 @@ class FlowEngine:
         if preview.option_bid and preview.option_ask:
             cena += (preview.option_ask - preview.option_bid) / 2.0
         return cena
+
+    def _entry_delta(self, preview: Preview, entry_price: float) -> float | None:
+        """
+        Delta opce ve chvíli, kdy podklad dosáhne vstupní úrovně.
+
+        Delta z TWS i dopočet z ceny opce popisují dnešní stav, jenže obchod
+        nakupuje teprve na vstupní úrovni. U zadání vzdáleného od trhu je
+        rozdíl zásadní: opce hluboko mimo peníze má dnes deltu pod 0,10,
+        u vstupu ale klidně 0,50 - a doporučené množství i kontrola mezí by
+        z té dnešní vyšly úplně mimo. Model je stejný jako u odhadu nákupní
+        ceny: z ceny opce implikovaná volatilita a s ní delta pro vstupní
+        úroveň. Bez použitelného modelu vrací None.
+        """
+        if not preview.option_price or preview.current_price is None:
+            return None
+
+        return calc.project_delta(
+            preview.option_price,
+            preview.current_price,
+            entry_price,
+            preview.strike,
+            preview.expiration,
+            self.cfg.trading.risk_free_rate_pct,
+            preview.right,
+        )
 
     @staticmethod
     def _premium_cap_text(

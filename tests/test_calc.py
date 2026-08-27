@@ -317,6 +317,44 @@ class TestPreceneniOpce(unittest.TestCase):
         )
 
 
+class TestDeltyNaCiloveUrovni(unittest.TestCase):
+    """Odhad delty opce při dosažení cílové úrovně podkladu."""
+
+    DNES = date(2026, 8, 18)
+
+    def test_call_blize_penezum_ma_vyssi_deltu(self):
+        # CALL za 1,01 při podkladu 310, strike 312,5: posun podkladu na 312,5
+        # dělá z opce ATM kontrakt, jehož delta se blíží polovině
+        ted = calc.project_delta(1.01, 310.0, 310.0, 312.5, "20260819", 4.0, "C", self.DNES)
+        u_penez = calc.project_delta(1.01, 310.0, 312.5, 312.5, "20260819", 4.0, "C", self.DNES)
+        self.assertLess(ted, u_penez)
+        self.assertAlmostEqual(u_penez, 0.5, places=1)
+
+    def test_call_dale_od_penez_ma_nizsi_deltu(self):
+        dal = calc.project_delta(1.01, 310.0, 305.0, 312.5, "20260819", 4.0, "C", self.DNES)
+        self.assertLess(dal, 0.2)
+        self.assertGreater(dal, 0.0)
+
+    def test_put_ma_zapornou_deltu(self):
+        delta = calc.project_delta(2.50, 545.0, 542.5, 542.5, "20260819", 4.0, "P", self.DNES)
+        self.assertLess(delta, 0.0)
+        self.assertAlmostEqual(delta, -0.5, places=1)
+
+    def test_cil_na_aktualni_cene_odpovida_dnesni_delte(self):
+        # Bez pohybu podkladu musí vyjít totéž co estimate_delta
+        odhad = calc.estimate_delta(1.01, 310.0, 312.5, "20260819", 4.0, "C", self.DNES)
+        projekce = calc.project_delta(1.01, 310.0, 310.0, 312.5, "20260819", 4.0, "C", self.DNES)
+        self.assertAlmostEqual(odhad, projekce, places=6)
+
+    def test_bez_pouzitelne_ceny_vraci_none(self):
+        self.assertIsNone(
+            calc.project_delta(0.0, 310.0, 313.0, 312.5, "20260819", 4.0, "C", self.DNES)
+        )
+        self.assertIsNone(
+            calc.project_delta(1.01, None, 313.0, 312.5, "20260819", 4.0, "C", self.DNES)
+        )
+
+
 class TestSmysluplnostiUrovni(unittest.TestCase):
     """Kontrola, že cíl a stop leží v rozumné vzdálenosti od vstupu."""
 

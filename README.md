@@ -93,7 +93,8 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    - **množství** z velikosti účtu, povoleného rizika a delty opce:
      `riskovaná částka / (|vstup − SL| × |delta| × 100)`. Riskovaná částka
      vychází z velikosti účtu — buď z pevné hodnoty v konfiguraci, nebo
-     ze skutečného stavu účtu, je-li `account.size: 0`.
+     ze skutečného stavu účtu, je-li `account.size: 0`. Delta se přitom bere
+     **ve chvíli nákupu** (viz [Delta při vstupu](#delta-při-vstupu)).
 
    Určený směr ukazuje odznak **LONG (CALL)** / **SHORT (PUT)** vedle
    nadpisu *Zadání obchodu*. Je to jen indikace — objeví se hned po zadání
@@ -223,7 +224,9 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    a předplatném dat. Chybí-li delta, aplikace ji dopočítá z tržní ceny opce
    (implikovaná volatilita a z ní delta podle Black-Scholes) a ve formuláři
    ji označí jako dopočítanou. Teprve když nelze ani to, sáhne po náhradní
-   hodnotě z konfigurace.
+   hodnotě z konfigurace. Obě tyto delty platí pro **dnešní** cenu podkladu;
+   pro výpočty se z nich odvozuje delta v okamžiku nákupu, viz
+   [Delta při vstupu](#delta-při-vstupu).
    Formulář má k tomu dvě tlačítka:
    **Načíst** obnoví údaje z TWS (cena podkladu, typ opce, expirace, strike,
    kotace, delta) a vyplněná pole nechá být — doplní jen ta prázdná.
@@ -450,9 +453,39 @@ Náhradu aplikace hlásí varováním v náhledu.
 delta vybrané opce z pásma, náhled upozorní. Nízká delta znamená kontrakt
 tak daleko mimo peníze, že se z pohybu podkladu skoro nezhodnotí; vysoká
 kontrakt hluboko v penězích, který zbytečně draho platí vnitřní hodnotu.
-Porovnává se absolutní hodnota, protože u PUT je delta záporná. Hodnota `0`
-příslušnou kontrolu vypne. Chybí-li delta úplně, upozorní na to samostatné
-varování a množství se spočítá s náhradní hodnotou `trading.default_delta`.
+Porovnává se absolutní hodnota, protože u PUT je delta záporná, a bere se
+delta **při vstupu** (viz níže). Hodnota `0` příslušnou kontrolu vypne.
+Chybí-li delta úplně, upozorní na to samostatné varování a množství se
+spočítá s náhradní hodnotou `trading.default_delta`.
+
+### Delta při vstupu
+
+Delta, kterou posílá TWS — a stejně tak ta, kterou si aplikace dopočítá
+z ceny opce — popisuje **dnešní** cenu podkladu. Jenže obchod nakupuje až
+ve chvíli, kdy podklad dosáhne vstupní úrovně, a do té doby se delta změní.
+U zadání vzdáleného od trhu je rozdíl zásadní:
+
+| | strike | podklad teď | vstup | delta teď | delta při vstupu |
+| --- | --- | --- | --- | --- | --- |
+| TSLA CALL | 367,5 | 347,42 | 366,50 | 0,07 | **0,48** |
+| QQQ CALL | 722,5 | 718,74 | 722,13 | 0,28 | **0,49** |
+
+Opce je dnes hluboko mimo peníze, u vstupu ale bude prakticky na penězích.
+Aplikace proto deltu **přepočítá na vstupní úroveň**: z ceny opce odvodí
+implikovanou volatilitu a s ní spočítá deltu pro cenu podkladu ve chvíli
+nákupu. Je to týž model, jakým se odhaduje nákupní cena opce, a platí pro
+něj stejný předpoklad — pohyb nastane brzy a volatilita se nezmění.
+
+Podle této delty se řídí **doporučené množství** i **kontrola mezí**.
+Kdyby se počítalo z dnešní delty, vyšla by odhadovaná ztráta na kontrakt
+mnohem menší, než jaká ve skutečnosti hrozí, a obchod by nakoupil násobně
+víc kontraktů, než odpovídá povolenému riziku; kontrola mezí by zase planě
+varovala u každého zadání položeného dál od trhu.
+
+Náhled formuláře ukazuje obě hodnoty vedle sebe — `delta 0.068 → při vstupu
+0.480` — kdykoliv se liší aspoň o 0,005. Bez ceny opce (chybí kotace,
+typicky mimo obchodní hodiny) model spočítat nelze a zbývá delta z TWS,
+stejně jako dřív.
 
 ### Mimo obchodní hodiny
 
@@ -649,7 +682,8 @@ Vedle režimu se zadává **Max. spread [%]** a **RRR (PT:SL)** pro dopočet SL 
 **Přepočítat** se PT, SL i množství u všech dosud nezadaných pozic spočítají
 znovu; tlačítko ↻ v řádku přepočte jedinou pozici a **ponechá** v ní ručně
 upravené PT. Množství se určuje stejně jako v běžném formuláři — z riskované
-částky, delty opce a vzdálenosti ke SL, resp. přímo ze ztráty na kontrakt.
+částky, delty opce při vstupu a vzdálenosti ke SL, resp. přímo ze ztráty
+na kontrakt.
 
 Tabulka ukazuje u každé pozice směr ze souboru, vstupní i cílovou cenu, vybraný
 opční kontrakt a **editovatelná pole PT, SL a Ks**. Skutečný směr určuje

@@ -1252,6 +1252,12 @@ class TradingUI:
             delta_text = fmt(preview.delta, 3)
             if preview.delta_estimated:
                 delta_text += " (dopočet)"
+            # Delta výše popisuje dnešní cenu podkladu, počítá se ale s tou
+            # při vstupu - u zadání daleko od trhu se obě liší i násobně,
+            # takže se vedle sebe ukážou obě
+            if preview.entry_delta is not None and preview.delta is not None:
+                if abs(preview.entry_delta - preview.delta) >= 0.005:
+                    delta_text += f" → při vstupu {fmt(preview.entry_delta, 3)}"
             detail_parts.append(f"delta {delta_text}")
             # Při PT na opci se uvede, ke které úrovni podkladu se strike vybíral
             if preview.target_level is not None:
