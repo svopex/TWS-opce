@@ -314,6 +314,11 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    Nastavení `trading.exit_order_type` se týká jen společného podmíněného
    příkazu; podmíněný příkaz v dvojici je vždy MKT.
 5. **Monitoring** — tabulka ukazuje všechny obchody, jejich ceny a stav.
+   Řadí se do čtyř sekcí: nejdřív obchody **držící pozici** (*Nakoupeno*,
+   *Nakoupeno – výstup aktivní*, *Uzavírá se*), protože jen u nich jsou
+   peníze v trhu, pak ostatní běžící (tedy ty před nákupem), pak dnešní
+   ukončené a nakonec starší ukončené sestupně po dnech. Uvnitř každé sekce
+   platí abeceda podle tickeru a u téhož tickeru jde nahoru novější obchod.
    Sloupec *Ks* ukazuje zadané množství a za lomítkem počet kontraktů právě
    otevřených v trhu: před nákupem `4/0`, po částečném vyplnění tří ze čtyř
    `4/3`, po prodeji runneru `4/2` a po uzavření celé pozice opět `4/0`.

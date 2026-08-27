@@ -1850,6 +1850,38 @@ class TestVicenasobneFlow(ZakladTestu):
         poradi = [f.symbol for f in self.engine.sorted_flows()]
         self.assertEqual(poradi, ["TSLA", "ZM", "MSFT", "AAPL"])
 
+    async def test_nakoupene_obchody_stoji_nad_cekajicimi(self):
+        # Nakoupený obchod má peníze v trhu, proto patří nad ty před nákupem
+        # i tehdy, když je abecedně později
+        pred_nakupem = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        v_pozici = await self.engine.start_flow(
+            FlowRequest(symbol="ZM", entry_price=232.0, profit_target=235.0)
+        )
+        self.ib.fill(v_pozici.entry_trade, 1, 3.00)
+        await self.engine._tick()
+
+        self.assertFalse(v_pozici.state.is_before_entry)
+        self.assertEqual(pred_nakupem.state, FlowState.ARMED)
+        poradi = [f.symbol for f in self.engine.sorted_flows()]
+        self.assertEqual(poradi, ["ZM", "AAPL"])
+
+    async def test_uvnitr_nakoupenych_plati_abeceda(self):
+        # Dělení na sekce nesmí zrušit abecední pořadí uvnitř sekce
+        zm = await self.engine.start_flow(
+            FlowRequest(symbol="ZM", entry_price=232.0, profit_target=235.0)
+        )
+        aapl = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        for flow in (zm, aapl):
+            self.ib.fill(flow.entry_trade, 1, 3.00)
+        await self.engine._tick()
+
+        poradi = [f.symbol for f in self.engine.sorted_flows()]
+        self.assertEqual(poradi, ["AAPL", "ZM"])
+
 
 class TestOcekavanehoVysledku(ZakladTestu):
     """Očekávaný zisk na PT a ztráta na SL."""

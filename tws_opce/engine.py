@@ -246,25 +246,29 @@ class FlowEngine:
 
     def sorted_flows(self) -> list[Flow]:
         """
-        Flow seřazená pro zobrazení v tabulce do tří sekcí:
-        1) běžící obchody, 2) dnešní ukončené, 3) starší ukončené sestupně
-        podle data (nejnovější den nahoře). Uvnitř každé sekce - a u starších
-        uvnitř každého dne - se řadí abecedně podle tickeru, stejný ticker
-        pak od nejnovějšího obchodu.
+        Flow seřazená pro zobrazení v tabulce do čtyř sekcí:
+        1) obchody držící pozici (Nakoupeno, výstup aktivní, Uzavírá se),
+        2) ostatní běžící, tedy ty před nákupem, 3) dnešní ukončené,
+        4) starší ukončené sestupně podle data (nejnovější den nahoře).
+
+        Nakoupené patří nahoru, protože jsou to jediné obchody s penězi
+        v trhu - jejich stav se hlídá nejčastěji. Uvnitř každé sekce - a u
+        starších uvnitř každého dne - se řadí abecedně podle tickeru, stejný
+        ticker pak od nejnovějšího obchodu.
         """
         dnes = datetime.now().date()
 
         def klic(flow: Flow) -> tuple[int, int, str, float]:
             den = flow.created_at.date()
             if flow.state.is_active:
-                sekce = 0
+                sekce = 1 if flow.state.is_before_entry else 0
             elif den == dnes:
-                sekce = 1
-            else:
                 sekce = 2
+            else:
+                sekce = 3
             # Datum se uplatní jen u starších obchodů, jinde je pořadí dané
             # abecedou; záporný ordinál dá sestupné pořadí dnů
-            poradi_dne = -den.toordinal() if sekce == 2 else 0
+            poradi_dne = -den.toordinal() if sekce == 3 else 0
             return (sekce, poradi_dne, flow.symbol, -flow.created_at.timestamp())
 
         return sorted(self.flows.values(), key=klic)
