@@ -38,6 +38,20 @@ REZIMY_NA_OPCI = (REZIM_USD, REZIM_PREMIUM)
 RUNNER_VYPNUTO = "0"
 
 
+def rezimy_urovni(rezim: str) -> tuple[bool, bool]:
+    """
+    Volby režimu úrovní pro založený obchod podle režimu cíle nad tabulkou.
+    Vrací dvojici (na podkladu, v procentech prémie), která platí shodně pro
+    PT i SL - SL se řídí toutéž volbou jako cíl, takže se ve formuláři obě
+    úrovně vrátí ve stejné jednotce:
+
+      cíl v % dráhy k cíli -> obojí na podkladu (cena podkladu)
+      cíl v USD/ks         -> obojí na opci v USD na kontrakt
+      cíl v % prémie       -> obojí na opci v procentech prémie
+    """
+    return rezim == REZIM_PCT, rezim == REZIM_PREMIUM
+
+
 def runner_volby(kratke: bool = False) -> dict[str, str]:
     """
     Nabídka nastavení runneru: vypnuto a násobky původní vzdálenosti cíle.
@@ -506,7 +520,7 @@ class ImportDialog:
         Procento prémie je jen jiný způsob zápisu úrovně na opci, proto se
         engine v obou opčních režimech chová stejně.
         """
-        na_podkladu = self.rezim.value == REZIM_PCT
+        na_podkladu, _ = rezimy_urovni(self.rezim.value)
         return na_podkladu, na_podkladu
 
     def _nastav_runner(self, hodnota: str) -> None:
@@ -947,10 +961,13 @@ class ImportDialog:
                     chyb += 1
                     continue
 
-                # PT dopočítané z procenta prémie si nese i cenu opce, ze
-                # které vyšlo - formulář pak obchod nabídne zase v procentech.
-                # Ručně přepsané PT prémii zahazuje, takže se sem nedostane
-                v_procentech = bool(radek.premie and not pt_on)
+                # Jednotka zadání se přenáší na PT i SL, aby formulář ukázal
+                # obě úrovně souhlasně - buď obojí v procentech prémie, nebo
+                # obojí v USD na kontrakt. Nese se s ní i cena opce, ze které
+                # se procenta počítala; ručně přepsané PT ji zahazuje, takže
+                # takový řádek se do procent nevrací
+                _, v_procentech = rezimy_urovni(self.rezim.value)
+                v_procentech = v_procentech and bool(radek.premie)
                 request = FlowRequest(
                     symbol=radek.pozice.symbol,
                     entry_price=radek.pozice.entry_price,
@@ -963,6 +980,7 @@ class ImportDialog:
                     sl_spread_compensated=sl_spread,
                     sl_to_pt_ratio=pomer,
                     pt_in_premium=v_procentech,
+                    sl_in_premium=v_procentech,
                     premium_base=radek.premie if v_procentech else None,
                     # V dialogu se zadává vždy cíl, SL se dopočítá podle RRR
                     primary_level="pt",

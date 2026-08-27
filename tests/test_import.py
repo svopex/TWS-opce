@@ -12,7 +12,14 @@ from tests.fake_ib import FakeIBService
 from tws_opce import importer
 from tws_opce.config import AppConfig
 from tws_opce.engine import FlowEngine
-from tws_opce.import_dialog import ImportDialog, RadekPozice
+from tws_opce.import_dialog import (
+    REZIM_PCT,
+    REZIM_PREMIUM,
+    REZIM_USD,
+    ImportDialog,
+    RadekPozice,
+    rezimy_urovni,
+)
 from tws_opce.models import Flow, FlowState
 
 
@@ -240,6 +247,22 @@ class TestCilZPremie(unittest.TestCase):
     def test_nekladna_cena_opce_se_odmitne(self):
         with self.assertRaises(ValueError):
             importer.profit_target_from_premium_pct(30.0, 0.0)
+
+
+class TestRezimuUrovni(unittest.TestCase):
+    """
+    Volba cíle nad tabulkou určuje režim PT i SL - obě úrovně mají vyjít
+    ve stejné jednotce, aby se obchod vrátil do formuláře souhlasně.
+    """
+
+    def test_procento_drahy_da_obe_urovne_na_podkladu(self):
+        self.assertEqual(rezimy_urovni(REZIM_PCT), (True, False))
+
+    def test_usd_na_opci_neni_v_procentech(self):
+        self.assertEqual(rezimy_urovni(REZIM_USD), (False, False))
+
+    def test_procento_premie_da_obe_urovne_v_procentech(self):
+        self.assertEqual(rezimy_urovni(REZIM_PREMIUM), (False, True))
 
 
 class TestSkutecnySoubor(unittest.TestCase):

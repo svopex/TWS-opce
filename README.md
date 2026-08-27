@@ -678,6 +678,19 @@ Nad tabulkou se volí režim cíle, společný všem načteným pozicím:
   s obchodem dál, takže se v běžném formuláři vrátí zase v procentech —
   s výjimkou ručně přepsaného PT, které už z prémie nevychází.
 
+Volba cíle určuje **shodně režim PT i SL** — obě úrovně tak vyjdou ve stejné
+jednotce a po kliknutí na řádek v přehledu se ve formuláři ukážou souhlasně:
+
+| Režim cíle v dialogu | PT i SL v běžném formuláři |
+|---|---|
+| *PT na podkladu v % dráhy k cíli* | *na podkladu (cena podkladu)* |
+| *PT na opci v USD/ks* | *na opci (zisk / ztráta v USD/ks)* |
+| *PT na opci v % prémie* | *na opci (% prémie)* |
+
+SL se sice v obou opčních režimech dopočítává z PT podle *RRR* a do tabulky se
+zapisuje v USD/ks, ale jednotka zadání se na něj přenáší z cíle — stejně jako
+v běžném formuláři, kde přepínač *% prémie* platí i pro dopočítanou úroveň.
+
 V obou opčních režimech (USD/ks i % prémie) má smysl zaškrtávátko
 **SL o zaplacený spread dál** — chová se stejně jako v běžném formuláři.
 
