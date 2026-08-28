@@ -67,7 +67,7 @@ Vyžadován je Python 3.10 nebo novější.
 
 | Přepínač | Význam |
 | --- | --- |
-| `-c CESTA`, `--config CESTA` | jiný konfigurační soubor (výchozí `config.yaml`) |
+| `-c CESTA`, `--config CESTA` | jiný konfigurační soubor (výchozí `config.yaml` vedle `main.py`) |
 | `--no-connect` | nepřipojovat se k TWS při startu, spojení se naváže tlačítkem |
 | `--verbose` | podrobné logování včetně komunikace `ib_async` |
 
@@ -78,7 +78,13 @@ V TWS (nebo IB Gateway) je nutné povolit API:
 Číslo v poli **Socket port** musí souhlasit s `connection.port` v `config.yaml`.
 
 Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
-`config.example.yaml`, kde je popsána každá volba.
+`config.example.yaml`, kde je popsána každá volba (není-li šablona po ruce,
+vznikne soubor z výchozích hodnot bez komentářů). Chybí-li v souboru některý
+klíč, platí výchozí hodnota z kódu — a právě ty se v tomto dokumentu označují
+jako „výchozí". Šablona se od nich v několika položkách záměrně liší (port,
+velikost účtu a risk, limit spreadu, `trading.auto_close_minutes_before`,
+`expiration.min_dte`), takže čerstvě založený `config.yaml` je vždy dobré
+projít.
 
 ## Jak aplikace pracuje
 
@@ -88,8 +94,10 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
      (vstup nad trhem = průraz nahoru = CALL, vstup pod trhem = PUT),
    - **strike** odsazený od vstupní ceny na stranu mimo peníze
      (viz [Výběr strike](#výběr-strike)),
-   - **expiraci** podle konfigurace (výchozí je nejbližší),
-   - **SL**, pokud nebyl zadán, v poměru k PT z konfigurace (výchozí 1:1),
+   - **expiraci** podle konfigurace (`expiration.mode`: `nearest` = nejbližší
+     s aspoň `min_dte` dny do expirace, `fixed` = pevné datum `fixed_date`),
+   - **SL**, pokud nebyl zadán, v poměru k PT podle pole *RRR (PT:SL)*
+     (výchozí hodnota pole vychází z `trading.sl_to_pt_ratio`, standardně 1:1),
    - **množství** z velikosti účtu, povoleného rizika a delty opce:
      `riskovaná částka / (|vstup − SL| × |delta| × 100)`. Riskovaná částka
      vychází z velikosti účtu — buď z pevné hodnoty v konfiguraci, nebo
@@ -105,11 +113,12 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    známá není, se směr napoví aspoň z polohy PT nebo SL na podkladu vůči
    vstupu.
 
-   **PT a SL na podkladu, nebo na opci.** Pod polem *Množství* stojí
-   oddělené bloky voleb *SL na podkladu / SL na opci* a *PT na podkladu /
-   PT na opci* (výchozí stav určuje `trading.pt_on_underlying`
-   a `trading.sl_on_underlying`). Volba *na podkladu* znamená cenu podkladu
-   a hlídá
+   **PT a SL na podkladu, nebo na opci.** Pod řádkem s polem *Množství* stojí
+   oddělené bloky voleb *SL na podkladu (cena podkladu) / SL na opci (ztráta
+   v USD/ks) / SL na opci (% prémie)* a *PT na podkladu (cena podkladu) /
+   PT na opci (zisk v USD/ks) / PT na opci (% prémie)* (výchozí stav určuje
+   `trading.pt_on_underlying` a `trading.sl_on_underlying`). Volba
+   *na podkladu* znamená cenu podkladu a hlídá
    ji podmíněný příkaz, jak je popsáno výše. Volba *na opci* je **zisk
    (PT), resp. ztráta (SL) v USD na jeden kontrakt** — 10 znamená posun
    ceny opce o 0,10 (nákup 3,00 → PT limit 3,10, SL stop 2,90). PT na opci
@@ -128,7 +137,7 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    na kontrakt a obchod, engine i uložený stav dál pracují s USD úplně stejně
    jako u zápisu *na opci [USD/ks]*. Základem přepočtu je **odhadovaná nákupní
    cena** opce, tedy cena v okamžiku, kdy podklad dosáhne vstupní úrovně;
-   náhled ji uvádí jako `základ procent: prémie ≈ 317 USD/ks`. Celý přepočet
+   náhled ji uvádí jako `základ procent: prémie ≈ 317.00 USD/ks`. Celý přepočet
    drží jednu jedinou prémii — do USD i zpět do procent — takže si PT a SL
    navzájem odpovídají, i když příprava nakonec vybere jinak drahý strike.
    Protože se procenta převádějí z ceny opce, kterou aplikace teprve musí
@@ -156,7 +165,8 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    požadovaný zisk a najde úroveň podkladu, kde opce této ceny dosáhne.
    Náhled ji ukazuje jako `cíl na podkladu ≈`; k výběru strike slouží jen
    v režimu `strike.mode: target`. Cena opce pro model se bere
-   ze středu BID/ASK, bez kotací z poslední (last) a nakonec ze závěrečné
+   ze středu BID/ASK, při jednostranné kotaci z ASK (resp. BID), bez kotací
+   z poslední (last) a nakonec ze závěrečné
    (close) ceny — TWS obvykle pošle závěrečnou cenu dřív než kotace, proto
    se po ní ještě `engine.quotes_grace_sec` počká na BID/ASK. Teprve bez
    jakékoliv ceny se použije lineární odhad přes deltu, bez delty vstupní
@@ -176,7 +186,8 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    i sloupec *Ztráta na SL*. Takový stop ale pozici prakticky nechrání —
    spustí se až u téměř bezcenné opce — proto na SL převyšující prémii
    upozorní náhled formuláře (z odhadované ceny opce při vstupu) a po nákupu
-   znovu průběh (ze skutečné nákupní ceny), včetně skutečného stropu ztráty. Přepnutí režimu pole vyprázdní,
+   znovu průběh (ze skutečné nákupní ceny), včetně skutečného stropu ztráty.
+   Přepnutí režimu vyprázdní přepnuté pole i dopočítávanou úroveň,
    protože hodnota by v novém režimu znamenala něco jiného.
 
    **SL o zaplacený spread dál.** Zaškrtávátko odsazené pod volbou režimu
@@ -190,32 +201,34 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    zadaná hodnota odpovídá potřebnému pohybu ceny opce: stop klesne
    na 3,55. Ztráta na kontrakt o tentýž spread naroste (30 → 40 USD),
    proto s ní počítá i doporučené množství — náhled používá spread
-   z aktuální kotace a uvádí jej jako `+ spread ≈ 10,00 USD`, skutečnou
+   z aktuální kotace a uvádí jej jako `+ spread ≈ 10.00 USD`, skutečnou
    hodnotu určí až nákup a zapíše ji do průběhu. Než k němu dojde, ukazují
    sloupce *SL* a *Ztráta na SL* v přehledu odhad **včetně** spreadu
-   z aktuální kotace (`≈ -20,00 USD`, resp. odpovídající ztráta), aby se
+   z aktuální kotace (`≈ -20.00 USD`, resp. odpovídající ztráta), aby se
    hodnota po nákupu neměnila skokem; jakmile je spread znám, značka
    přibližné rovnosti zmizí. Připočtený spread nese
    obchod v poli `sl_spread_usd`, takže *Načíst* vrátí do formuláře
    původně zadanou hodnotu a kompenzace se při dalším zadání neřetězí.
    Break even se nekompenzuje — jeho stop má stát na zaplacené ceně;
    tlačítko *Počáteční SL* se naopak vrací na úroveň včetně spreadu.
-   Bez známého BIDu (chybí kotace) se kompenzace neuplatní a průběh
+   Bez známého BIDu (chybí kotace), nebo při plnění na BIDu či pod ním
+   (zaplacený spread je nula), se kompenzace neuplatní a průběh
    to zaznamená. PT se nekompenzuje: dráha k němu je o spread naopak
    delší, protože limitní prodej se vyplní, až na jeho cenu dosáhne BID.
 
    **Která úroveň je prvotní.** Oranžová dvojice voleb *Zadává se SL, PT se
-   dopočítá podle poměru SL:PT* / *Zadává se PT, SL se dopočítá podle
-   poměru SL:PT* v prvním bloku pod polem *Množství* (výchozí stav
+   dopočítá podle RRR* / *Zadává se PT, SL se dopočítá podle RRR* v prvním
+   bloku přepínačů pod řádkem s polem *Množství* (výchozí stav
    `trading.primary_level`, standardně `sl`)
    určuje, která z úrovní se zadává a která se dopočítává podle poměru
-   `sl_to_pt_ratio`. Zadávaná úroveň stojí vždy vedle vstupu, dopočítávaná
+   z pole *RRR (PT:SL)*. Zadávaná úroveň stojí vždy vedle vstupu, dopočítávaná
    v dalším řádku – přepnutím si pole PT a SL vymění místo. Prvotní SL =
    povinný je SL a PT se dopočte (na podkladu zrcadlově
    `vstup ± |SL − vstup| / poměr`, na opci `SL / poměr`, ve smíšeném režimu
    přes cenu opce jako výše), prvotní PT = povinný je PT a dopočte se SL.
    Bez vstupní ceny dopočet neproběhne – úrovně se zrcadlí kolem vstupu.
-   Poměr se bere z pole **RRR (PT:SL)** pod přepínači režimů. Zadává se jako
+   Poměr se bere z pole **RRR (PT:SL)** vedle pole *Množství*, v řádku
+   s tlačítkem *Přepočítat* (tedy nad přepínači). Zadává se jako
    poměr zisku ku riziku — *RRR 2* znamená, že PT je dvakrát dál než SL —
    tedy obráceně než konfigurační `sl_to_pt_ratio`, ze kterého vychází
    výchozí hodnota pole (`RRR = 1 / sl_to_pt_ratio`). Prázdné či nekladné
@@ -238,9 +251,11 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    kotace, delta) a vyplněná pole nechá být — doplní jen ta prázdná.
    **Přepočítat** navíc přepíše dopočítávanou úroveň (SL, nebo PT podle
    volby prvotní úrovně) i množství vypočtenými hodnotami; zadaná
-   hodnota se přitom zahodí a spočítá znovu podle poměru z konfigurace.
-   Ručně zadané hodnoty tedy zmizí pouze na výslovné kliknutí, ne samovolně
-   při psaní.
+   hodnota se přitom zahodí a spočítá znovu podle RRR z formuláře (při
+   prázdném poli z konfigurace). Stejně jako *Přepočítat* se chová
+   i opuštění pole *RRR* — změna poměru se rovnou promítne do dopočítávané
+   úrovně a množství. Ručně zadané hodnoty tedy zmizí pouze na výslovné
+   kliknutí nebo po změně RRR, ne samovolně při psaní.
    V náhledu je vždy vidět, co by výpočet doporučil. Dokud načítání dat
    z TWS běží, ukazuje formulář pulzující text „Načítám data z TWS…".
 
@@ -256,27 +271,43 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    ještě neukládaly, obě volby nechávají tak, jak právě jsou.
 
    Přechod na ticker bez obchodu pole naopak vyprázdní, aby se do nového
-   zadání nepřenesly ceny toho předchozího; limit spreadu se vrátí na hodnotu
-   z konfigurace. Samotné opuštění pole hodnoty nikdy nepřepisuje, mění je
-   jen změna tickeru.
+   zadání nepřenesly ceny toho předchozího; limit spreadu, přepínače režimů
+   PT a SL, kompenzace spreadu i volba prvotní úrovně se vrátí na hodnoty
+   z konfigurace a odznak směru zhasne. Samotné opuštění pole hodnoty
+   nepřepisuje (s výjimkou pole *RRR*, viz výše), mění je jen změna tickeru.
 
-2. **Nákup** — příkaz se do trhu zadá jen tehdy, pokud cena podkladu vstupní
+2. **Nákup** — obchod má smysl jen tehdy, pokud cena podkladu vstupní
    úroveň ještě nepřekonala: u CALL musí být pod vstupem, u PUT nad ním.
-   Jinak obchod ujel a aplikace jej ukončí ve stavu *Vstup propásnut*, aniž by
-   cokoliv zadala — platí to i pro opětovné zadání po zablokování spreadem.
+   Je-li vstup propásnutý už při odeslání formuláře, aplikace zadání rovnou
+   odmítne chybou a obchod nevznikne. Překoná-li cena vstup později — než se
+   příkaz vrátí do trhu po blokování spreadem, než dorazí kotace, při
+   přezadání po změně strike nebo při obnově po restartu — obchod skončí
+   ve stavu *Vstup propásnut*, aniž by cokoliv zadal.
 
    Do TWS se zadá příkaz na opci s cenovou podmínkou na podkladu.
    Dokud se nevyplní, aplikace průběžně upravuje jeho limitní cenu podle
-   aktuálního ASK (resp. MID) a hlídá spread.
-3. **Spread** — překročí-li nastavené procento, nevyplněný příkaz se odstraní
-   z trhu; jakmile se spread vrátí do limitu, příkaz se zadá znovu. Aby se
+   aktuálního ASK (resp. MID) — lze vypnout přes `trading.relimit_enabled`,
+   práh změny udává `trading.relimit_min_change_pct` — a hlídá spread.
+   Není-li k dispozici ani cena podkladu, obchod čeká ve stavu *Čeká na
+   kotace opce* stejně jako bez kotací opce. Zruší-li obchodník nákupní
+   příkaz ručně v TWS, obchod skončí ve stavu *Zrušeno*.
+3. **Spread** — překročí-li nastavené procento (`trading.max_spread_pct`,
+   ve formuláři pole *Max. spread*), nevyplněný příkaz se odstraní
+   z trhu; jakmile se spread vrátí do limitu, příkaz se zadá znovu (obojí
+   lze vypnout přes `trading.cancel_on_spread_breach`, resp.
+   `trading.rearm_on_spread_ok`). Aby se
    příkaz při kolísání kolem limitu nezadával a nerušil stále dokola, musí
    spread klesnout s rezervou pod limit a od odstranění musí uplynout
-   nastavená prodleva (`rearm_spread_margin_pct`, `rearm_delay_sec`).
+   nastavená prodleva (`trading.rearm_spread_margin_pct`,
+   `trading.rearm_delay_sec`). Obchod založený při spreadu nad limitem
+   začíná rovnou ve stavu *Blokováno spreadem*; totéž platí, přijdou-li
+   kotace ze stavu *Čeká na kotace opce* s příliš širokým spreadem.
 4. **Zajištění** — po nákupu se zadá prodejní příkaz se dvěma cenovými
    podmínkami na podklad spojenými logickým OR: dosažení PT nebo SL.
    S aktivním runnerem vzniknou příkazy dva — hlavní část a runner, každý
-   s vlastním cílem a společným SL.
+   s vlastním cílem; SL runner při zapnutí přebírá od zbytku pozice a dál
+   se přepíná samostatně (u úrovní na opci má každá část svou dvojici
+   příkazů, viz níže).
    Vyplnil-li se nákup jen částečně, aplikace nejprve zruší jeho nevyplněný
    zbytek a zajistí skutečně nakoupené množství — TWS totiž nepovolí mít
    na jednom opčním kontraktu současně nákupní i prodejní příkaz.
@@ -310,9 +341,12 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    vyplnění (například ručním zrušením v TWS), aplikace na to upozorní
    v průběhu, ale nenahrazuje jej naslepo — TWS ruší druhý příkaz i ve
    chvíli, kdy se první teprve vyplňuje, a nový příkaz by opci prodal
-   podruhé. Zmizí-li oba, obchod skončí ve stavu *Chyba* jako dosud.
+   podruhé. Zmizí-li oba příkazy hlavní části, obchod skončí ve stavu
+   *Chyba*; zmizí-li oba příkazy runneru, jeho kusy převezme hlavní prodejní
+   příkaz a *Chyba* nastane, jen když hlavní příkaz upravit nelze.
    Nastavení `trading.exit_order_type` se týká jen společného podmíněného
-   příkazu; podmíněný příkaz v dvojici je vždy MKT.
+   příkazu hlavní části; podmíněný příkaz v dvojici i všechny příkazy
+   runneru jsou vždy MKT.
 5. **Monitoring** — tabulka ukazuje všechny obchody, jejich ceny a stav.
    Řadí se do čtyř sekcí: nejdřív obchody **držící pozici** (*Nakoupeno*,
    *Nakoupeno – výstup aktivní*, *Uzavírá se*), protože jen u nich jsou
@@ -328,13 +362,15 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    se vždy z původního zadání, takže opakované klikání násobky neřetězí,
    a tlačítko odpovídající aktuálnímu cíli je barevně zvýrazněné. U nakoupené
    pozice se rovnou upraví podmínka zajišťovacího příkazu; u obchodu před
-   nákupem záleží na `trading.pt_change_strike` — buď zůstane původní strike,
-   nebo se podle nového cíle vybere jiný a příkaz se přezadá. Přepočet se
+   nákupem záleží na `trading.pt_change_strike` — `keep` (výchozí) ponechá
+   původní strike, `recalculate` podle nového cíle vybere jiný a příkaz
+   přezadá (nenajde-li se obchodovatelný strike, zůstane původní). Přepočet se
    uplatní jen v režimu `strike.mode: target`, kde strike na cíli skutečně
    závisí; při výběru od vstupní ceny kontrakt zůstává. Ve formuláři se
    zadává vždy základní cíl 1:1.
 
-   U nakoupené pozice jsou před tlačítky cíle ještě tlačítka **Počáteční SL**
+   U pozice ve stavu *Nakoupeno – výstup aktivní* jsou před tlačítky cíle
+   ještě tlačítka **Počáteční SL**
    a **SL BE** — první vrací stop na hodnotu ze zadání, druhé jej posouvá
    na vstupní cenu (break even). Aktivní volba je zvýrazněná stejně jako
    násobek cíle. Před nákupem se tlačítka nenabízejí — SL tam řídí zadání
@@ -348,7 +384,8 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    do pole SL ve formuláři nepřenáší — tam by znamenala „nezadáno“ a nešlo
    by s ní přepočítat ani založit obchod; skutečnou úroveň ukazuje přehled.
    Ve sloupcích *PT* a *SL* se taková úroveň ukazuje jako částka v USD
-   a po nákupu i s cenou opce, na kterou příkaz míří, např. `3,10 (+10,00 USD)`.
+   a po nákupu i s cenou opce, na kterou příkaz míří, např. `3.10 (+10.00 USD)`;
+   stop na break even se vypisuje jako `3.00 (BE)`.
 
    U obchodů, které drží více kontraktů, než kolik jich zabírá runner
    (`trading.runner_quantity`, výchozí 1), je vedle tlačítek cíle i sekce
@@ -374,22 +411,29 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
    P/L oceňuje otevřené kusy BIDem: prodává se tržním příkazem, takže BID
    odpovídá ceně, za kterou lze pozici právě teď skutečně prodat. Hlavní
    hodnota je po odečtení provize zaplacené za nákup těchto kusů, v závorce
-   za ní stojí tatáž částka bez ní — `+118.05 (+120.00)`; podrobněji
+   za ní stojí tatáž částka bez ní — `118.05 (120.00)`; podrobněji
    viz [Provize](#provize).
 
-   U nakoupené pozice je na konci sekce Cíl tlačítko **Uzavřít pozici** —
+   U pozice ve stavu *Nakoupeno – výstup aktivní* je na konci sekce Cíl
+   tlačítko **Uzavřít pozici** —
    zruší zajišťovací příkaz a prodá hlavní část trhem (bez runneru celou
    pozici); případný runner běží dál se svým cílem. Obdobně **Uzavřít
    runner** na konci sekce Runner prodá trhem jen runner a hlavní část
    nechá být. Tržní prodej se v obou případech zadává až po potvrzení
    zrušení podmíněného příkazu, aby se neprodalo víc kusů, než pozice
-   drží. Prodej všeho najednou zůstává v dialogu tlačítka *Zrušit*.
+   drží; prodá-li se část mezitím na PT či SL, jde trhem jen zbytek.
+   Nevyplní-li se tržní prodej do 30 s (TWS jej občas nechá viset ve stavu
+   PreSubmitted), aplikace jej zruší a zadá znovu, nejvýše pětkrát; pak
+   poslední příkaz ponechá v trhu a průběh vyzve ke kontrole pozice v TWS.
+   Prodej všeho najednou zůstává v dialogu tlačítka *Zrušit*.
 
    Tlačítka se zobrazují jen tehdy, když má jejich akce smysl, a mizí
    s částí pozice, které se týkají: po prodeji hlavní části zmizí sekce
    Cíl (její cíl už není co řídit — spolu s ní zmizí i *Zrušit runner*,
-   protože sloučení už není kam provést), po prodeji runneru jeho sekce,
-   a během uzavírání trhem obojí, aby do rozjetého prodeje nešlo zasahovat.
+   protože sloučení už není kam provést), po prodeji runneru jeho sekce.
+   Po *Uzavřít pozici* zmizí sekce Cíl, běžící runner ale jde řídit dál;
+   ve stavu *Uzavírá se* (uzavření celé pozice) zmizí obojí, aby do
+   rozjetého prodeje nešlo zasahovat.
    Stejná pravidla vynucuje i aplikace sama, takže se změna cíle nemůže
    omylem zapsat do tržního příkazu.
 
@@ -428,8 +472,12 @@ Při prvním spuštění vznikne `config.yaml` jako kopie komentované šablony
 
 Aplikace zvládá více obchodů současně; na jednom tickeru může běžet
 zároveň jeden long (CALL) a jeden short (PUT) obchod. Směr zadání určuje
-poloha PT vůči vstupu a nové zadání nahrazuje jen čekající obchod
-stejného směru.
+poloha PT na podkladu vůči vstupu (je-li PT na opci, poloha SL; jsou-li obě
+úrovně na opci, poloha vstupu vůči aktuální ceně podkladu). Nové zadání
+nahrazuje jen **čekající** obchod stejného směru — runner nastavený na
+nahrazeném obchodu se přenese. Běží-li na tickeru obchod stejného směru
+s otevřenou (nebo právě uzavíranou) pozicí, aplikace zadání odmítne
+a obchod je třeba nejprve zrušit v monitoringu.
 
 ### Výběr strike
 
@@ -465,9 +513,10 @@ nákupem strike nemění; `trading.pt_change_strike: recalculate` se uplatní
 jen v režimu `target`.
 
 Není-li vybraný strike pro zvolenou expiraci v TWS obchodovatelný, zkusí se
-sousední. Rastr bývá rovnoměrný, takže oba sousedé leží od cíle stejně
-daleko — přednost pak dostane ten mimo peníze, aby režim dodržel, co slibuje.
-Náhradu aplikace hlásí varováním v náhledu.
+sousední. Rastr bývá rovnoměrný, takže oba sousedé leží od hledané úrovně
+stejně daleko — v režimech `otm_offset` a `atm` pak dostane přednost ten
+mimo peníze, aby režim dodržel, co slibuje; v režimu `target` rozhoduje jen
+vzdálenost od cíle. Náhradu aplikace hlásí varováním v náhledu.
 
 **Kontrola delty.** Meze `strike.delta_warn_min` a `strike.delta_warn_max`
 (výchozí 0,25 a 0,60) nejsou kritériem výběru, jen kontrolou: vypadne-li
@@ -519,11 +568,14 @@ zadá i bez kotací.
 
 ### Automatické uzavření před koncem obchodování
 
-Patnáct minut před zavřením burzy (volitelné přes
-`trading.auto_close_minutes_before`) aplikace sama ukončí všechny běžící
+Několik minut před zavřením burzy (`trading.auto_close_minutes_before` —
+v šabloně 5 minut, chybí-li klíč, 15) aplikace sama ukončí všechny běžící
 obchody: čekající obchody zruší a odstraní jejich nákupní příkazy z trhu,
-otevřené pozice prodá tržním příkazem. Do hlavičky stránky se přes den
-promítá odpočet do začátku uzavírání.
+otevřené pozice prodá tržním příkazem. Uzavírací okno trvá až do zavření
+burzy, takže obchod založený uvnitř okna se zruší, resp. uzavře hned;
+o víkendu se nic neděje. Do hlavičky stránky se přes den promítá odpočet
+do začátku uzavírání. Takto uzavřená pozice má v přehledu výsledků důvod
+výstupu „ručně".
 
 Čas se počítá v časové zóně burzy (`trading.exchange_timezone`, výchozí
 `America/New_York`), takže posuny letního a zimního času vůči místnímu času
@@ -568,16 +620,17 @@ neposílá a trvale svítící varování by ztratilo význam.
 
 | Stav | Význam |
 | --- | --- |
+| Připravuje se | obchod se právě zakládá, příkaz ještě není v trhu (přechodný stav) |
 | Před nákupem | příkaz je v trhu a čeká na cenovou podmínku |
 | Blokováno spreadem | spread je nad limitem, příkaz není v trhu |
-| Čeká na kotace opce | z TWS nedorazily BID/ASK, limitní příkaz zatím nelze zadat |
+| Čeká na kotace opce | z TWS nedorazily BID/ASK (nebo cena podkladu), limitní příkaz zatím nelze zadat |
 | Nakoupeno | opce koupena, zadává se prodejní příkaz |
 | Nakoupeno – výstup aktivní | pozice je zajištěna příkazem pro PT i SL |
-| Uzavírá se | pozice se na pokyn obchodníka uzavírá tržním příkazem |
-| Uzavřeno | pozice uzavřena na PT nebo SL |
+| Uzavírá se | pozice se na pokyn obchodníka (nebo automaticky před koncem seance) uzavírá tržním příkazem |
+| Uzavřeno | pozice uzavřena — na PT, SL, trhem na pokyn obchodníka nebo automaticky před koncem seance |
 | Vstup propásnut | cena překonala vstupní úroveň, příkaz se nezadal |
-| Zrušeno | obchod ukončen uživatelem |
-| Chyba | zásah zvenčí, například ruční zrušení příkazu v TWS |
+| Zrušeno | obchod ukončen uživatelem, nebo nákupní příkaz zrušen ručně v TWS |
+| Chyba | zásah zvenčí (například ruční zrušení prodejního příkazu v TWS), selhání obnovy po restartu nebo chyba monitoringu |
 
 ### Zrušení obchodu, který drží pozici
 
@@ -594,12 +647,15 @@ U obchodu, který ještě nenakoupil, se nic nedotazuje — zruší se rovnou.
 
 ### Pozice bez dozoru
 
-Aplikace průběžně kontroluje opční pozice na účtu a na ty, ke kterým nemá
-obchod ani zajišťovací příkaz, upozorní červeným pruhem v záhlaví a hláškou
+Aplikace průběžně kontroluje opční pozice na účtu a na ty, ke kterým nevede
+žádný běžící obchod (zajišťovací příkazy v TWS se přitom neposuzují), upozorní
+červeným pruhem v záhlaví a hláškou
 v průběhu. Běží-li přitom obchod na stejném tickeru, upozornění výslovně uvede,
 že se týká **jiného kontraktu** — jinak snadno vznikne dojem, že je pozice
-pod dozorem, přestože obchod míří na jiný strike nebo expiraci. Sama k nim nic nezadává — nezná jejich PT ani SL. Interval kontroly
-je `engine.unmanaged_check_sec` (výchozí 30 s, `0` kontrolu vypne).
+pod dozorem, přestože obchod míří na jiný strike nebo expiraci. Sama k nim
+nic nezadává — nezná jejich PT ani SL. Interval kontroly
+je `engine.unmanaged_check_sec` (výchozí 30 s); `0` vypne průběžnou kontrolu,
+při startu a po každém připojení k TWS však proběhne vždy.
 
 ## Přehled výsledků
 
@@ -665,7 +721,10 @@ než jaká byla skutečnost.
   (vlevo) a cílem (vpravo); vychází z otevřeného výsledku proti očekávanému
   zisku na PT a ztrátě na SL, takže funguje ve všech režimech zadání úrovní.
 * **Uzavřené obchody** — od nejnovějšího, s dosaženými cenami, dobou držení
-  a důvodem výstupu (PT, SL, ručně, propásnuto, zrušeno). Pruh *Porovnání*
+  a důvodem výstupu (PT, SL, PT+SL při prodeji na obou příkazech dvojice,
+  PT/SL nelze-li rozlišit, ručně — včetně automatického uzavření před koncem
+  seance —, propásnuto, zrušeno, chyba). V hlavičce panelu stojí nejlepší
+  a nejhorší obchod dne. Pruh *Porovnání*
   vynáší výsledek proti největšímu výsledku dne — ztráta doleva, zisk doprava.
 * **Průběh dne** — kumulovaný realizovaný výsledek po provizích, bod za každý
   uzavřený obchod.
@@ -707,7 +766,7 @@ Nad tabulkou se volí režim cíle, společný všem načteným pozicím:
   nejprve připraví zadání s cílem ze souboru na podkladu, z vybraného kontraktu
   vezme odhad ceny a teprve z něj spočítá PT v USD — proto sahá do TWS dvakrát
   a příprava je o něco pomalejší. Použitá prémie se ukáže ve sloupci *Stav*
-  (`prémie ≈ 300 USD`). Do pole *PT* se zapíše výsledek v USD/ks, takže se dá
+  (`Připraveno · prémie ≈ 300.00 USD`). Do pole *PT* se zapíše výsledek v USD/ks, takže se dá
   ručně doladit; dál obchod běží jako běžné zadání na opci. Použitá prémie jde
   s obchodem dál, takže se v běžném formuláři vrátí zase v procentech —
   s výjimkou ručně přepsaného PT, které už z prémie nevychází.
@@ -728,7 +787,8 @@ uložil v jiné jednotce než cíl.
 
 Do tabulky se PT i SL zapisují vždy v jednotce, se kterou počítá aplikace —
 v režimu na podkladu je to cena podkladu, v obou opčních režimech **USD/ks**.
-Jednotku nese hlavička sloupce (*PT [USD/ks]*, *SL [USD/ks]*). Procento prémie
+Jednotku nese hlavička sloupce (*PT [podklad]*, resp. *PT [USD/ks]*, obdobně
+u SL). Procento prémie
 je jen jednotka zadání: v tabulce je už přepočtené na USD/ks, ale obchod si ji
 pamatuje, takže tytéž úrovně ukáže běžný formulář zase v procentech — a tedy
 jiným číslem než dialog.
@@ -742,10 +802,11 @@ V obou opčních režimech (USD/ks i % prémie) má smysl zaškrtávátko
 **SL o zaplacený spread dál** — chová se stejně jako v běžném formuláři.
 
 **Runner** se nastavuje u každé pozice zvlášť — comboboxem ve stejnojmenném
-sloupci tabulky (*Bez* / *1×* … *3×*). Sada tlačítek *Nepoužít runner* / *1×* …
-*3×* nad tabulkou slouží jako **výchozí hodnota**: přepne volbu u všech dosud
-nezadaných řádků naráz, takže stačí nastavit ji globálně a jednotlivé pozice
-pak jen doladit. Výchozí stav je *Nepoužít runner*.
+sloupci tabulky (*Bez* / *1×* / *1,5×* / *2×* / *2,5×* / *3×*). Sada tlačítek
+*Nepoužít runner* / *1×* … *3×* nad tabulkou slouží jako **výchozí hodnota**:
+přepne volbu u všech nezamčených řádků naráz (tedy i u řádků, jejichž obchod
+teprve čeká před nákupem nebo už skončil), takže stačí nastavit ji globálně
+a jednotlivé pozice pak jen doladit. Výchozí stav je *Nepoužít runner*.
 
 Zvolený násobek zapne u založeného obchodu runner (počet kusů podle
 `trading.runner_quantity`) s cílem na tomto násobku původní vzdálenosti PT od
@@ -757,8 +818,10 @@ založí a důvod se objeví ve sloupci *Stav*.
 
 Vedle režimu se zadává **Max. spread [%]** a **RRR (PT:SL)** pro dopočet SL —
 *RRR 2* dá SL na polovině vzdálenosti PT. Obojí vychází z konfigurace. Tlačítkem
-**Přepočítat** se PT, SL i množství u všech dosud nezadaných pozic spočítají
-znovu; tlačítko ↻ v řádku přepočte jedinou pozici a **ponechá** v ní ručně
+**Přepočítat** se PT, SL i množství u všech nezamčených pozic spočítají
+znovu — i u těch, jejichž obchod ještě čeká před nákupem (jejich sloupec
+*Stav* pak ukazuje výsledek přípravy, dokud se řádek znovu nezadá);
+tlačítko ↻ v řádku přepočte jedinou pozici a **ponechá** v ní ručně
 upravené PT. Množství se určuje stejně jako v běžném formuláři — z riskované
 částky, delty opce při vstupu a vzdálenosti ke SL, resp. přímo ze ztráty
 na kontrakt.
@@ -778,8 +841,9 @@ způsobem jako ruční zadání formulářem — včetně všech kontrol. Chyba 
 ostatní nezastaví, zapíše se do jejího sloupce *Stav*. Po dobu zakládání je
 tlačítko zakázané, takže druhý stisk nespustí souběžnou dávku a tytéž pozice
 neodejdou do trhu dvakrát; zadávat nelze ani během probíhajícího přepočtu. Bez
-spojení s TWS se pozice načtou a PT vyplní (je to čistý výpočet ze zadání),
-SL ani množství se ale dopočítat nedají.
+spojení s TWS se pozice načtou a PT vyplní (je to čistý výpočet ze zadání) —
+s výjimkou režimu *% prémie*, kde PT potřebuje odhad ceny opce z TWS; SL ani
+množství se bez spojení dopočítat nedají.
 
 ### Opakované zadání téže pozice
 
@@ -791,7 +855,7 @@ pravidlo jako ve formuláři zadání:
 
 | Stav založeného obchodu | Řádek |
 | --- | --- |
-| Připravuje se, Před nákupem, Blokováno spreadem, Čeká na kotace | lze zadat znovu — engine původní obchod zruší, odstraní z přehledu a nahradí novým (nastavení runneru se přenese) |
+| Připravuje se, Před nákupem, Blokováno spreadem, Čeká na kotace opce | lze zadat znovu — engine původní obchod zruší, odstraní z přehledu a nahradí novým (nastavení runneru se přenese) |
 | Nakoupeno, Nakoupeno – výstup aktivní, Uzavírá se | **zamčeno** — obchod drží pozici, nejprve jej zrušte v monitoringu |
 | Uzavřeno, Zrušeno, Vstup propásnut, Chyba | lze zadat znovu — vznikne nový obchod, ten původní zůstává v přehledu |
 | smazán z monitoringu | lze zadat znovu |
@@ -802,9 +866,11 @@ kvůli tomu není potřeba načítat znovu.
 
 Každé otevření formuláře navíc **zaškrtne všechny řádky, které lze zadat**, takže
 se dá celý soubor poslat do trhu znovu jedním tlačítkem. Obnoví se tím i zaškrtnutí
-sundané dřívějším zadáním nebo propásnutým vstupem; zamčený řádek zůstává
-odškrtnutý. U propásnutého vstupu zadání odmítne až engine a důvod zapíše
-do sloupce *Stav* — obchod na opačnou stranu tedy nevznikne.
+sundané dřívějším zadáním; zamčený řádek a řádek s propásnutým vstupem (nebo
+bez platné přípravy) zůstávají odškrtnuté, dokud se hodnoty nevyplní ručně
+nebo přepočet neprojde. Kdyby se přesto takový řádek poslal do trhu, zadání
+odmítne ještě engine a důvod zapíše do sloupce *Stav* — obchod na opačnou
+stranu tedy nevznikne.
 
 ## Velikost účtu
 
@@ -818,16 +884,28 @@ Riskovaná částka se počítá z velikosti účtu, kterou lze zadat dvěma zp�
 Při `0` odpovídá riziko skutečnému stavu účtu včetně otevřených pozic; hodnota
 se načítá po připojení a dál se obnovuje v intervalu `engine.account_refresh_sec`
 (výchozí 60 s). Dokud ji TWS nepošle, aplikace na to upozorní ve formuláři
-a množství nedoporučí. V panelu *Konfigurace* je vždy vidět, odkud hodnota
-pochází — `(config)`, nebo `(z TWS)`.
+a doporučené množství spadne na minimum `trading.min_quantity`. V panelu
+*Konfigurace* je vždy vidět, odkud hodnota pochází — `(config)`, `(z TWS)`,
+nebo že se na hodnotu z TWS teprve čeká.
 
 ## Konfigurace
 
 Vše podstatné je v `config.yaml` (podrobné komentáře u každé položky):
-spojení s TWS, velikost účtu a risk, typ nákupního příkazu
-(`LMT_ASK` / `MKT` / `LMT_MID`), typ prodejního příkazu, limit spreadu,
-poměr SL:PT, výchozí režim PT a SL (na podkladu / na opci), výběr expirace
-a výběr strike.
+
+* `connection` — spojení s TWS (adresa, port, `client_id`, účet, typ tržních
+  dat `market_data_type`, automatické znovupřipojení `auto_reconnect`),
+* `account` — velikost účtu a riskované procento `risk_pct`,
+* `trading` — typ nákupního příkazu (`LMT_ASK` / `MKT` / `LMT_MID`) a jeho
+  průběžný přepočet, typ prodejního příkazu, limit spreadu a jeho
+  hlídání, poměr SL:PT, výchozí režimy PT a SL, prvotní úroveň, kompenzace
+  spreadu, meze množství, runner, chování strike při posunu cíle, doba
+  platnosti příkazů a automatické uzavírání před koncem seance,
+* `expiration` a `strike` — výběr expirace a strike,
+* `engine` — časování monitorovací smyčky, čekání na tržní data, kontrola
+  pozic bez dozoru a obnova velikosti účtu,
+* `state` — ukládání stavu obchodů,
+* `ui` — adresa a port rozhraní, tempo překreslování, měření odezvy, tmavý
+  vzhled a délka provozního logu.
 
 ## Testy
 
@@ -835,21 +913,26 @@ a výběr strike.
 python -m unittest discover -s . -p "test_*.py"
 ```
 
-Testy běží proti náhradě TWS (`tests/fake_ib.py`) — pokrývají výpočty,
-čtení tržních dat i celý průběh obchodu včetně příkazů, jejich podmínek,
-runneru, režimů PT/SL na opci (`tests/test_rezimy.py`), načítání pozic ze
+Testy běží proti náhradě TWS (`tests/fake_ib.py`, společný základ
+v `tests/zaklad.py`) — pokrývají výpočty (`tests/test_calc.py`),
+čtení tržních dat (`tests/test_ib_service.py`) i celý průběh obchodu včetně
+příkazů, jejich podmínek a runneru (`tests/test_engine.py`), režimy PT/SL
+na opci (`tests/test_rezimy.py`), načítání pozic ze
 souboru (`tests/test_import.py`), souhrn obchodního dne
-(`tests/test_report.py`) a obnovy po restartu. Spojení s TWS není
-potřeba.
+(`tests/test_report.py`) a obnovu po restartu (`tests/test_obnova.py`).
+Spojení s TWS není potřeba. Jeden test se přeskočí, není-li v kořeni
+repozitáře vzorový soubor se zadáním dne `2026-08-25.yaml`.
 
 ## Struktura
 
 ```
 run.sh, run.bat          spuštění na macOS/Linuxu, resp. Windows
 main.py                  spuštění aplikace
+requirements.txt         závislosti (ib_async, nicegui, PyYAML)
 config.example.yaml      komentovaná šablona konfigurace
+obchodovani-opci-tws.png snímek rozhraní pro tento dokument
 tws_opce/
-  config.py              načtení a validace konfigurace
+  config.py              načtení, validace a založení konfigurace ze šablony
   calc.py                výpočty (typ opce, SL, spread, množství, limity)
   models.py              model obchodu a jeho stavy
   ib_service.py          obálka nad ib_async (kontrakty, data, příkazy)
@@ -861,8 +944,11 @@ tws_opce/
   report_dialog.py       popup s přehledem výsledků na celou obrazovku
   ui.py                  webové rozhraní
   static/styles.css      styly
-tests/                   testy
+tests/                   testy (fake_ib.py = náhrada TWS, zaklad.py = společný základ)
 ```
+
+Za běhu vznikají (a ve verzování jsou ignorované) `config.yaml`, `state.json`
+a adresář `.nicegui/`, kde si rozhraní pamatuje volbu tmavého vzhledu.
 
 ## Stav obchodů a restart
 
@@ -877,11 +963,12 @@ v souboru:
 | --- | --- |
 | pozice a k ní prodejní příkaz | pokračuje v hlídání |
 | pozice bez prodejního příkazu | zajištění doplní |
-| prodaná hlavní část a běžící runner | nechá runner běžet, nic nezadává |
+| prodaná hlavní část a běžící runner | nechá runner běžet, nic nezadává (chybí-li i příkaz runneru, zadá jej znovu) |
 | rozdělané uzavírání trhem | dokončí je (tržní prodej dál hlídá) |
-| pozice uzavřená během výpadku | označí obchod za uzavřený |
+| pozice uzavřená během výpadku | označí obchod za uzavřený (pozná to z vyplněného prodejního příkazu se značkou) |
 | nákupní příkaz čekající v trhu | naváže na něj |
-| nákupní příkaz, který v TWS není | zadá jej znovu |
+| nákupní příkaz vyplněný jen zčásti | zbytek nákupu zruší a zajistí vyplněné kusy |
+| nákupní příkaz, který v TWS není | zadá jej znovu za stejných podmínek jako nové zadání — propásnutý vstup nebo široký spread jej zastaví (platí i pro příkaz zrušený ručně v TWS během výpadku) |
 | nakoupený obchod bez pozice i příkazu | označí jako chybu k ruční kontrole |
 
 Zajištění se posuzuje po částech pozice zvlášť: hlavní část, která už je
@@ -897,35 +984,49 @@ Aby aplikace své příkazy poznala, značkuje je v poli `orderRef` zápisem
 resp. `:runnersl`. Cizích příkazů na účtu si nevšímá,
 takže vedle ní můžete obchodovat i ručně.
 
-Drží-li účet pozici a z dvojice prodejních příkazů přežil jen jeden,
-aplikace jej zruší, počká na potvrzení a zajištění založí znovu celé.
-Ztratí-li se soubor se stavem, převzatý obchod si nese i **nákupní cenu opce**
+Drží-li účet pozici a z dvojice prodejních příkazů přežil jen jeden (nebo
+chybí jen příkaz runneru), aplikace přeživší příkazy zruší, počká na
+potvrzení a zajištění založí znovu celé. Chybí-li zajištění části pozice
+a zároveň probíhá uzavírání trhem, nic nezakládá a jen vyzve ke kontrole
+pozice v TWS — nové zajištění by se sčítalo s běžícím tržním prodejem.
+
+Ztratí-li se soubor se stavem, aplikace podle značek dohledá **nákupní
+příkazy `:entry`** — čekající i vyplněné, vrátí-li je TWS (po novém spojení
+je posílá jen za dnešní den) — a obchody z nich sestaví: vstupní cenu
+z cenové podmínky příkazu, PT a SL z podmínek zajišťovacího příkazu;
+u příkazů na cenu opce odvodí zisk a ztrátu v USD z limitní, resp. stop ceny
+proti nákupní ceně. Převzatý obchod si nese i **nákupní cenu opce**
 z vyplněného příkazu — bez ní by úrovně zadané na cenu opce nešlo spočítat
 ani měnit. Přežije-li jen příkaz pro SL (`:exitsl`), pozná se z něj režim SL
-i jeho hodnota; stop na nákupní ceně znamená break even.
+i jeho hodnota; stop na nákupní ceně znamená break even. Chybí-li některá
+úroveň v příkazech, dopočítá se (PT ze strike, SL z poměru v konfiguraci)
+a obchod se označí za dopočítaný. K vyplněnému nákupu bez zajištění
+aplikace zajištění doplní. Samotné zajišťovací příkazy (`:exit`, `:runner`)
+bez nalezeného `:entry` obchod neobnoví; runner se z příkazů nerekonstruuje
+vůbec — jeho příkazy zůstanou v TWS živé, ale obchod je nehlídá.
 
-Ztratí-li se soubor se stavem, aplikace podle těchto značek dohledá alespoň
-**čekající příkazy** a obchody z nich sestaví — vstupní cenu z cenové podmínky
-příkazu, PT a SL z podmínek zajišťovacího příkazu; u příkazů na cenu opce
-odvodí zisk a ztrátu v USD z limitní, resp. stop ceny proti nákupní ceně.
-Chybí-li zajišťovací příkaz, odvodí PT ze strike a SL z poměru v konfiguraci
-a obchod označí za dopočítaný.
-
-Co takto zachránit nelze, je **už nakoupená pozice bez zajišťovacího příkazu**:
-vyplněné příkazy TWS vrací bez `orderRef`, takže je k obchodu přiřadit nejde.
-Aplikace na každou opční pozici, ke které nemá obchod, upozorní hláškou
-„POZOR" v průběhu a nechá ji na vás — sama k ní nic nezadává, protože nezná
-původní PT ani SL.
+Co takto zachránit nelze, je **už nakoupená pozice, k níž TWS nevrátí ani
+vyplněný nákupní příkaz se značkou**. Aplikace na každou opční pozici, ke
+které nemá obchod, upozorní hláškou „POZOR" v průběhu a nechá ji na vás —
+sama k ní nic nezadává, protože nezná původní PT ani SL.
 
 Totéž proběhne po **každém obnovení spojení** — po ručním odpojení a připojení
 tlačítkem i po výpadku sítě. Objekty příkazů z minulého spojení už nejsou platné,
 takže se obchody pokaždé znovu spárují s tím, co je skutečně v TWS.
 
-Podmínkou je, aby aplikace používala **stejné `client_id`** — jinak jí TWS
-vlastní příkazy nevydá. Ukládání lze vypnout přes `state.enabled: false`.
+Podmínkou je, aby aplikace používala **stejné `connection.client_id`** —
+s jiným by své dřívější příkazy nemohla rušit ani měnit. Ukládání lze vypnout
+přes `state.enabled: false`; převzetí značkovaných příkazů z TWS po startu
+probíhá i tak.
 
 ## Upozornění
 
 Aplikace zadává skutečné příkazy do trhu. Vyzkoušejte ji nejprve na papírovém
-účtu (port 7497), případně s `connection.readonly: true`, kdy aplikace příkazy
-nezadává.
+účtu — u TWS je to zpravidla port 7497 (šablona konfigurace míří na 7496,
+`connection.port` proto upravte podle svého nastavení TWS). Pro zkoušení bez
+rizika lze v TWS zapnout *Read-Only API* a v konfiguraci nastavit
+`connection.readonly: true` — příkazy pak odmítá TWS, aplikace sama
+zadávání neblokuje a chybu jen zapíše do průběhu.
+
+Webové rozhraní nemá přihlašování. Ponechte `ui.host: 127.0.0.1`; při
+`0.0.0.0` by mohl příkazy zadávat kdokoliv v síti.
