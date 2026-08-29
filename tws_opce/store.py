@@ -143,19 +143,32 @@ def save(flows: list[Flow], path: str | Path) -> None:
         "flows": [flow_to_dict(f) for f in flows],
     }
 
+    docasny: str | None = None
     try:
         cesta.parent.mkdir(parents=True, exist_ok=True)
         # Dočasný soubor musí ležet ve stejném adresáři, aby šlo přejmenovat atomicky
         with tempfile.NamedTemporaryFile(
             "w", encoding="utf-8", dir=cesta.parent, prefix=cesta.name, suffix=".tmp", delete=False
         ) as fh:
+            # Název se zapamatuje hned - selže-li až zápis (neserializovatelná
+            # hodnota), musí se rozepsaný soubor uklidit; jinak by se
+            # v adresáři se stavem hromadil při každém průchodu smyčky
+            docasny = fh.name
             json.dump(obsah, fh, ensure_ascii=False, indent=2)
             fh.flush()
             os.fsync(fh.fileno())
-            docasny = fh.name
         os.replace(docasny, cesta)
+        docasny = None
     except Exception:
         log.exception("Stav obchodů se nepodařilo uložit do %s.", cesta)
+    finally:
+        # Po úspěšném přejmenování už dočasný soubor neexistuje; zbyde jen
+        # tehdy, když zápis nebo přejmenování selhalo
+        if docasny is not None:
+            try:
+                os.unlink(docasny)
+            except OSError:
+                log.warning("Dočasný soubor %s se nepodařilo odstranit.", docasny)
 
 
 def load(path: str | Path) -> list[Flow]:

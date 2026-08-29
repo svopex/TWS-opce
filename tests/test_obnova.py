@@ -70,6 +70,26 @@ class TestUlozeniStavu(ZakladObnovy):
         self.assertEqual(self.ib.placed[0].order.orderRef, order_ref(flow.id, "entry"))
 
 
+class TestUklidPriSelhaniZapisu(ZakladObnovy):
+    """Neúspěšný zápis stavu nesmí zanechat rozepsaný dočasný soubor."""
+
+    async def test_neserializovatelna_hodnota_neuklada_smeti(self):
+        flow = await self.engine.start_flow(
+            FlowRequest(symbol="AAPL", entry_price=232.0, profit_target=235.0)
+        )
+        adresar = Path(self.cfg.state.file).parent
+        puvodni = set(adresar.iterdir())
+
+        # Hodnota, kterou json.dump neumí zapsat - výjimka padne uprostřed
+        # zápisu, kdy dočasný soubor už na disku je
+        flow.entry_commissions = {object(): 1.0}
+        store.save([flow], self.cfg.state.file)
+
+        # Zápis selhal, ale v adresáři nesmí zůstat nic navíc; funkce se
+        # volá každý průchod smyčky, takže by se smetí rychle hromadilo
+        self.assertEqual(set(adresar.iterdir()), puvodni)
+
+
 class TestOchranaUlozenehoStavu(ZakladObnovy):
     """Uložený stav se nesmí ztratit dříve, než je načten."""
 

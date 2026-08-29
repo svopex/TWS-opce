@@ -203,7 +203,14 @@ class UiConfig:
 
 @dataclass
 class AppConfig:
-    """Kořenová konfigurace aplikace."""
+    """
+    Kořenová konfigurace aplikace.
+
+    Riskovaná částka na obchod se záměrně nepočítá tady, ale ve
+    FlowEngine.risk_amount - jedině engine zná pravidlo "account.size = 0
+    znamená převzít velikost účtu z TWS". Stejný výpočet nad samotnou
+    konfigurací by při tomto (doporučeném) nastavení vracel nulu.
+    """
 
     connection: ConnectionConfig = field(default_factory=ConnectionConfig)
     account: AccountConfig = field(default_factory=AccountConfig)
@@ -213,11 +220,6 @@ class AppConfig:
     engine: EngineConfig = field(default_factory=EngineConfig)
     state: StateConfig = field(default_factory=StateConfig)
     ui: UiConfig = field(default_factory=UiConfig)
-
-    @property
-    def risk_amount(self) -> float:
-        """Částka v USD, kterou lze na jednom obchodu riskovat."""
-        return self.account.size * self.account.risk_pct / 100.0
 
 
 def _build(cls: type, data: Any, path: str = "") -> Any:

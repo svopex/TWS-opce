@@ -1237,12 +1237,12 @@ class TradingUI:
         # Načtení se vyžaduje buď tlačítkem, nebo přechodem na jiný ticker
         if bezici is not None and (rezim == "nacist" or zmena_tickeru):
             self._fill_from_flow(bezici)
-            # Obchod drží úrovně na opci v USD na kontrakt, další výpočet ale
-            # pracuje s jednotkami formuláře - ten je může vést v procentech prémie
-            pt_mode, sl_mode = self._form_level_modes()
-            entry = bezici.entry_price
-            pt = self._uroven_do_pole(bezici.profit_target, pt_mode == MODE_PREMIUM)
-            sl = self._uroven_do_pole(bezici.stop_loss, sl_mode == MODE_PREMIUM)
+            # Hodnoty se přebírají z formuláře, ne znovu z obchodu: _fill_from_flow
+            # je už převedlo do jednotek polí (obchod drží úrovně na opci v USD
+            # na kontrakt, pole je může vést v procentech prémie) a u SL navíc
+            # odečetlo spread připočtený při nákupu. Počítat je znovu z obchodu
+            # by kompenzaci spreadu započetlo podruhé
+            _, entry, pt, sl = self._form_values()
             ui.notify(f"Načten běžící obchod {bezici.id}.", type="info")
         elif bezici is None and zmena_tickeru:
             # Ticker bez jednoznačného obchodu - hodnoty se nesmí přenést
@@ -2148,6 +2148,20 @@ def create_ui(cfg: AppConfig, engine: FlowEngine, ib: IBService) -> None:
     # by zakrývaly další pole a v tabulce řádek s tlačítky. Šířku omezuje CSS,
     # takže se delší text zalomí do více řádků místo jednoho dlouhého pruhu
     ui.tooltip.default_props('anchor="top middle" self="bottom middle"')
+
+    def uvolni_nahled(_: Any = None) -> None:
+        """
+        Po zavření okna prohlížeče uvolní odběry tržních dat, které drží
+        poslední připravený náhled zadání.
+
+        Bez toho by kontrakty zůstaly odebírané až do konce běhu aplikace:
+        náhled se jinak uvolňuje jedině tím, že jej nahradí novější, a ten
+        už po odchodu obchodníka nemá kdo vyžádat. Nové otevření stránky si
+        náhled připraví (a odběry založí) znovu.
+        """
+        engine.release_preview()
+
+    app.on_disconnect(uvolni_nahled)
 
     @ui.page("/")
     def index() -> None:

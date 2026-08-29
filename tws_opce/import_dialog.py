@@ -942,20 +942,31 @@ class ImportDialog:
         radek.sl_input.set_value(round(preview.stop_loss, 2))
         radek.qty_input.set_value(preview.quantity)
 
-        # Skutečný směr určuje aplikace z aktuální ceny podkladu. Liší-li se
-        # od směru daného souborem, trh už vstupní úroveň překonal - takový
-        # řádek se odškrtne, aby se omylem nezaložil obchod na opačnou stranu
-        if preview.current_price is not None and preview.right != radek.pozice.right:
+        # Skutečný směr určuje aplikace z aktuální ceny podkladu, a není-li
+        # známa, z polohy zadaných úrovní. Liší-li se od směru daného souborem,
+        # buď trh vstupní úroveň už překonal, nebo si řádek v souboru odporuje;
+        # tak či tak se řádek odškrtne, aby se omylem nezaložil obchod na
+        # opačnou stranu
+        if preview.right != radek.pozice.right:
             # Dopočet patří k opačnému kontraktu, než jaký by obchod koupil -
             # zahodí se a řádek se odškrtne, aby ho ani znovuotevření dialogu
             # nemohlo poslat do trhu
             self._zahod_dopocet(radek)
             radek.vybrano.set_value(False)
-            radek.stav(
-                f"Vstup propásnut - podklad je na {fmt(preview.current_price)}, "
-                f"z ceny vychází {preview.right_label} místo {radek.pozice.right_label}.",
-                "stav-import-chyba",
-            )
+            if preview.current_price is not None:
+                radek.stav(
+                    f"Vstup propásnut - podklad je na {fmt(preview.current_price)}, "
+                    f"z ceny vychází {preview.right_label} místo "
+                    f"{radek.pozice.right_label}.",
+                    "stav-import-chyba",
+                )
+            else:
+                radek.stav(
+                    f"Cena podkladu není známa a ze zadaných úrovní vychází "
+                    f"{preview.right_label} místo {radek.pozice.right_label} - "
+                    f"zkontrolujte řádek v souboru.",
+                    "stav-import-chyba",
+                )
             return
 
         # Čísla v řádku od téhle chvíle platí ve zvoleném režimu, takže se

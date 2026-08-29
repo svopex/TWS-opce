@@ -110,7 +110,10 @@ class IBService:
         self._quotes_grace_done: set[int] = set()
         self._connect_lock = asyncio.Lock()
         self._chain_cache: dict[str, Any] = {}
-        self.on_status_change: Callable[[], None] | None = None
+        # Ohlášení ztráty spojení. Nastavuje jej FlowEngine, aby si mohl zrušit
+        # příznak spárování obchodů s příkazy v TWS ještě dřív, než výpadek
+        # zpozoruje monitorovací smyčka.
+        self.on_disconnected: Callable[[], None] | None = None
         # Poslední naměřená odezva TWS v milisekundách; None znamená, že se
         # zatím neměřilo, nebo že poslední pokus neuspěl. Drží se tady, aby
         # ji synchronní obnova hlavičky mohla jen přečíst
@@ -156,7 +159,6 @@ class IBService:
                 self.account = accounts[0] if accounts else ""
 
             log.info("Spojení navázáno, účet: %s", self.account or "(neurčen)")
-            self._notify_status()
 
     async def disconnect(self) -> None:
         """Ukončí spojení a zruší všechny odběry tržních dat."""
@@ -176,7 +178,15 @@ class IBService:
         self.rtt_ms = None
         # Po novém spojení začínají tržní data od nuly - odklad se čeká znovu
         self._quotes_grace_done.clear()
-        self._notify_status()
+        # Příkazy z mrtvého spojení se už nikdy neaktualizují, takže se obchody
+        # musí po obnovení spojení znovu spárovat s TWS. Ohlásí se to rovnou:
+        # výpadek a obnovení uvnitř jednoho průchodu monitorovací smyčky by jí
+        # jinak unikly a flow by dál pracovala s neplatnými objekty Trade
+        if self.on_disconnected:
+            try:
+                self.on_disconnected()
+            except Exception:
+                log.exception("Chyba při obsluze ztráty spojení s TWS.")
 
     def _on_error(self, reqId: int, errorCode: int, errorString: str, contract: Any) -> None:
         """
@@ -189,14 +199,6 @@ class IBService:
             local_symbol = getattr(contract, "localSymbol", "") if contract is not None else ""
             desc = f" [{local_symbol}]" if local_symbol else ""
             log.error("TWS chyba %s (reqId=%s)%s: %s", errorCode, reqId, desc, errorString)
-
-    def _notify_status(self) -> None:
-        """Informuje UI o změně stavu spojení."""
-        if self.on_status_change:
-            try:
-                self.on_status_change()
-            except Exception:
-                log.exception("Chyba při notifikaci změny stavu spojení.")
 
     # ------------------------------------------------------------------
     # Kvalita spojení

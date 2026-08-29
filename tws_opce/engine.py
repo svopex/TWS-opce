@@ -12,7 +12,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import calc, store
@@ -29,6 +29,14 @@ DEAD_ORDER_STATES = ("Cancelled", "ApiCancelled", "Inactive")
 # potvrzení zrušení ("PendingCancel") mezi ně nepatří - jeho úprava končí
 # hlášením TWS "Order has been cancelled already, too late to replace".
 MODIFIABLE_ORDER_STATES = ("PreSubmitted", "Submitted")
+
+# Stavy, ve kterých už příkaz nemůže obchodovat - buď byl zrušen, nebo se
+# celý vyplnil. Vše ostatní je v TWS stále živé a může se vyplnit: kromě
+# "PreSubmitted" a "Submitted" i "PendingCancel" (zrušení ještě není
+# potvrzeno), "PendingSubmit" a "ApiPending". Právě proto se nesmí ověřovat
+# jen MODIFIABLE_ORDER_STATES - tržní prodej zadaný předčasně by se s takovým
+# příkazem sečetl a prodal by víc kusů, než pozice drží.
+SETTLED_ORDER_STATES = DEAD_ORDER_STATES + ("Filled",)
 
 # Kolik strike cen poblíž cíle se nejvýše zkusí ověřit v TWS, než se to vzdá
 MAX_STRIKE_ATTEMPTS = 8
@@ -139,15 +147,18 @@ class FlowEngine:
         # Obnova a monitorovací smyčka nesmí běžet současně - obnova čeká
         # na odpovědi z TWS a smyčka by mezitím pracovala s neplatnými příkazy
         self._restore_lock = asyncio.Lock()
-        self.on_change: Callable[[], None] | None = None
         # Řídí automatické navazování spojení ve smyčce; ruční odpojení jej vypíná
         self.auto_connect: bool = True
         # Zjištěná velikost účtu z TWS (používá se při account.use_live_account_size)
         self._live_account_size: float | None = None
         # Uložený stav se z disku čte jen jednou, při prvním spuštění
         self._restored: bool = False
-        # Po každém (znovu)připojení je potřeba obchody spárovat s příkazy v TWS
+        # Po každém (znovu)připojení je potřeba obchody spárovat s příkazy v TWS.
+        # Ztrátu spojení hlásí IBService rovnou, ne až přes polling ve smyčce -
+        # jinak by výpadek a obnovení uvnitř jednoho průchodu resynchronizaci
+        # vůbec nespustily a obchody by dál držely příkazy z mrtvého spojení
         self._synced: bool = False
+        ib.on_disconnected = self._handle_disconnect
         # Opční pozice na účtu, které aplikace neřídí
         self.unmanaged: dict[int, PositionInfo] = {}
         self._unmanaged_checked: float = 0.0
@@ -181,14 +192,23 @@ class FlowEngine:
             return
         store.save(list(self.flows.values()), self.cfg.state.file)
 
+    def _handle_disconnect(self) -> None:
+        """
+        Reakce na ztrátu spojení ohlášenou IBService.
+
+        Objekty Trade ze zaniklého spojení se už neaktualizují a odběry tržních
+        dat jsou pryč, takže se obchody musí po novém spojení znovu spárovat
+        se skutečností v TWS. Bez toho by hlídání jen zdánlivě běželo.
+        """
+        self._synced = False
+
     def _notify(self) -> None:
-        """Informuje UI o změně dat a zároveň uloží stav obchodů."""
+        """
+        Uloží stav obchodů na disk.
+        Rozhraní překresluje samo v pravidelném intervalu (ui.timer), takže
+        se odsud o změně nijak neinformuje.
+        """
         self._persist()
-        if self.on_change:
-            try:
-                self.on_change()
-            except Exception:
-                log.exception("Chyba při notifikaci UI.")
 
     @property
     def account_size(self) -> float:
@@ -410,8 +430,26 @@ class FlowEngine:
                 self._replace_preview(preview)
                 return preview
 
-            reference = preview.current_price if preview.current_price is not None else entry_price
-            preview.right = calc.determine_right(reference, entry_price)
+            # Typ opce určuje poloha vstupu vůči aktuální ceně podkladu.
+            # Bez ceny (mimo obchodní hodiny, chybějící odběr dat) by dosazení
+            # vstupu za referenci znamenalo determine_right(vstup, vstup) = vždy
+            # CALL, takže by se každé short zadání připravilo obráceně. Směr
+            # proto v takovém případě dodá poloha zadaných úrovní vůči vstupu
+            if preview.current_price is not None:
+                preview.right = calc.determine_right(preview.current_price, entry_price)
+            else:
+                smer = calc.intended_right(
+                    entry_price, profit_target, stop_loss, pt_on_underlying, sl_on_underlying
+                )
+                if smer is None:
+                    # Obě úrovně na opci a k tomu neznámá cena podkladu - z čeho
+                    # směr určit, není; tichý odhad by koupil opačnou opci
+                    raise ValueError(
+                        f"Z TWS nedorazila cena podkladu {symbol} a obě úrovně jsou "
+                        f"zadané na opci - typ opce (CALL/PUT) nelze určit. "
+                        f"Zkontrolujte odběr tržních dat, nebo zadejte PT či SL na podkladu."
+                    )
+                preview.right = smer
 
             # Výběr expirace
             chain = await self.ib.option_chain(underlying)
@@ -1185,13 +1223,19 @@ class FlowEngine:
             # ceny, cena už vstupní úroveň překonala a obchod ujel.
             if zamer is None:
                 zamer = preview.right
-                bezici = overit_bezici(zamer)
             elif preview.current_price is not None and zamer != preview.right:
                 smer = "nad" if zamer == "C" else "pod"
                 raise ValueError(
                     f"Cena podkladu {preview.current_price:g} je již {smer} vstupem "
                     f"{request.entry_price:g} - vstup je propásnutý a obchod nelze zadat."
                 )
+
+            # Příprava čeká na odpovědi z TWS a monitorovací smyčka mezitím
+            # běží dál - obchod, který byl na začátku ještě před vstupem, se
+            # během čekání mohl vyplnit. Nahrazovaný obchod se proto vyhledá
+            # a ověří znovu, jinak by se rušil (a z přehledu mizel) obchod
+            # s právě otevřenou pozicí, která by zůstala bez zajištění
+            bezici = overit_bezici(zamer)
 
             # Zadané úrovně mají přednost, chybějící dodala příprava
             profit_target = (
@@ -1356,12 +1400,24 @@ class FlowEngine:
         podklad = flow.underlying_price
         sazba = self.cfg.trading.risk_free_rate_pct
 
+        # Implikovaná volatilita se odvozuje jednou pro celý přepočet. Vstupy
+        # (cena opce, podklad, strike, expirace, sazba) jsou u všech úrovní
+        # stejné, liší se jen cílová cena podkladu - project_option_price by
+        # ji hledala znovu pro každou úroveň, každý obchod a každý průchod
+        # smyčky, a to padesáti půleními Black-Scholese pokaždé
+        sigma: float | None = None
+        roky = calc.years_to_expiry(flow.expiration)
+        if aktualni and podklad and aktualni > 0 and podklad > 0:
+            sigma = calc.implied_volatility(
+                aktualni, podklad, flow.strike, roky, sazba / 100.0, flow.right
+            )
+
         def cena_pri(uroven: float) -> float | None:
             """Odhad ceny opce, až podklad dosáhne dané úrovně."""
-            if not aktualni or not podklad:
+            if sigma is None:
                 return None
-            return calc.project_option_price(
-                aktualni, podklad, uroven, flow.strike, flow.expiration, sazba, flow.right
+            return calc.black_scholes_price(
+                uroven, flow.strike, roky, sazba / 100.0, sigma, flow.right
             )
 
         # Model přeceňuje na střed trhu, prodává se ale tržním příkazem u BIDu -
@@ -1654,6 +1710,15 @@ class FlowEngine:
         for trade in self._legs(flow, part):
             self.ib.cancel(trade)
 
+    @staticmethod
+    def _order_live(trade: Any) -> bool:
+        """
+        True, pokud příkaz v TWS ještě může obchodovat.
+        Živý je každý příkaz, který není zrušený ani celý vyplněný - tedy
+        i ten, u kterého se teprve čeká na potvrzení zrušení či zadání.
+        """
+        return trade is not None and trade.orderStatus.status not in SETTLED_ORDER_STATES
+
     def _part_modifiable(self, flow: Flow, part: str) -> bool:
         """True, pokud část má příkazy a všechny lze v TWS ještě upravit."""
         legy = self._legs(flow, part)
@@ -1674,7 +1739,7 @@ class FlowEngine:
         ten sice není zrušený, ale v trhu po něm také nic nezůstalo.
         """
         return all(
-            trade.orderStatus.status in DEAD_ORDER_STATES + ("Filled",)
+            trade.orderStatus.status in SETTLED_ORDER_STATES
             for trade in self._legs(flow, part)
         )
 
@@ -1688,7 +1753,7 @@ class FlowEngine:
         zive = [
             trade
             for trade in self._legs(flow, part)
-            if trade.orderStatus.status not in DEAD_ORDER_STATES + ("Filled",)
+            if trade.orderStatus.status not in SETTLED_ORDER_STATES
         ]
         return len(zive) >= (2 if flow.exit_split else 1)
 
@@ -1698,7 +1763,7 @@ class FlowEngine:
         tedy rozdělané uzavírání na pokyn obchodníka, které má doběhnout.
         """
         trade = self._leg(flow, part, "pt")
-        if trade is None or trade.orderStatus.status in DEAD_ORDER_STATES + ("Filled",):
+        if trade is None or trade.orderStatus.status in SETTLED_ORDER_STATES:
             return False
         return trade.order.orderType == "MKT" and not trade.order.conditions
 
@@ -1967,7 +2032,10 @@ class FlowEngine:
             flow.profit_target = novy_pt
 
             if flow.state.is_before_entry:
-                await self._apply_pt_before_entry(flow)
+                # Přepočet strike čeká na odpovědi z TWS; nakoupí-li obchod
+                # mezitím, promítne se nový cíl do zajišťovacích příkazů
+                if not await self._apply_pt_before_entry(flow) and flow.exit_trade is not None:
+                    self._update_exit_levels(flow, "pt")
             elif flow.exit_trade is not None:
                 self._update_exit_levels(flow, "pt")
 
@@ -1980,18 +2048,21 @@ class FlowEngine:
             self._notify()
             return flow
 
-    async def _apply_pt_before_entry(self, flow: Flow) -> None:
+    async def _apply_pt_before_entry(self, flow: Flow) -> bool:
         """
         Promítne nový cíl do obchodu, který ještě nenakoupil.
         Podle konfigurace buď ponechá strike, nebo vybere nový kontrakt.
+
+        Vrací False, pokud se obchod během čekání na TWS vyplnil a o cíl se
+        musí postarat úprava zajišťovacích příkazů; jinak True.
         """
         if self.cfg.trading.pt_change_strike != "recalculate":
-            return
+            return True
 
         # Na cíli závisí strike jen v režimu "target". Vybírá-li se od vstupní
         # ceny (otm_offset, atm), změna PT s ním nemá co dělat a kontrakt zůstává
         if self.cfg.strike.mode != "target":
-            return
+            return True
 
         # Cílová úroveň pro strike: PT na podkladu přímo, PT na opci se
         # přepočítá z aktuální ceny držené opce stejně jako při přípravě zadání
@@ -2025,9 +2096,20 @@ class FlowEngine:
         except ValueError as exc:
             # Bez obchodovatelného strike zůstává původní kontrakt v trhu
             self.log_event(f"{flow.id}: strike nelze přepočítat - {exc}")
-            return
+            return True
+
+        # Dotazy do TWS výše trvají několik sekund a monitorovací smyčka mezitím
+        # běží dál - nákup se mohl vyplnit. Opce je pak koupená, strike měnit
+        # nelze a nové zadání nákupu by vytvořilo druhou, nezajištěnou pozici
+        if not flow.state.is_before_entry:
+            self.log_event(
+                f"{flow.id}: nákup se vyplnil během přepočtu strike - "
+                f"kontrakt zůstává, cíl se promítne do prodejního příkazu."
+            )
+            return False
+
         if novy_strike == flow.strike:
-            return
+            return True
 
         # Příkaz na původní kontrakt už neplatí, musí z trhu pryč
         self.ib.cancel(flow.entry_trade)
@@ -2043,6 +2125,7 @@ class FlowEngine:
 
         self.log_event(f"{flow.id}: strike přepočítán na {novy_strike:g}, příkaz se zadá znovu.")
         self._place_entry(flow)
+        return True
 
     def _part_status_text(self, flow: Flow, part: str) -> str:
         """Stavy příkazů části pro hlášky, například 'Submitted/PendingCancel'."""
@@ -2227,7 +2310,14 @@ class FlowEngine:
         flow = self.flows.get(flow_id)
         if flow is None:
             raise ValueError(f"Flow '{flow_id}' neexistuje.")
-        if not flow.runner_active or flow.state != FlowState.EXIT_ARMED:
+        # Runner odložený při částečném nákupu nemá vlastní příkaz a žádné kusy
+        # nedrží - celou pozici kryje hlavní prodejní příkaz. Tržní prodej navíc
+        # by proto prodal víc kusů, než pozice drží (stejná pojistka jako u SL)
+        if (
+            not flow.runner_active
+            or flow.state != FlowState.EXIT_ARMED
+            or flow.runner_order_id is None
+        ):
             raise ValueError("Obchod nemá běžící runner, který by šlo uzavřít.")
         if flow.runner_fill_price is not None:
             raise ValueError("Runner už je prodaný.")
@@ -3056,7 +3146,9 @@ class FlowEngine:
         if flow.runner_active and flow.runner_fill_price is not None:
             if flow.fill_price is not None:
                 flow.runner_realized_pnl += (
-                    (flow.runner_fill_price - flow.fill_price) * flow.runner_quantity * 100
+                    (flow.runner_fill_price - flow.fill_price)
+                    * flow.runner_quantity
+                    * calc.OPTION_MULTIPLIER
                 )
             flow.runner_sold_quantity += flow.runner_quantity
             flow.runner_profit_target = None
@@ -3301,9 +3393,27 @@ class FlowEngine:
         return changed
 
     def _refresh_market_data(self, flow: Flow) -> bool:
-        """Načte aktuální ceny podkladu i opce a přepočítá spread."""
+        """
+        Načte aktuální ceny podkladu i opce a přepočítá spread.
+
+        Vrací True jen při skutečné změně některé z hodnot. Bezpodmínečné True
+        by při každém průchodu smyčky spustilo _notify() a s ním přepis celého
+        stavového souboru včetně fsync - při vteřinovém intervalu desetitisíce
+        zbytečných zápisů denně, i když se kotace vůbec nepohnuly.
+        """
         price = self.ib.underlying_price(flow.underlying_contract)
         bid, ask, delta = self.ib.option_quotes(flow.option_contract)
+
+        # Snímek hodnot před aktualizací - podle něj se pozná, zda se něco změnilo
+        puvodni = (
+            flow.underlying_price,
+            flow.option_bid,
+            flow.option_ask,
+            flow.option_spread_pct,
+            flow.delta,
+            flow.expected_profit,
+            flow.expected_loss,
+        )
 
         flow.underlying_price = price if price is not None else flow.underlying_price
         flow.option_bid = bid
@@ -3314,7 +3424,16 @@ class FlowEngine:
 
         # Očekávaný výsledek se přepočítává s každou změnou cen na trhu
         self._compute_expected_pnl(flow)
-        return True
+
+        return puvodni != (
+            flow.underlying_price,
+            flow.option_bid,
+            flow.option_ask,
+            flow.option_spread_pct,
+            flow.delta,
+            flow.expected_profit,
+            flow.expected_loss,
+        )
 
     def _handle_before_entry(self, flow: Flow) -> bool:
         """
@@ -3467,11 +3586,13 @@ class FlowEngine:
         flow.sl_spread_usd = spread
         flow.stop_loss = round(flow.stop_loss + spread, 2)
         # Počáteční SL slouží tlačítku "Počáteční SL" - musí se posunout také,
-        # jinak by se obchod vracel na nekompenzovanou úroveň
-        if flow.original_stop_loss:
+        # jinak by se obchod vracel na nekompenzovanou úroveň. Porovnává se
+        # s None, ne pravdivostí: nula je u SL na opci platná úroveň (break
+        # even), kterou by truthiness tiše přeskočila
+        if flow.original_stop_loss is not None:
             flow.original_stop_loss = round(flow.original_stop_loss + spread, 2)
         # Runner zapnutý ještě před nákupem si nese SL z doby zadání
-        if flow.runner_stop_loss:
+        if flow.runner_stop_loss is not None:
             flow.runner_stop_loss = round(flow.runner_stop_loss + spread, 2)
         self.log_event(
             f"{flow.id}: SL navýšen o zaplacený spread {spread:g} USD/ks "
@@ -3617,7 +3738,7 @@ class FlowEngine:
             and flow.held_quantity <= flow.runner_quantity
             and (
                 flow.entry_trade is None
-                or flow.entry_trade.orderStatus.status in DEAD_ORDER_STATES + ("Filled",)
+                or flow.entry_trade.orderStatus.status in SETTLED_ORDER_STATES
             )
         ):
             flow.runner_profit_target = None
@@ -3630,6 +3751,24 @@ class FlowEngine:
             changed = True
 
         # --- runner ---
+        # Runner bez vlastního příkazu v trhu (odložený při částečném nákupu)
+        # žádné kusy nedrží - kryje je hlavní prodejní příkaz. _part_out_of_market
+        # by nad prázdným seznamem vrátil True a tržní prodej níže by vytvořil
+        # nekrytou krátkou pozici; vyžádané uzavření se proto zahodí a runner
+        # zruší až větev níže, které tím přestane překážet
+        if (
+            flow.runner_active
+            and flow.runner_close_requested
+            and flow.runner_fill_price is None
+            and not self._legs(flow, "runner")
+        ):
+            flow.runner_close_requested = False
+            self.log_event(
+                f"{flow.id}: runner nemá vlastní příkaz v trhu - "
+                f"uzavření trhem se neprovádí."
+            )
+            changed = True
+
         # Vyžádané uzavření runneru trhem: jakmile TWS potvrdí zrušení
         # podmíněných příkazů, zadá se prodej trhem
         if (
@@ -3817,8 +3956,10 @@ class FlowEngine:
         if self._retry_stalled_market_sell(flow, "exit"):
             return True
 
-        # Dokud je jakýkoliv dřívější příkaz aktivní, tržní prodej by se s ním
-        # sčítal a prodalo by se více kusů, než pozice drží
+        # Dokud je jakýkoliv dřívější příkaz živý, tržní prodej by se s ním
+        # sčítal a prodalo by se více kusů, než pozice drží. Nestačí přitom
+        # čekat jen na odchod z MODIFIABLE_ORDER_STATES - příkaz v "PendingCancel"
+        # už upravit nelze, ale TWS jej stále může vyplnit
         for trade in (
             flow.entry_trade,
             flow.exit_trade,
@@ -3826,7 +3967,7 @@ class FlowEngine:
             flow.runner_trade,
             flow.runner_sl_trade,
         ):
-            if trade is not None and trade.orderStatus.status in MODIFIABLE_ORDER_STATES:
+            if self._order_live(trade):
                 return False
 
         # Prodej se zadává jednou; v dalších průchodech se sleduje jeho vyplnění
@@ -3868,7 +4009,9 @@ class FlowEngine:
             if flow.runner_active and flow.runner_quantity <= prodano:
                 if cena is not None and flow.fill_price is not None:
                     flow.runner_realized_pnl += (
-                        (cena - flow.fill_price) * flow.runner_quantity * 100
+                        (cena - flow.fill_price)
+                        * flow.runner_quantity
+                        * calc.OPTION_MULTIPLIER
                     )
                 flow.runner_sold_quantity += flow.runner_quantity
                 flow.runner_profit_target = None

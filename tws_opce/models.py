@@ -565,7 +565,7 @@ class Flow:
                 cena = mid
             if cena is None:
                 return None
-            vysledek += (cena - self.fill_price) * mnozstvi * 100
+            vysledek += (cena - self.fill_price) * mnozstvi * calc.OPTION_MULTIPLIER
         return vysledek
 
     @property
@@ -786,7 +786,7 @@ class Flow:
             return None
         if self.option_bid is None:
             return None
-        return (self.option_bid - self.fill_price) * mnozstvi * 100
+        return (self.option_bid - self.fill_price) * mnozstvi * calc.OPTION_MULTIPLIER
 
     @property
     def runner_multiple(self) -> float | None:
