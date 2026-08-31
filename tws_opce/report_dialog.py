@@ -89,6 +89,17 @@ def sklonuj(pocet: int, jednotne: str, mnozne: str, genitiv: str) -> str:
     return f"{pocet} {genitiv}"
 
 
+def datum_cas(hodnota: datetime | None) -> str:
+    """
+    Okamžik obchodu jako plné datum a čas - '31.08.2026 15:32:05'. Sekundy
+    mají smysl u intradenních obchodů, které trvají jen minuty; chybějící
+    hodnota (obchod se nikdy nedostal k nákupu) je pomlčka.
+    """
+    if hodnota is None:
+        return "-"
+    return f"{hodnota:%d.%m.%Y %H:%M:%S}"
+
+
 def doba_drzeni(sekundy: float | None) -> str:
     """Délka držení pozice ve zkráceném tvaru - '48 s', '12 min', '1:05 h'."""
     if sekundy is None:
@@ -565,7 +576,10 @@ class ReportDialog:
         # celý realizovaný a hodnota v závorce ukazuje, kolik z něj provize vzaly
         vysledek = flow.realized_pnl_net
         with ui.element("div").classes("report-radek report-radek-uzavreny"):
-            ui.label(f"{flow.updated_at:%H:%M}").classes("bunka bunka-cas")
+            # Vstup je čas nákupu, výstup čas poslední změny stavu -
+            # u ukončeného obchodu tedy okamžik jeho uzavření
+            ui.label(datum_cas(flow.fill_time)).classes("bunka bunka-cas")
+            ui.label(datum_cas(flow.updated_at)).classes("bunka bunka-cas")
             with ui.element("div").classes("bunka bunka-ticker"):
                 ui.label(flow.symbol).classes("report-ticker")
                 smer = "LONG" if flow.right == "C" else "SHORT"
@@ -634,7 +648,8 @@ class ReportDialog:
                     self._hlavicka_seznamu(
                         "report-radek-uzavreny",
                         (
-                            "Čas",
+                            "Vstup",
+                            "Výstup",
                             "Ticker",
                             "Kontrakt",
                             "Ks",

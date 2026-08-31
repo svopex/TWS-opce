@@ -720,7 +720,8 @@ než jaká byla skutečnost.
   a otevřeným P/L. Pruh *SL → PT* ukazuje, kde pozice stojí mezi stop-lossem
   (vlevo) a cílem (vpravo); vychází z otevřeného výsledku proti očekávanému
   zisku na PT a ztrátě na SL, takže funguje ve všech režimech zadání úrovní.
-* **Uzavřené obchody** — od nejnovějšího, s dosaženými cenami, dobou držení
+* **Uzavřené obchody** — od nejnovějšího, s datem a časem vstupu (nákup)
+  a výstupu (uzavření pozice), dosaženými cenami, dobou držení
   a důvodem výstupu (PT, SL, PT+SL při prodeji na obou příkazech dvojice,
   PT/SL nelze-li rozlišit, ručně — včetně automatického uzavření před koncem
   seance —, propásnuto, zrušeno, chyba). V hlavičce panelu stojí nejlepší

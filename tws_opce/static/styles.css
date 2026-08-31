@@ -1173,7 +1173,7 @@ body.body--dark .dialog-import .stav-import-varovani {
    i závorka s hodnotou bez provizí */
 .report-radek-uzavreny {
   grid-template-columns:
-    44px 86px minmax(78px, 1fr) 34px 116px 54px
+    140px 140px 86px minmax(78px, 1fr) 34px 116px 54px
     68px 132px minmax(56px, 96px);
 }
 
@@ -1235,9 +1235,9 @@ body.body--dark .dialog-import .stav-import-varovani {
 .report-hlavicka-seznamu.report-radek-bezici .bunka:nth-child(4),
 .report-hlavicka-seznamu.report-radek-bezici .bunka:nth-child(5),
 .report-hlavicka-seznamu.report-radek-bezici .bunka:nth-child(7),
-.report-hlavicka-seznamu.report-radek-uzavreny .bunka:nth-child(4),
-.report-hlavicka-seznamu.report-radek-uzavreny .bunka:nth-child(6),
-.report-hlavicka-seznamu.report-radek-uzavreny .bunka:nth-child(8) {
+.report-hlavicka-seznamu.report-radek-uzavreny .bunka:nth-child(5),
+.report-hlavicka-seznamu.report-radek-uzavreny .bunka:nth-child(7),
+.report-hlavicka-seznamu.report-radek-uzavreny .bunka:nth-child(9) {
   text-align: right;
 }
 
