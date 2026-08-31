@@ -20,13 +20,13 @@ connection:
   host: 127.0.0.1
 
   # Port API rozhraní. Standardní hodnoty podle aplikace a typu účtu:
-  #   7496 = TWS (nastaveno na tomto stroji)
-  #   7497 = TWS druhý profil (papírový/ostrý podle instalace)
+  #   7496 = TWS Ostry
+  #   7497 = TWS Demo
   #   4002 = IB Gateway papírový účet
   #   4001 = IB Gateway ostrý účet
   # Port musí být v TWS povolen: Global Configuration > API > Settings >
   # "Enable ActiveX and Socket Clients".
-  port: 7496
+  port: 7497
 
   # Identifikátor klienta API. Každá aplikace připojená k jedné TWS musí mít
   # jiné číslo. Změňte, pokud se k TWS připojujete i jiným programem.
