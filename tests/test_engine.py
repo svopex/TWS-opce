@@ -490,6 +490,77 @@ class TestSmeruVstupu(ZakladTestu):
         self.assertEqual(len(self.ib.placed), 1)
 
 
+    async def test_propasnuty_vstup_ukonci_obchod_blokovany_spreadem(self):
+        # Před otevřením trhu bývá spread opce široký, takže se příkaz do trhu
+        # nevrací - propásnutý vstup přesto musí obchod ukončit hned
+        flow = await self.zaloz_call()
+        self.ib.price_bid, self.ib.price_ask = 3.00, 3.50
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
+
+        # Spread zůstává nad limitem, jen cena překoná vstupní úroveň
+        self.ib.price_underlying = 233.0
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.MISSED)
+        self.assertIn("vstup propásnut", flow.message)
+        # Příkaz se do trhu nevrátil
+        self.assertEqual(len(self.ib.placed), 1)
+
+    async def test_propasnuty_vstup_ukonci_obchod_cekajici_na_kotace(self):
+        # Bez kotací opce se příkaz nezadá a obchod čeká; propásnutý vstup
+        # jej musí ukončit i bez nich
+        self.ib.price_bid, self.ib.price_ask = None, None
+        flow = await self.zaloz_call()
+        self.assertEqual(flow.state, FlowState.NO_QUOTES)
+
+        self.ib.price_underlying = 233.0
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.MISSED)
+        self.assertIn("vstup propásnut", flow.message)
+
+    async def test_propasnuty_vstup_mimo_hodiny_sunda_prikaz_z_trhu(self):
+        flow = await self.zaloz_call()
+        self.assertEqual(flow.state, FlowState.ARMED)
+
+        # Mimo obchodní hodiny cenová podmínka spustit nemůže; příkaz čekající
+        # na už propásnuté úrovni by po otevření trhu koupil za horší cenu
+        self.engine.market_open_seconds = lambda: 300.0
+        self.ib.price_underlying = 233.0
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.MISSED)
+        self.assertIn("odstraněn z trhu", flow.message)
+        self.assertEqual(len(self.ib.cancelled), 1)
+
+    async def test_propasnuty_vstup_behem_seance_prikaz_v_trhu_nerusi(self):
+        flow = await self.zaloz_call()
+        self.assertEqual(flow.state, FlowState.ARMED)
+
+        # Během seance se příkaz na své cenové podmínce právě plní - jeho
+        # zrušení by s dobíhajícím vyplněním závodilo
+        self.engine.market_open_seconds = lambda: None
+        self.ib.price_underlying = 233.0
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(self.ib.cancelled, [])
+
+    async def test_propasnuty_vstup_u_put_ukonci_obchod_blokovany_spreadem(self):
+        # Zrcadlově k CALL: u PUT je vstup propásnutý cenou pod vstupem
+        flow = await self.zaloz_put()
+        self.ib.price_bid, self.ib.price_ask = 3.00, 3.50
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
+
+        self.ib.price_underlying = 228.0
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.MISSED)
+        self.assertIn("vstup propásnut", flow.message)
+
+
 class TestSpread(ZakladTestu):
     """Hlídání spreadu před nákupem."""
 

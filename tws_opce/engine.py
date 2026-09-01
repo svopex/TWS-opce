@@ -3457,6 +3457,11 @@ class FlowEngine:
                 self.log_event(f"{flow.id}: {flow.message}")
                 return True
 
+        # Propásnutý vstup ukončí obchod v každém ze stavů před nákupem,
+        # tedy i tehdy, když příkaz zrovna v trhu není
+        if self._entry_missed(flow):
+            return True
+
         spread = flow.option_spread_pct
         trading = self.cfg.trading
 
@@ -3497,6 +3502,58 @@ class FlowEngine:
             return self._update_entry_limit(flow)
 
         return False
+
+    def _entry_missed(self, flow: Flow) -> bool:
+        """
+        Ukončí obchod před nákupem, jehož vstupní úroveň už podklad překonal.
+
+        Kontrola běží ve všech stavech před nákupem, takže propásnutý vstup
+        obchod ukončí i mimo obchodní hodiny. Dřív se odhalil až při pokusu
+        o zadání příkazu, a tak obchod čekající na uvolnění spreadu (před
+        otevřením trhu je spread opce zpravidla široký) visel v přehledu
+        dál a po otevření trhu nakupoval na už propásnuté úrovni.
+
+        Příkaz už zadaný do trhu se ruší jen tehdy, když jeho cenová podmínka
+        spustit nemůže - tedy mimo obchodní hodiny a jen pokud podmínka
+        nepracuje i mimo ně (`trading.outside_rth`). Během seance by kontrola
+        závodila s dobíhajícím vyplněním a zrušila by příkaz, který se plní.
+
+        Vrací True, pokud byl obchod ukončen.
+        """
+        cena = self.ib.underlying_price(flow.underlying_contract)
+        if cena is None:
+            return False
+
+        # Příkaz v trhu smí kontrola sundat, jen když nehrozí souběh s vyplněním
+        if flow.state == FlowState.ARMED:
+            mimo_hodiny = self.market_open_seconds() is not None
+            if not mimo_hodiny or self.cfg.trading.outside_rth:
+                return False
+
+        if calc.entry_still_valid(flow.right, cena, flow.entry_price):
+            return False
+
+        # Nevyplněný příkaz nesmí v TWS zůstat, jinak by po otevření trhu koupil
+        v_trhu = flow.entry_trade is not None
+        if v_trhu:
+            self.ib.cancel(flow.entry_trade)
+            flow.entry_trade = None
+            flow.entry_order_id = None
+
+        smer = "nad" if flow.right == "C" else "pod"
+        zaver = (
+            "příkaz odstraněn z trhu a obchod ukončen"
+            if v_trhu
+            else "obchod ukončen bez zadání příkazu"
+        )
+        flow.set_state(
+            FlowState.MISSED,
+            f"Cena podkladu {cena:g} je {smer} vstupem {flow.entry_price:g} - "
+            f"vstup propásnut, {zaver}.",
+        )
+        self._release(flow)
+        self.log_event(f"{flow.id}: {flow.message}")
+        return True
 
     def _can_rearm(self, flow: Flow, spread: float | None) -> bool:
         """

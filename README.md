@@ -279,10 +279,20 @@ projít.
 2. **Nákup** — obchod má smysl jen tehdy, pokud cena podkladu vstupní
    úroveň ještě nepřekonala: u CALL musí být pod vstupem, u PUT nad ním.
    Je-li vstup propásnutý už při odeslání formuláře, aplikace zadání rovnou
-   odmítne chybou a obchod nevznikne. Překoná-li cena vstup později — než se
-   příkaz vrátí do trhu po blokování spreadem, než dorazí kotace, při
-   přezadání po změně strike nebo při obnově po restartu — obchod skončí
-   ve stavu *Vstup propásnut*, aniž by cokoliv zadal.
+   odmítne chybou a obchod nevznikne. Překoná-li cena vstup později, obchod
+   skončí ve stavu *Vstup propásnut*, aniž by cokoliv zadal. Monitoring to
+   hlídá ve všech stavech před nákupem — tedy i u obchodu blokovaného
+   spreadem nebo čekajícího na kotace, a stejně tak mimo obchodní hodiny.
+   Právě tam na to dojde nejčastěji: spread opce bývá před otevřením trhu
+   široký, takže obchod čeká, a podklad se mezitím přes vstupní úroveň
+   propadne či vystřelí (přes noc nebo v pre-marketu).
+
+   Příkaz už čekající v trhu se ruší jen mimo obchodní hodiny, kdy jeho
+   cenová podmínka spustit nemůže — jinak by po otevření trhu nakoupil na
+   dávno propásnuté úrovni. Během seance zůstává v trhu: cena, která
+   vstupní úroveň překonala, je právě ta, na kterou se příkaz plní, a jeho
+   zrušení by se s dobíhajícím vyplněním závodilo. (Pracuje-li podmínka
+   i mimo obchodní hodiny — `trading.outside_rth` —, platí totéž nepřetržitě.)
 
    Do TWS se zadá příkaz na opci s cenovou podmínkou na podkladu.
    Dokud se nevyplní, aplikace průběžně upravuje jeho limitní cenu podle
@@ -628,7 +638,7 @@ neposílá a trvale svítící varování by ztratilo význam.
 | Nakoupeno – výstup aktivní | pozice je zajištěna příkazem pro PT i SL |
 | Uzavírá se | pozice se na pokyn obchodníka (nebo automaticky před koncem seance) uzavírá tržním příkazem |
 | Uzavřeno | pozice uzavřena — na PT, SL, trhem na pokyn obchodníka nebo automaticky před koncem seance |
-| Vstup propásnut | cena překonala vstupní úroveň, příkaz se nezadal |
+| Vstup propásnut | cena překonala vstupní úroveň, příkaz se nezadal (nebo se čekající příkaz odstranil z trhu) |
 | Zrušeno | obchod ukončen uživatelem, nebo nákupní příkaz zrušen ručně v TWS |
 | Chyba | zásah zvenčí (například ruční zrušení prodejního příkazu v TWS), selhání obnovy po restartu nebo chyba monitoringu |
 
