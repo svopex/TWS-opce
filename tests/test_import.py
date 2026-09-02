@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.fake_ib import FakeIBService
 from tws_opce import import_dialog, importer
-from tws_opce.config import AppConfig
+from tws_opce.config import AppConfig, validate_config
 from tws_opce.engine import FlowEngine
 from tws_opce.import_dialog import (
     REZIM_PCT,
@@ -20,7 +20,9 @@ from tws_opce.import_dialog import (
     RUNNER_VYPNUTO,
     ImportDialog,
     RadekPozice,
+    runner_klic,
     uroven_cile,
+    vychozi,
 )
 from tws_opce.importer import ImportedPosition
 from tws_opce.models import (
@@ -53,9 +55,13 @@ class Pole:
 
     def __init__(self, value: float | str | None = None) -> None:
         self.value = value
+        self.visible = True
 
     def set_value(self, value: float | str | None) -> None:
         self.value = value
+
+    def set_visibility(self, visible: bool) -> None:
+        self.visible = visible
 
 
 class Prepinac:
@@ -729,7 +735,7 @@ class TestMinimumProRunner(unittest.TestCase):
 
     def test_prazdne_pole_minima_bere_hodnotu_z_konfigurace(self):
         # Vymazané pole nesmí runner rozdat podle náhodného čísla
-        self.cfg.trading.runner_min_quantity = 4
+        self.cfg.import_.runner_min_quantity = 4
         self.dialog.runner_value = "1"
         self.dialog.runner_min_input.set_value(None)
         self.assertEqual(self.volby(5, 4), ["1", RUNNER_VYPNUTO])
@@ -762,6 +768,153 @@ class TestMinimumProRunner(unittest.TestCase):
         self.dialog.radky = [radek]
         self.dialog._nastav_runner(RUNNER_VYPNUTO)
         self.assertEqual(radek.runner_select.value, "2")
+
+
+class TestPrepoctuNaVyzadani(unittest.TestCase):
+    """
+    Přepočet běží jen na vyžádání: po načtení souboru tabulka čeká na
+    tlačítko Přepočítat a do TWS se sama od sebe nesahá - ani při přepnutí
+    režimu cíle nad dosud nespočítanými pozicemi.
+    """
+
+    def setUp(self) -> None:
+        cfg = AppConfig()
+        cfg.state.enabled = False
+        self.engine = FlowEngine(cfg, FakeIBService(cfg))
+        self.dialog = ImportDialog(cfg, self.engine, self.engine.ib, None)
+        # Prvky, na které přepnutí režimu sahá; rozhraní se nevykresluje
+        self.dialog.rezim = Prepinac(REZIM_PCT)
+        self.dialog.pct_input = Pole()
+        self.dialog.usd_input = Pole()
+        self.dialog.premium_input = Pole()
+        self.dialog.sl_spread_compensated = Zaskrtavatko(False)
+        self.dialog.hlavicky = {}
+        # Místo skutečné přípravy se jen počítá, kolikrát si ji dialog vyžádal
+        self.pozadano = 0
+        self.dialog._naplanuj_pripravu = self._naplanuj
+        self.pozice = importer.ImportedPosition(
+            key="AMZN Long+", symbol="AMZN", entry_price=266.4, target_price=269.33
+        )
+
+    def _naplanuj(self) -> None:
+        self.pozadano += 1
+
+    def radek(self, rezim_hodnot: str) -> RadekPozice:
+        """Řádek se spočítanými čísly (rezim_hodnot vyplněné), nebo bez nich."""
+        radek = RadekPozice(pozice=self.pozice, rezim_hodnot=rezim_hodnot)
+        radek.pt_input = Pole(90.0)
+        radek.sl_input = Pole(45.0)
+        radek.qty_input = Pole(4)
+        radek.runner_select = Pole(RUNNER_VYPNUTO)
+        return radek
+
+    def test_nespocitana_tabulka_se_pri_zmene_rezimu_neprepocita(self):
+        self.dialog.radky = [self.radek("")]
+        self.dialog.rezim.set_value(REZIM_USD)
+        self.dialog._on_rezim_change()
+        self.assertEqual(self.pozadano, 0)
+
+    def test_spocitana_tabulka_se_pri_zmene_rezimu_prepocita(self):
+        # Úrovně z předchozího režimu mají jinou jednotku, přepočet je nutný
+        self.dialog.radky = [self.radek(REZIM_PCT)]
+        self.dialog.rezim.set_value(REZIM_USD)
+        self.dialog._on_rezim_change()
+        self.assertEqual(self.pozadano, 1)
+
+    def test_zmena_rezimu_vyprazdni_spocitana_pole(self):
+        radek = self.radek(REZIM_PCT)
+        self.dialog.radky = [radek]
+        self.dialog.rezim.set_value(REZIM_USD)
+        self.dialog._on_rezim_change()
+        self.assertIsNone(radek.pt_input.value)
+        self.assertIsNone(radek.sl_input.value)
+        self.assertIsNone(radek.qty_input.value)
+        self.assertEqual(radek.rezim_hodnot, "")
+
+
+class TestVychozihoNastaveniImportu(unittest.TestCase):
+    """
+    Výchozí obsah dialogu se bere ze sekce import konfigurace - včetně
+    volby runneru a hodnot sdílených s běžným formulářem zadání.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = AppConfig()
+        self.cfg.state.enabled = False
+        self.engine = FlowEngine(self.cfg, FakeIBService(self.cfg))
+
+    def dialog(self) -> ImportDialog:
+        """Dialog nad aktuální konfigurací; rozhraní se nevykresluje."""
+        return ImportDialog(self.cfg, self.engine, self.engine.ib, None)
+
+    def test_nasobek_runneru_z_konfigurace(self):
+        self.cfg.import_.runner_multiple = 1.5
+        self.assertEqual(self.dialog().runner_value, "1.5")
+
+    def test_nula_znamena_runner_nepouzit(self):
+        self.cfg.import_.runner_multiple = 0
+        self.assertEqual(self.dialog().runner_value, RUNNER_VYPNUTO)
+
+    def test_nenabizeny_nasobek_runner_nezapne(self):
+        # Pojistka pro konfiguraci obejitou ručně - tlačítko s takovým
+        # násobkem v rozhraní není, takže by volba nešla ani přepnout
+        self.assertEqual(runner_klic(1.7), RUNNER_VYPNUTO)
+
+    def test_minimum_pro_runner_je_ze_sekce_import(self):
+        self.cfg.import_.runner_min_quantity = 5
+        dialog = self.dialog()
+        dialog.runner_min_input = None
+        self.assertEqual(dialog._runner_min(), 5)
+
+    def test_prazdna_volba_prebira_nastaveni_z_tradingu(self):
+        # null v sekci import znamená "chovej se jako formulář zadání"
+        self.assertEqual(vychozi(None, 7.0), 7.0)
+        self.assertEqual(vychozi(6.0, 7.0), 6.0)
+        # Nula je platná hodnota, ne prázdná volba
+        self.assertEqual(vychozi(0, 7.0), 0)
+        self.assertEqual(vychozi(False, True), False)
+
+
+class TestKonfiguraceImportu(unittest.TestCase):
+    """Validace sekce import - vadné hodnoty musí padnout hned při startu."""
+
+    def setUp(self) -> None:
+        self.cfg = AppConfig()
+
+    def test_vychozi_konfigurace_projde(self):
+        validate_config(self.cfg)
+
+    def test_neznamy_rezim_cile_neprojde(self):
+        self.cfg.import_.pt_mode = "procenta"
+        with self.assertRaises(ValueError) as chyba:
+            validate_config(self.cfg)
+        self.assertIn("import.pt_mode", str(chyba.exception))
+
+    def test_nenabizeny_nasobek_runneru_neprojde(self):
+        self.cfg.import_.runner_multiple = 1.7
+        with self.assertRaises(ValueError) as chyba:
+            validate_config(self.cfg)
+        self.assertIn("import.runner_multiple", str(chyba.exception))
+
+    def test_nulovy_nasobek_runneru_projde(self):
+        # Nula je platná volba "runner nepoužít"
+        self.cfg.import_.runner_multiple = 0
+        validate_config(self.cfg)
+
+    def test_zaporne_pt_neprojde(self):
+        self.cfg.import_.pt_premium_pct = -1.0
+        with self.assertRaises(ValueError) as chyba:
+            validate_config(self.cfg)
+        self.assertIn("import.pt_premium_pct", str(chyba.exception))
+
+    def test_prazdne_hodnoty_projdou(self):
+        # Prázdná volba se přebírá z tradingu, validace ji nesmí zamítnout
+        self.cfg.import_.pt_pct = None
+        self.cfg.import_.pt_usd = None
+        self.cfg.import_.max_spread_pct = None
+        self.cfg.import_.rrr = None
+        self.cfg.import_.sl_spread_compensated = None
+        validate_config(self.cfg)
 
 
 if __name__ == "__main__":

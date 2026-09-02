@@ -817,11 +817,12 @@ sloupci tabulky (*Bez* / *1×* / *1,5×* / *2×* / *2,5×* / *3×*). Sada tlač�
 *Nepoužít runner* / *1×* … *3×* nad tabulkou slouží jako **výchozí hodnota**:
 přepne volbu u všech nezamčených řádků naráz (tedy i u řádků, jejichž obchod
 teprve čeká před nákupem nebo už skončil), takže stačí nastavit ji globálně
-a jednotlivé pozice pak jen doladit. Výchozí stav je *Nepoužít runner*.
+a jednotlivé pozice pak jen doladit. Výchozí stav určuje
+`import.runner_multiple` (0 = *Nepoužít runner*).
 
 Runner ale dostanou jen dost velké pozice: pole **Runner od [ks]** vpravo od
 tlačítek říká, kolik kontraktů musí řádek *překročit*, aby se mu volba
-zapsala — s výchozí trojkou (`trading.runner_min_quantity`) tedy runner
+zapsala — s výchozí trojkou (`import.runner_min_quantity`) tedy runner
 připadne pozicím se 4 a více kontrakty, menší zůstanou na *Bez*. Rozdělení se
 srovná při každém přepočtu, po ruční změně množství v řádku i po změně tohoto
 pole nebo výchozí volby runneru; v jednotlivém řádku jde runner přesto zapnout
@@ -835,8 +836,35 @@ se po nákupu založí rovnou rozdělené. Pozice s příliš malým množstvím
 nedostane (vyžaduje víc kontraktů, než je jeho velikost); obchod se přesto
 založí a důvod se objeví ve sloupci *Stav*.
 
+Celý formulář dialogu se předvyplňuje ze sekce **`import`** v konfiguraci,
+takže se po otevření nemusí nic přepínat:
+
+| Volba | Co nastavuje |
+|---|---|
+| `pt_mode` | režim cíle — `pct` (% dráhy k cíli), `usd` (USD/ks), `premium` (% prémie) |
+| `pt_pct`, `pt_usd`, `pt_premium_pct` | obsah tří polí PT; každý režim má vlastní, `null` nechá pole prázdné |
+| `runner_multiple` | výchozí volba runneru (`0` = nepoužít, jinak nabízený násobek) |
+| `runner_min_quantity` | obsah pole *Runner od [ks]* |
+| `max_spread_pct`, `rrr`, `sl_spread_compensated` | totéž co v běžném formuláři; `null` = převzít ze sekce `trading` |
+
+Poslední tři volby má i formulář jednotlivého zadání. Prázdná hodnota (`null`)
+znamená „chovej se jako formulář", vyplněná dovolí, aby se hromadné zadání od
+jednotlivého lišilo — třeba přísnějším spreadem nebo jiným RRR. Do konfigurace
+se nic z toho nezapisuje zpět; změny v otevřeném dialogu platí jen do jeho
+zavření.
+
 Vedle režimu se zadává **Max. spread [%]** a **RRR (PT:SL)** pro dopočet SL —
-*RRR 2* dá SL na polovině vzdálenosti PT. Obojí vychází z konfigurace. Tlačítkem
+*RRR 2* dá SL na polovině vzdálenosti PT. Obojí vychází z konfigurace.
+
+Načtením souboru se **nic nepočítá** — tabulka se jen vypíše a ve sloupci
+*Stav* stojí u každé pozice *Čeká na přepočet*. Kontrakt, SL ani množství
+vzniknou až tlačítkem **Přepočítat**, takže je čas doladit režim cíle, PT,
+spread i RRR dřív, než se sáhne do TWS. Ze stejného důvodu ani přepnutí
+režimu nad dosud nepřipravenou tabulkou žádný výpočet nespustí — jsou-li
+už pozice spočítané, přepočítají se jako dřív, protože úrovně z předchozího
+režimu mají jinou jednotku.
+
+Tlačítkem
 **Přepočítat** se PT, SL i množství u všech nezamčených pozic spočítají
 znovu — i u těch, jejichž obchod ještě čeká před nákupem (jejich sloupec
 *Stav* pak ukazuje výsledek přípravy, dokud se řádek znovu nezadá);

@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
+from .models import PT_MULTIPLES
+
 log = logging.getLogger(__name__)
 
 # Povolené typy vstupního příkazu (nákup opce po splnění cenové podmínky na podkladu)
@@ -25,6 +27,9 @@ PRIMARY_LEVELS = ("pt", "sl")
 EXPIRATION_MODES = ("nearest", "fixed")
 # Povolené režimy výběru strike ceny opčního kontraktu
 STRIKE_MODES = ("otm_offset", "atm", "target")
+# Povolené režimy zadání cíle v dialogu načtení pozic ze souboru. Tytéž
+# hodnoty nesou konstanty REZIM_* v import_dialog, kde se přepínač staví
+IMPORT_PT_MODES = ("pct", "usd", "premium")
 
 
 @dataclass
@@ -105,10 +110,6 @@ class TradingConfig:
     # prodává samostatným příkazem s vlastním (vzdálenějším) cílem.
     # Runner lze zapnout jen u obchodu s větším množstvím, než je tato hodnota.
     runner_quantity: int = 1
-    # Nejmenší velikost pozice, u které hromadné zadání ze souboru samo
-    # nastaví runner. Pozice s menším nebo stejným počtem kontraktů dostanou
-    # ve sloupci Runner volbu "Bez"; ručně ji tam lze přesto přepnout.
-    runner_min_quantity: int = 3
     # Chování při změně PT u obchodu, který ještě nenakoupil:
     #   keep        = ponechat původní strike, mění se jen cílová úroveň
     #   recalculate = přepočítat strike podle nového PT a příkaz přezadat
@@ -131,6 +132,40 @@ class TradingConfig:
     # Čas zavření burzy ve formátu HH:MM (v časové zóně burzy).
     # Zkrácené obchodní dny (např. před svátky) aplikace nezná.
     exchange_close_time: str = "16:00"
+
+
+@dataclass
+class ImportConfig:
+    """
+    Výchozí nastavení dialogu "Načtení pozic ze souboru".
+
+    Hodnoty formulář jen předvyplní - před zadáním do trhu je lze přepsat.
+    U voleb, které má i běžný formulář zadání, znamená prázdná hodnota
+    (null) "převzít nastavení ze sekce trading"; vyplněná hodnota naopak
+    dovolí, aby se hromadné zadání od jednotlivého lišilo.
+    """
+
+    # Režim zadání cíle: pct = procento dráhy k cíli na podkladu,
+    # usd = zisk na opci v USD na kontrakt, premium = zisk v % zaplacené prémie
+    pt_mode: str = "premium"
+    # Výchozí obsah tří polí PT - přepínač režimu jen mění, které z nich je
+    # vidět, proto má každé vlastní hodnotu. Prázdná (null) nechá pole prázdné
+    pt_pct: float | None = None
+    pt_usd: float | None = None
+    pt_premium_pct: float | None = None
+    # Výchozí volba runneru jako násobek původní vzdálenosti PT od vstupu.
+    # Povolené jsou násobky nabízené tlačítky, 0 znamená runner nepoužít
+    runner_multiple: float = 1.5
+    # Nejmenší velikost pozice, které hromadné zadání runner nastaví. Pozice
+    # s menším nebo stejným počtem kontraktů dostanou ve sloupci Runner volbu
+    # "Bez"; ručně ji tam lze přesto přepnout
+    runner_min_quantity: int = 3
+    # Volby sdílené s formulářem zadání; null = převzít hodnotu z trading
+    max_spread_pct: float | None = None
+    # Poměr PT:SL tak, jak se zadává v dialogu (RRR 2 = PT je dvakrát dál
+    # než SL). Prázdná hodnota se odvodí z trading.sl_to_pt_ratio
+    rrr: float | None = None
+    sl_spread_compensated: bool | None = None
 
 
 @dataclass
@@ -219,6 +254,9 @@ class AppConfig:
     connection: ConnectionConfig = field(default_factory=ConnectionConfig)
     account: AccountConfig = field(default_factory=AccountConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
+    # Sekce se v YAML jmenuje "import"; atribut nese podtržítko, protože
+    # "import" je v Pythonu klíčové slovo
+    import_: ImportConfig = field(default_factory=ImportConfig)
     expiration: ExpirationConfig = field(default_factory=ExpirationConfig)
     strike: StrikeConfig = field(default_factory=StrikeConfig)
     engine: EngineConfig = field(default_factory=EngineConfig)
@@ -272,6 +310,7 @@ def load_config(path: str | Path) -> AppConfig:
         connection=_build(ConnectionConfig, raw.get("connection", {}), "connection"),
         account=_build(AccountConfig, raw.get("account", {}), "account"),
         trading=_build(TradingConfig, raw.get("trading", {}), "trading"),
+        import_=_build(ImportConfig, raw.get("import", {}), "import"),
         expiration=_build(ExpirationConfig, raw.get("expiration", {}), "expiration"),
         strike=_build(StrikeConfig, raw.get("strike", {}), "strike"),
         engine=_build(EngineConfig, raw.get("engine", {}), "engine"),
@@ -335,13 +374,32 @@ def validate_config(cfg: AppConfig) -> None:
         )
     if cfg.trading.runner_quantity < 1:
         problems.append("trading.runner_quantity musí být alespoň 1")
-    if cfg.trading.runner_min_quantity < 1:
-        problems.append("trading.runner_min_quantity musí být alespoň 1")
     if cfg.trading.pt_change_strike not in PT_STRIKE_MODES:
         problems.append(
             f"trading.pt_change_strike musí být jedna z {PT_STRIKE_MODES}, "
             f"nalezeno '{cfg.trading.pt_change_strike}'"
         )
+    # Sekce importu - výchozí obsah dialogu načtení pozic ze souboru
+    if cfg.import_.pt_mode not in IMPORT_PT_MODES:
+        problems.append(
+            f"import.pt_mode musí být jedna z {IMPORT_PT_MODES}, "
+            f"nalezeno '{cfg.import_.pt_mode}'"
+        )
+    # Prázdné pole PT je v pořádku (obchodník si hodnotu doplní), nula ani
+    # záporné číslo ale ne - z takového cíle by nevznikl obchod
+    for nazev in ("pt_pct", "pt_usd", "pt_premium_pct", "max_spread_pct", "rrr"):
+        hodnota = getattr(cfg.import_, nazev)
+        if hodnota is not None and hodnota <= 0:
+            problems.append(
+                f"import.{nazev} musí být kladné číslo, nebo prázdný (null)"
+            )
+    if cfg.import_.runner_multiple and cfg.import_.runner_multiple not in PT_MULTIPLES:
+        problems.append(
+            f"import.runner_multiple musí být 0 (runner nepoužít), nebo jeden "
+            f"z násobků {PT_MULTIPLES}, nalezeno {cfg.import_.runner_multiple}"
+        )
+    if cfg.import_.runner_min_quantity < 1:
+        problems.append("import.runner_min_quantity musí být alespoň 1")
     if cfg.expiration.mode not in EXPIRATION_MODES:
         problems.append(
             f"expiration.mode musí být jedna z {EXPIRATION_MODES}, nalezeno '{cfg.expiration.mode}'"
@@ -430,5 +488,11 @@ def save_config(cfg: AppConfig, path: str | Path) -> None:
     """Uloží konfiguraci do YAML souboru."""
     cfg_path = Path(path)
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    # Sekce importu se v souboru jmenuje "import" - atribut ho nést nemůže,
+    # je to klíčové slovo Pythonu. Přejmenování zachovává pořadí sekcí
+    data = {
+        ("import" if nazev == "import_" else nazev): hodnota
+        for nazev, hodnota in _as_dict(cfg).items()
+    }
     with cfg_path.open("w", encoding="utf-8") as fh:
-        yaml.safe_dump(_as_dict(cfg), fh, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False, default_flow_style=False)

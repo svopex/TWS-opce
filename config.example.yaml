@@ -232,12 +232,6 @@ trading:
   # po oddělení runneru musí v hlavní části zbýt alespoň jeden kontrakt.
   runner_quantity: 1
 
-  # Nejmenší velikost pozice, u které hromadné zadání ze souboru samo nastaví
-  # runner. Vyplní se do pole vedle tlačítek Runner v dialogu načtení pozic
-  # a řádky se stejným nebo menším počtem kontraktů dostanou volbu "Bez".
-  # Hodnotu lze v dialogu přepsat, do konfigurace se ale nezapisuje.
-  runner_min_quantity: 3
-
   # Co se má stát se strikem, když v monitoringu posunete cíl obchodu
   # tlačítky s násobky (1×, 1,5×, 2× …):
   #   keep        = ponechat původní strike, mění se jen cílová úroveň (výchozí)
@@ -276,6 +270,44 @@ trading:
   # Čas zavření burzy ve formátu HH:MM (v časové zóně burzy).
   # Zkrácené obchodní dny (např. před svátky) aplikace nezná.
   exchange_close_time: "16:00"
+
+
+# -----------------------------------------------------------------------------
+# NAČTENÍ POZIC ZE SOUBORU (výchozí obsah dialogu)
+# -----------------------------------------------------------------------------
+# Hodnoty jen předvyplní formulář hromadného zadání - před odesláním do trhu
+# je lze v dialogu kdykoliv přepsat.
+import:
+  # Režim zadání cíle:
+  #   pct     = PT na podkladu v % dráhy k cíli ze souboru
+  #   usd     = PT na opci v USD na kontrakt
+  #   premium = PT na opci v % zaplacené prémie
+  pt_mode: premium
+
+  # Výchozí obsah tří polí PT. Přepínač režimu jen mění, které z nich je
+  # vidět, proto má každé vlastní hodnotu; prázdná (null) nechá pole prázdné.
+  pt_pct: null
+  pt_usd: null
+  pt_premium_pct: 3.0
+
+  # Výchozí volba runneru - násobek původní vzdálenosti PT od vstupu.
+  # Povolené jsou násobky nabízené tlačítky (1, 1.5, 2, 2.5, 3),
+  # 0 znamená runner nepoužít.
+  runner_multiple: 1.5
+
+  # Nejmenší velikost pozice, které se runner nastaví. Vyplní se do pole
+  # vedle tlačítek Runner a řádky se stejným nebo menším počtem kontraktů
+  # dostanou volbu "Bez"; ručně ji tam lze přesto přepnout.
+  runner_min_quantity: 3
+
+  # Následující tři volby má i běžný formulář zadání. Prázdná hodnota (null)
+  # znamená převzít nastavení ze sekce trading, vyplněná dovolí, aby se
+  # hromadné zadání od jednotlivého lišilo.
+  max_spread_pct: null
+  # Poměr PT:SL tak, jak se zadává v dialogu - RRR 2 znamená, že PT je
+  # dvakrát dál než SL. Prázdná hodnota se odvodí z trading.sl_to_pt_ratio.
+  rrr: null
+  sl_spread_compensated: null
 
 
 # -----------------------------------------------------------------------------

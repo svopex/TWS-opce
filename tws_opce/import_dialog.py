@@ -98,6 +98,24 @@ def runner_volby(kratke: bool = False) -> dict[str, str]:
     }
 
 
+def runner_klic(nasobek: float) -> str:
+    """
+    Klíč tlačítka runneru pro daný násobek z konfigurace. Nula i násobek,
+    který rozhraní nenabízí, znamená runner nepoužít - opačná cesta než
+    runner_nasobek, která z klíče dělá číslo.
+    """
+    klic = f"{nasobek:g}"
+    return klic if klic in runner_volby() else RUNNER_VYPNUTO
+
+
+def vychozi(hodnota: Any, zaloha: Any) -> Any:
+    """
+    Výchozí hodnota pole dialogu: prázdná volba v sekci import konfigurace
+    znamená převzít nastavení z odpovídající volby v sekci trading.
+    """
+    return zaloha if hodnota is None else hodnota
+
+
 def runner_nasobek(hodnota: Any) -> float | None:
     """Násobek cíle runneru z hodnoty volby; None znamená runner nezapínat."""
     text = str(hodnota or RUNNER_VYPNUTO)
@@ -193,7 +211,7 @@ class ImportDialog:
         self.ib = ib
         self.on_created = on_created
         # Zvolené nastavení runneru pro zakládané pozice (klíč tlačítka)
-        self.runner_value: str = RUNNER_VYPNUTO
+        self.runner_value: str = runner_klic(cfg.import_.runner_multiple)
         # Pole s nejmenším množstvím, od kterého se runner nastavuje. Vzniká
         # až s vykresleným dialogem, do té doby platí hodnota z konfigurace
         self.runner_min_input: Any = None
@@ -271,6 +289,9 @@ class ImportDialog:
 
     def _build_parametry(self) -> None:
         """Společné parametry pro všechny načtené pozice - režim cíle a spread."""
+        # Výchozí obsah formuláře je z konfigurace; klíče režimů se shodují
+        # s hodnotami import.pt_mode, takže se přebírají přímo
+        imp = self.cfg.import_
         with ui.column().classes("prepinace prepinace-import"):
             with ui.column().classes("skupina-prepinacu"):
                 self.rezim = (
@@ -280,7 +301,7 @@ class ImportDialog:
                             REZIM_USD: "PT na opci v USD/ks",
                             REZIM_PREMIUM: "PT na opci v % prémie",
                         },
-                        value=REZIM_PCT,
+                        value=imp.pt_mode,
                     )
                     .props("dense")
                     .classes("prepinac")
@@ -301,7 +322,10 @@ class ImportDialog:
                 self.sl_spread_compensated = (
                     ui.checkbox(
                         "SL o zaplacený spread dál",
-                        value=self.cfg.trading.sl_spread_compensated,
+                        value=vychozi(
+                            imp.sl_spread_compensated,
+                            self.cfg.trading.sl_spread_compensated,
+                        ),
                     )
                     .props("dense")
                     .classes("prepinac prepinac-podrizeny")
@@ -314,25 +338,30 @@ class ImportDialog:
                 )
 
         with ui.row().classes("radek"):
+            # Každý režim má vlastní pole s vlastní výchozí hodnotou -
+            # přepínač jen mění, které z nich je vidět. Prázdná volba
+            # v konfiguraci nechá pole nevyplněné
             self.pct_input = (
-                ui.number("PT [%]", value=100.0, format="%.2f", min=0)
+                ui.number("PT [%]", value=imp.pt_pct, format="%.2f", min=0)
                 .classes("pole")
                 .props("outlined dense step=any")
             )
             self.usd_input = (
-                ui.number("PT [USD/ks]", value=None, format="%.2f", min=0)
+                ui.number("PT [USD/ks]", value=imp.pt_usd, format="%.2f", min=0)
                 .classes("pole")
                 .props("outlined dense step=any")
             )
             self.premium_input = (
-                ui.number("PT [% prémie]", value=None, format="%.2f", min=0)
+                ui.number(
+                    "PT [% prémie]", value=imp.pt_premium_pct, format="%.2f", min=0
+                )
                 .classes("pole")
                 .props("outlined dense step=any")
             )
             self.spread_input = (
                 ui.number(
                     "Max. spread [%]",
-                    value=self.cfg.trading.max_spread_pct,
+                    value=vychozi(imp.max_spread_pct, self.cfg.trading.max_spread_pct),
                     format="%.2f",
                     min=0,
                 )
@@ -340,11 +369,14 @@ class ImportDialog:
                 .props("outlined dense step=any")
             )
             # RRR pro dopočet SL z PT u všech načtených pozic; mění se
-            # zřídka, výchozí hodnota vychází z konfigurace
+            # zřídka, výchozí hodnota vychází z konfigurace - buď přímo
+            # z importu, nebo z poměru SL:PT pro běžné zadání
             self.rrr_input = (
                 ui.number(
                     "RRR (PT:SL)",
-                    value=rrr_z_pomeru(self.cfg.trading.sl_to_pt_ratio),
+                    value=vychozi(
+                        imp.rrr, rrr_z_pomeru(self.cfg.trading.sl_to_pt_ratio)
+                    ),
                     format="%g",
                     min=0,
                 )
@@ -399,7 +431,7 @@ class ImportDialog:
             self.runner_min_input = (
                 ui.number(
                     "Runner od [ks]",
-                    value=self.cfg.trading.runner_min_quantity,
+                    value=imp.runner_min_quantity,
                     format="%.0f",
                     step=1,
                     min=1,
@@ -409,7 +441,7 @@ class ImportDialog:
                 .tooltip(
                     "Runner se nastaví jen pozicím s větším počtem kontraktů, "
                     "než je tato hodnota; menší pozice zůstanou na volbě Bez. "
-                    "Výchozí hodnota je trading.runner_min_quantity "
+                    "Výchozí hodnota je import.runner_min_quantity "
                     "z konfigurace."
                 )
             )
@@ -461,18 +493,26 @@ class ImportDialog:
         # jeho čísla ale zůstávají v jednotce původního režimu - označí se
         # tedy za neplatná a po odemčení se musí přepočítat, jinak by šla
         # do trhu jako úroveň v jiné jednotce
+        # Přepočítat má smysl jen tam, kde už nějaká čísla byla. Po načtení
+        # souboru se s přípravou čeká na tlačítko, takže ani přepnutí režimu
+        # nesmí sáhnout do TWS samo od sebe
+        pripraveno = any(radek.rezim_hodnot for radek in self.radky)
         for radek in self.radky:
             if self._zamceno(radek):
                 radek.rezim_hodnot = ""
                 continue
             self._vycisti_urovne(radek)
             radek.premie = None
-        self._naplanuj_pripravu()
+        if pripraveno:
+            self._naplanuj_pripravu()
 
     async def _on_upload(self, event: Any) -> None:
         """
-        Zpracuje vybraný soubor: načte pozice, vykreslí tabulku a rovnou
-        připraví zadání, aby obchodník viděl kontrakty, SL i množství.
+        Zpracuje vybraný soubor: načte pozice a vykreslí tabulku.
+
+        Nic se nepočítá - kontrakt, SL ani množství nevzniknou, dokud si
+        obchodník přepočet nevyžádá tlačítkem Přepočítat. Načtení souboru
+        tak nesahá do TWS a nechá čas doladit nastavení nad tabulkou.
         """
         soubor = event.file
         try:
@@ -509,11 +549,17 @@ class ImportDialog:
             ui.notify("V souboru není žádná použitelná položka.", type="warning")
             return
 
+        # Řádky zatím nemají čísla - ať je ve sloupci Stav vidět, na co se čeká
+        for radek in self.radky:
+            radek.stav(
+                "Čeká na přepočet - stiskněte Přepočítat.", "stav-import-varovani"
+            )
+
         ui.notify(
-            f"Načteno {len(vysledek.positions)} pozic ze souboru {soubor.name}.",
+            f"Načteno {len(vysledek.positions)} pozic ze souboru {soubor.name} - "
+            "zadání se připraví tlačítkem Přepočítat.",
             type="positive",
         )
-        await self._priprav_vse()
 
     def _vykresli_tabulku(self, pozice: list[ImportedPosition]) -> None:
         """Postaví tabulku načtených pozic - hlavičku a řádek pro každou pozici."""
@@ -658,7 +704,8 @@ class ImportDialog:
         """
         Vyprázdní PT, SL i množství řádku a označí jeho čísla za neplatná.
         Volá se při změně režimu cíle, kdy úrovně z předchozí volby dostávají
-        jiný význam. Zaškrtnutí zůstává - řádek se hned nato přepočítá.
+        jiný význam. Zaškrtnutí zůstává - řádek se buď hned nato přepočítá,
+        nebo (u dosud nepřipravených pozic) čeká na tlačítko Přepočítat.
         """
         radek.preview = None
         radek.pt_input.set_value(None)
@@ -716,7 +763,7 @@ class ImportDialog:
             self.runner_min_input.value if self.runner_min_input is not None else None
         )
         if hodnota is None or hodnota < 1:
-            return self.cfg.trading.runner_min_quantity
+            return self.cfg.import_.runner_min_quantity
         return int(hodnota)
 
     def _runner_pro_radek(self, radek: RadekPozice) -> str:
