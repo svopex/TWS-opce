@@ -853,6 +853,25 @@ se po nákupu založí rovnou rozdělené. Pozice s příliš malým množstvím
 nedostane (vyžaduje víc kontraktů, než je jeho velikost); obchod se přesto
 založí a důvod se objeví ve sloupci *Stav*.
 
+**Po otevření trhu přepočítat** řeší zadání připravené před otevřením burzy.
+Mimo obchodní hodiny TWS u opcí neposílá BID ani ASK, takže PT v procentech
+prémie, SL i množství vychází z odhadu prémie ze závěrečné ceny — a ten po
+pre-market gapu neplatí. Se zaškrtnutým přepínačem si každý obchod z dávky
+volbu odnese s sebou (dialog může být dávno zavřený) a engine ho po uplynutí
+prodlevy v poli **Prodleva [s]** jednou přepočítá podle živých kotací: PT
+zadané procentem prémie se odvodí znovu z aktuální odhadované nákupní ceny
+opce, PT v USD i na podkladu zůstává, SL a množství se dopočítají stejnými
+kroky jako při přípravě. Příkaz čekající v trhu se upraví na místě (stejné
+orderId), neruší se, takže nevzniká mezera, ve které by vstup utekl.
+Přepočítává se jen obchod, který ještě čeká na vstup; nakoupený se nemění.
+Dokud je spread nad limitem, chybí kotace nebo TWS příkaz zrovna mění,
+přepočet počká na další průchod smyčkou. Runner zapnutý před nákupem se
+přepočítá na nové úrovně (a vypne, když už na něj množství nestačí).
+Výsledek je v provozním logu a ve sloupci *Stav* dialogu („přepočteno po
+otevření"). Výchozí stav přepínače a prodlevy dává `import.refresh_after_open`
+a `import.refresh_after_open_sec` (v šabloně zapnuto, 60 s); prodleva má smysl,
+protože v prvních okamžicích po otevření jsou kotace opcí nejširší.
+
 Celý formulář dialogu se předvyplňuje ze sekce **`import`** v konfiguraci,
 takže se po otevření nemusí nic přepínat:
 
@@ -862,6 +881,7 @@ takže se po otevření nemusí nic přepínat:
 | `pt_pct`, `pt_usd`, `pt_premium_pct` | obsah tří polí PT; každý režim má vlastní, `null` nechá pole prázdné |
 | `runner_multiple` | výchozí volba runneru (`0` = nepoužít, jinak nabízený násobek) |
 | `runner_min_quantity` | obsah pole *Runner od [ks]* |
+| `refresh_after_open`, `refresh_after_open_sec` | přepínač *Po otevření trhu přepočítat* a pole *Prodleva [s]* |
 | `max_spread_pct`, `rrr`, `sl_spread_compensated` | totéž co v běžném formuláři; `null` = převzít ze sekce `trading` |
 
 Poslední tři volby má i formulář jednotlivého zadání. Prázdná hodnota (`null`)

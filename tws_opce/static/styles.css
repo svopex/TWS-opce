@@ -766,6 +766,18 @@ body.body--dark .log-radek {
   width: 110px;
 }
 
+/* Řádek přepočtu po otevření burzy - přepínač a pole s prodlevou v sekundách */
+.dialog-import .radek-obnova {
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.dialog-import .pole-obnova-sec {
+  margin-left: 10px;
+  width: 110px;
+}
+
 /* Tabulka načtených pozic. Šířky sloupců drží zarovnání buněk, které jsou
    přímými potomky mřížky; poslední sloupec (stav) dobírá zbytek místa */
 .dialog-import .tabulka-import {

@@ -144,7 +144,7 @@ trading:
   # Je-li spread vyšší, nákupní příkaz se do trhu nezadá; pokud už zadán byl
   # a dosud se nevyplnil, aplikace jej z trhu odstraní. Hodnotu lze pro každý
   # obchod přepsat přímo ve formuláři.
-  max_spread_pct: 6.0
+  max_spread_pct: 7.0
 
   # Typ nákupního příkazu, který se použije po splnění cenové podmínky
   # na podkladovém aktivu:
@@ -309,11 +309,23 @@ import:
   # Následující tři volby má i běžný formulář zadání. Prázdná hodnota (null)
   # znamená převzít nastavení ze sekce trading, vyplněná dovolí, aby se
   # hromadné zadání od jednotlivého lišilo.
-  max_spread_pct: null
+  max_spread_pct: 7.0
+
   # Poměr PT:SL tak, jak se zadává v dialogu - RRR 2 znamená, že PT je
   # dvakrát dál než SL. Prázdná hodnota se odvodí z trading.sl_to_pt_ratio.
   rrr: 0.75
   sl_spread_compensated: true
+
+  # Přepočet po otevření burzy. Obchody zadané před otevřením mají PT (v %
+  # prémie), SL i množství spočítané z odhadu prémie ze závěrečné ceny, který
+  # po gapu neplatí. Se zapnutou volbou engine každý čekající obchod z dávky
+  # jednou přepočítá podle živých kotací a čekající příkaz upraví na místě
+  # (neruší ho). Obchod, který už nakoupil, se nemění. Volba jen předvyplní
+  # přepínač v dialogu.
+  refresh_after_open: true
+  # Kolik sekund po otevření burzy se přepočet provede. V prvních okamžicích
+  # jsou kotace opcí nejširší; dokud je spread nad limitem, přepočet počká.
+  refresh_after_open_sec: 60
 
 
 # -----------------------------------------------------------------------------

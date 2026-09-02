@@ -44,6 +44,9 @@ SAVED_FIELDS = (
     "pt_in_premium",
     "sl_in_premium",
     "premium_base",
+    # Přepočet po otevření burzy - po restartu se musí vědět, zda ještě čeká
+    "refresh_after_open_sec",
+    "refresh_after_open_done",
     "primary_level",
     "sl_to_pt_ratio",
     "expiration",

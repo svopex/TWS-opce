@@ -256,6 +256,10 @@ class FlowRequest:
     sl_in_premium: bool = False
     # Cena opce (USD za kus), ze které se procenta na USD převáděla
     premium_base: float | None = None
+    # Přepočet po otevření burzy: za kolik sekund od otevření se čekajícímu
+    # obchodu přepočítají PT, SL a množství podle živých kotací. None znamená
+    # nepřepočítávat - viz Flow.refresh_after_open_sec
+    refresh_after_open_sec: float | None = None
 
 
 @dataclass
@@ -308,6 +312,14 @@ class Flow:
     # převod musí vyjít z téže hodnoty, jinak by se zadaná procenta posunula
     # podle aktuální kotace. None znamená, že se procenta nepoužila
     premium_base: float | None = None
+
+    # Přepočet po otevření burzy. Obchod zadaný před otevřením má úrovně
+    # i množství z odhadu prémie (typicky ze závěrečné ceny), který po gapu
+    # neplatí; tolik sekund po otevření se čekajícímu obchodu PT, SL
+    # a množství dopočítají znovu z živých kotací. None = nepřepočítávat.
+    # Hotový přepočet si obchod poznamená, aby proběhl jen jednou
+    refresh_after_open_sec: float | None = None
+    refresh_after_open_done: bool = False
 
     # Prvotní úroveň zadání: 'sl' znamená, že obchodník zadal SL a PT se
     # dopočítalo, 'pt' naopak. Z uložených úrovní to poznat nejde (obě se

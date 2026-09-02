@@ -166,6 +166,14 @@ class ImportConfig:
     # než SL). Prázdná hodnota se odvodí z trading.sl_to_pt_ratio
     rrr: float | None = None
     sl_spread_compensated: bool | None = None
+    # Přepočet čekajících obchodů po otevření burzy podle živých kotací:
+    # PT (v % prémie), SL i množství se dopočítají znovu ze skutečné prémie
+    # a čekající nákupní příkaz se upraví na místě. Volba jen předvyplní
+    # přepínač v dialogu, u každé dávky ji lze vypnout
+    refresh_after_open: bool = True
+    # Prodleva od otevření burzy v sekundách - v prvních okamžicích jsou
+    # kotace opcí nejširší, přepočet proto chvíli počká
+    refresh_after_open_sec: float = 60.0
 
 
 @dataclass
@@ -400,6 +408,9 @@ def validate_config(cfg: AppConfig) -> None:
         )
     if cfg.import_.runner_min_quantity < 1:
         problems.append("import.runner_min_quantity musí být alespoň 1")
+    # Nula je platná (přepočet hned po otevření), záporná prodleva nedává smysl
+    if cfg.import_.refresh_after_open_sec < 0:
+        problems.append("import.refresh_after_open_sec nesmí být záporné")
     if cfg.expiration.mode not in EXPIRATION_MODES:
         problems.append(
             f"expiration.mode musí být jedna z {EXPIRATION_MODES}, nalezeno '{cfg.expiration.mode}'"

@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.fake_ib import UNDERLYING_CONID
 from tests.zaklad import ZakladEnginu
-from tws_opce import calc
+from tws_opce import calc, store
 from tws_opce.models import FlowRequest, FlowState
 
 
@@ -2522,6 +2522,344 @@ class TestUkliduNeobchodovanych(ZakladTestu):
         await self.priprav_prehled()
         self.assertEqual(self.engine.remove_untraded(), 2)
         self.assertEqual(self.engine.remove_untraded(), 0)
+
+
+class TestPrepoctuPoOtevreni(ZakladTestu):
+    """
+    Přepočet čekajícího obchodu po otevření burzy podle živých kotací.
+
+    Obchod zadaný před otevřením má úrovně i množství z odhadu prémie;
+    po prodlevě od otevření se dopočítají znovu a příkaz v trhu se upraví
+    na místě. Přepočet běží jednou a jen u obchodu, který ještě čeká na vstup.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Větší účet, aby množství nebylo přibité na minimu 1 ks
+        self.cfg.account.size = 50000.0
+
+    def burza(self, sekund_po_otevreni: float) -> None:
+        """Podvrhne čas burzy na daný počet sekund po otevření (středa 19. 8. 2026)."""
+        otevreni = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("America/New_York"))
+        self.engine._exchange_now = lambda: otevreni + timedelta(seconds=sekund_po_otevreni)
+
+    def zmen_kotace(self) -> None:
+        """Opce po otevření zlevnila - jiná implikovaná volatilita, jiná delta."""
+        self.ib.price_bid = 1.50
+        self.ib.price_ask = 1.55
+        self.ib.greek_delta = 0.20
+
+    async def ocekavane(self, **zmeny):
+        """
+        Co by z týchž kotací spočítala čerstvá příprava zadání - přepočet
+        musí dojít ke stejným číslům, jinak by dialog a engine počítaly jinak.
+        """
+        parametry = dict(
+            symbol="AAPL",
+            entry_price=232.0,
+            profit_target=235.0,
+            stop_loss=None,
+            pt_on_underlying=True,
+            sl_on_underlying=True,
+            sl_spread_compensated=False,
+            sl_to_pt_ratio=None,
+            max_spread_pct=5.0,
+        )
+        parametry.update(zmeny)
+        return await self.engine.prepare(**parametry)
+
+    async def zaloz_v_premii(self, **zmeny):
+        """
+        Obchod z hromadného zadání v procentech prémie: PT 9 USD/ks jsou 3 %
+        z prémie 3,00 (300 USD na kontrakt), SL podle poměru 1:1.
+        """
+        pozadavek = FlowRequest(
+            symbol="AAPL",
+            entry_price=232.0,
+            profit_target=9.0,
+            pt_on_underlying=False,
+            sl_on_underlying=False,
+            pt_in_premium=True,
+            sl_in_premium=True,
+            premium_base=3.0,
+            sl_to_pt_ratio=1.0,
+            refresh_after_open_sec=60,
+        )
+        for klic, hodnota in zmeny.items():
+            setattr(pozadavek, klic, hodnota)
+        return await self.engine.start_flow(pozadavek)
+
+    async def test_prepocet_upravi_mnozstvi_i_prikaz_v_trhu(self):
+        flow = await self.zaloz_v_premii()
+        puvodni_ks = flow.quantity
+        self.assertEqual(flow.state, FlowState.ARMED)
+
+        # Opce zdražila: stejná procenta prémie jsou větší ztráta na kontrakt
+        # a z rizika 500 USD vyjde méně kontraktů
+        self.ib.price_bid = 4.00
+        self.ib.price_ask = 4.10
+        self.burza(61)
+        await self.engine._tick()
+
+        self.assertTrue(flow.refresh_after_open_done)
+        self.assertEqual(
+            flow.quantity, calc.suggest_quantity_for_loss(500.0, flow.stop_loss, 1, 100)
+        )
+        self.assertLess(flow.quantity, puvodni_ks)
+        # Příkaz v trhu se upravil na místě: stejné orderId, nové množství
+        self.assertEqual(len(self.ib.placed), 1)
+        self.assertEqual(self.ib.placed[0].order.totalQuantity, flow.quantity)
+        self.assertEqual(flow.entry_order_id, self.ib.placed[0].order.orderId)
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertIn("Přepočteno po otevření", flow.message)
+        self.assertTrue(
+            any("přepočteno 61 s po otevření" in zprava for _, zprava in self.engine.events)
+        )
+
+    async def test_na_podkladu_vyjde_stejne_jako_cerstva_priprava(self):
+        flow = await self.zaloz_call(refresh_after_open_sec=60)
+        self.zmen_kotace()
+        nahled = await self.ocekavane()
+
+        self.burza(61)
+        await self.engine._tick()
+
+        # Přepočet a příprava zadání musí z týchž kotací dojít ke stejným číslům
+        self.assertTrue(flow.refresh_after_open_done)
+        self.assertEqual(flow.quantity, nahled.quantity)
+        # PT i SL na podkladu nezávisí na kotacích - zůstávají
+        self.assertAlmostEqual(flow.profit_target, 235.0)
+        self.assertAlmostEqual(flow.stop_loss, 229.0)
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(len(self.ib.placed), 1)
+        self.assertEqual(self.ib.placed[0].order.totalQuantity, flow.quantity)
+
+    async def test_pred_uplynutim_prodlevy_se_ceka(self):
+        flow = await self.zaloz_call(refresh_after_open_sec=60)
+        puvodni_ks = flow.quantity
+        self.zmen_kotace()
+
+        self.burza(30)
+        await self.engine._tick()
+        self.assertFalse(flow.refresh_after_open_done)
+        self.assertEqual(flow.quantity, puvodni_ks)
+
+        # Prodleva uplynula - přepočet proběhne při dalším průchodu
+        self.burza(60)
+        await self.engine._tick()
+        self.assertTrue(flow.refresh_after_open_done)
+
+    async def test_mimo_obchodni_hodiny_se_neprepocitava(self):
+        flow = await self.zaloz_call(refresh_after_open_sec=60)
+        puvodni_ks = flow.quantity
+        self.zmen_kotace()
+
+        # Hodinu před otevřením burza nemá živé kotace, přepočet nemá z čeho vyjít
+        self.burza(-3600)
+        await self.engine._tick()
+        self.assertFalse(flow.refresh_after_open_done)
+        self.assertEqual(flow.quantity, puvodni_ks)
+
+    async def test_bez_volby_se_nic_nemeni(self):
+        flow = await self.zaloz_call()
+        puvodni_ks = flow.quantity
+        self.zmen_kotace()
+
+        self.burza(600)
+        await self.engine._tick()
+        self.assertIsNone(flow.refresh_after_open_sec)
+        self.assertFalse(flow.refresh_after_open_done)
+        self.assertEqual(flow.quantity, puvodni_ks)
+
+    async def test_prepocet_probehne_jen_jednou(self):
+        flow = await self.zaloz_call(refresh_after_open_sec=60)
+        self.zmen_kotace()
+        self.burza(61)
+        await self.engine._tick()
+        prepoctene_ks = flow.quantity
+
+        # Další změna kotací už množství nehýbe
+        self.ib.price_bid = 6.00
+        self.ib.price_ask = 6.10
+        self.ib.greek_delta = 0.60
+        self.burza(120)
+        await self.engine._tick()
+        self.assertEqual(flow.quantity, prepoctene_ks)
+
+    async def test_pri_spreadu_nad_limitem_prepocet_pocka(self):
+        flow = await self.zaloz_call(refresh_after_open_sec=60)
+        puvodni_ks = flow.quantity
+
+        # Široký spread po otevření: příkaz jde z trhu, přepočet čeká
+        self.ib.price_bid = 3.00
+        self.ib.price_ask = 3.50
+        self.burza(61)
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
+        self.assertFalse(flow.refresh_after_open_done)
+        self.assertEqual(flow.quantity, puvodni_ks)
+
+        # Spread se stáhl - přepočet proběhne a příkaz se vrací do trhu už
+        # s novým množstvím
+        self.zmen_kotace()
+        nahled = await self.ocekavane()
+        flow.blocked_since = datetime.now() - timedelta(seconds=60)
+        self.burza(120)
+        await self.engine._tick()
+
+        self.assertTrue(flow.refresh_after_open_done)
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(flow.quantity, nahled.quantity)
+        self.assertEqual(self.ib.placed[-1].order.totalQuantity, nahled.quantity)
+
+    async def test_pt_v_procentech_premie_se_prepocita_z_nove_ceny(self):
+        flow = await self.zaloz_v_premii()
+        self.assertAlmostEqual(flow.stop_loss, 9.0)
+
+        # Opce zdražila - stejná tři procenta znamenají větší částku
+        self.ib.price_bid = 4.00
+        self.ib.price_ask = 4.10
+        self.burza(61)
+        await self.engine._tick()
+
+        self.assertTrue(flow.refresh_after_open_done)
+        self.assertGreater(flow.premium_base, 3.0)
+        self.assertAlmostEqual(flow.profit_target, round(3.0 * flow.premium_base, 2))
+        self.assertAlmostEqual(flow.original_profit_target, flow.profit_target)
+        self.assertAlmostEqual(flow.stop_loss, round(flow.profit_target * 1.0, 2))
+        self.assertAlmostEqual(flow.original_stop_loss, flow.stop_loss)
+        # Množství vychází z nové ztráty na kontrakt: 500 USD / (SL × 100)
+        self.assertEqual(
+            flow.quantity,
+            calc.suggest_quantity_for_loss(500.0, flow.stop_loss, 1, 100),
+        )
+
+    async def test_pt_v_usd_zustava_prepocita_se_jen_zbytek(self):
+        flow = await self.engine.start_flow(
+            FlowRequest(
+                symbol="AAPL",
+                entry_price=232.0,
+                profit_target=60.0,
+                pt_on_underlying=False,
+                sl_on_underlying=False,
+                sl_spread_compensated=True,
+                sl_to_pt_ratio=0.5,
+                refresh_after_open_sec=60,
+            )
+        )
+        self.assertAlmostEqual(flow.profit_target, 60.0)
+        self.assertAlmostEqual(flow.stop_loss, 30.0)
+
+        self.zmen_kotace()
+        self.burza(61)
+        await self.engine._tick()
+
+        self.assertTrue(flow.refresh_after_open_done)
+        # Částka v USD není odvozená od prémie, přepočet ji nemění
+        self.assertAlmostEqual(flow.profit_target, 60.0)
+        self.assertAlmostEqual(flow.stop_loss, 30.0)
+        self.assertIsNone(flow.premium_base)
+
+    async def test_runner_pred_nakupem_se_prepocita_na_nove_urovne(self):
+        flow = await self.zaloz_v_premii()
+        await self.engine.set_runner(flow.id, 2.0)
+        self.assertAlmostEqual(flow.runner_profit_target, 18.0)
+
+        self.ib.price_bid = 4.00
+        self.ib.price_ask = 4.10
+        self.burza(61)
+        await self.engine._tick()
+
+        # Dvojnásobek se počítá z nového PT, SL runneru sleduje nový SL
+        self.assertTrue(flow.runner_active)
+        self.assertAlmostEqual(flow.runner_profit_target, round(flow.profit_target * 2, 2))
+        self.assertAlmostEqual(flow.runner_stop_loss, flow.stop_loss)
+
+    async def test_runner_se_vypne_kdyz_na_nej_mnozstvi_nestaci(self):
+        flow = await self.zaloz_call(refresh_after_open_sec=60)
+        await self.engine.set_runner(flow.id, 2.0)
+        self.assertTrue(flow.runner_active)
+
+        # Účet se mezitím scvrkl - riziko dovolí jediný kontrakt
+        self.cfg.account.size = 100.0
+        self.burza(61)
+        await self.engine._tick()
+
+        self.assertEqual(flow.quantity, 1)
+        self.assertFalse(flow.runner_active)
+        self.assertTrue(
+            any("runner po přepočtu vypnut" in zprava for _, zprava in self.engine.events)
+        )
+
+    async def test_nakoupeny_obchod_se_neprepocitava(self):
+        flow = await self.zaloz_call(refresh_after_open_sec=60)
+        puvodni_ks = flow.quantity
+        self.ib.fill(flow.entry_trade, puvodni_ks, 3.05)
+        await self.engine._tick()
+        self.assertFalse(flow.state.is_before_entry)
+
+        self.zmen_kotace()
+        self.burza(61)
+        await self.engine._tick()
+        self.assertFalse(flow.refresh_after_open_done)
+        self.assertEqual(flow.quantity, puvodni_ks)
+
+    async def test_castecne_vyplneny_prikaz_se_neupravuje(self):
+        flow = await self.zaloz_call(refresh_after_open_sec=60)
+        puvodni_ks = flow.quantity
+        # Příkaz se právě plní - modifikace by závodila s vyplněním
+        flow.entry_trade.orderStatus.filled = 1
+        flow.entry_trade.orderStatus.status = "Submitted"
+
+        self.zmen_kotace()
+        self.burza(61)
+        # Vyplnění se zaregistruje dřív, než přepočet přijde na řadu
+        await self.engine._tick()
+        self.assertFalse(flow.refresh_after_open_done)
+        self.assertEqual(self.ib.placed[0].order.totalQuantity, puvodni_ks)
+
+    async def test_smiseny_rezim_urovni_se_vynecha(self):
+        flow = await self.engine.start_flow(
+            FlowRequest(
+                symbol="AAPL",
+                entry_price=232.0,
+                profit_target=235.0,
+                stop_loss=60.0,
+                pt_on_underlying=True,
+                sl_on_underlying=False,
+                refresh_after_open_sec=60,
+            )
+        )
+        puvodni = (flow.profit_target, flow.stop_loss, flow.quantity)
+        self.zmen_kotace()
+        self.burza(61)
+        await self.engine._tick()
+
+        self.assertTrue(flow.refresh_after_open_done)
+        self.assertEqual((flow.profit_target, flow.stop_loss, flow.quantity), puvodni)
+        self.assertTrue(
+            any("přepočet po otevření vynechán" in zprava for _, zprava in self.engine.events)
+        )
+
+    async def test_cas_od_otevreni_burzy(self):
+        self.burza(90)
+        self.assertAlmostEqual(self.engine.market_open_elapsed(), 90.0)
+        # Před otevřením i po zavření burzy se čas od otevření neměří
+        self.burza(-60)
+        self.assertIsNone(self.engine.market_open_elapsed())
+        self.burza(7 * 3600)
+        self.assertIsNone(self.engine.market_open_elapsed())
+
+    async def test_volba_prezije_ulozeni_stavu(self):
+        flow = await self.zaloz_call(refresh_after_open_sec=45)
+        flow.refresh_after_open_done = True
+        obnoveny = store.dict_to_flow(store.flow_to_dict(flow))
+        self.assertEqual(obnoveny.refresh_after_open_sec, 45)
+        self.assertTrue(obnoveny.refresh_after_open_done)
+
+        # Obchod bez volby ji nemá ani po obnově
+        bez = await self.zaloz_call(symbol="MSFT")
+        self.assertIsNone(store.dict_to_flow(store.flow_to_dict(bez)).refresh_after_open_sec)
 
 
 if __name__ == "__main__":

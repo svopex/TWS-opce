@@ -215,6 +215,10 @@ class ImportDialog:
         # Pole s nejmenším množstvím, od kterého se runner nastavuje. Vzniká
         # až s vykresleným dialogem, do té doby platí hodnota z konfigurace
         self.runner_min_input: Any = None
+        # Přepínač a prodleva přepočtu po otevření burzy - také vznikají až
+        # s vykresleným dialogem, do té doby platí konfigurace
+        self.refresh_checkbox: Any = None
+        self.refresh_sec_input: Any = None
         # Načtené pozice v pořadí ze souboru
         self.radky: list[RadekPozice] = []
         # Jméno naposledy načteného souboru - ukazuje se nad tabulkou
@@ -447,6 +451,44 @@ class ImportDialog:
             )
             self.runner_min_input.on_value_change(
                 lambda _=None: self._obnov_runner_vsech()
+            )
+
+        # Přepočet po otevření burzy. Obchody zadané před otevřením vychází
+        # z odhadu prémie ze závěrečné ceny, který po gapu neplatí; engine je
+        # po zadané prodlevě od otevření přepočítá podle živých kotací
+        # a čekající příkaz upraví na místě. Volba se zapisuje do každého
+        # zakládaného obchodu, takže platí i po zavření dialogu
+        with ui.row().classes("radek radek-obnova"):
+            self.refresh_checkbox = (
+                ui.checkbox("Po otevření trhu přepočítat", value=imp.refresh_after_open)
+                .props("dense")
+                .classes("prepinac")
+                .tooltip(
+                    "Zaškrtnuto: obchody z této dávky, které po otevření burzy "
+                    "ještě čekají na vstup, se po uplynutí prodlevy vpravo jednou "
+                    "přepočítají podle živých kotací - PT v procentech prémie, SL "
+                    "i množství vyjdou ze skutečné ceny opce místo odhadu ze "
+                    "závěrečné ceny. Čekající příkaz v trhu se upraví na místě, "
+                    "neruší se. Obchod, který už nakoupil, se nemění. Dokud je "
+                    "spread nad limitem, přepočet počká."
+                )
+            )
+            self.refresh_sec_input = (
+                ui.number(
+                    "Prodleva [s]",
+                    value=imp.refresh_after_open_sec,
+                    format="%.0f",
+                    step=5,
+                    min=0,
+                )
+                .classes("pole pole-obnova-sec")
+                .props("outlined dense")
+                .tooltip(
+                    "Kolik sekund po otevření burzy se přepočet provede. "
+                    "V prvních okamžicích jsou kotace opcí nejširší, proto "
+                    "chvíli počkat. Výchozí hodnota je "
+                    "import.refresh_after_open_sec z konfigurace."
+                )
             )
 
         # Výchozí režim rozhoduje, které pole cíle je vidět a zda je dostupná
@@ -826,6 +868,26 @@ class ImportDialog:
         """Kompenzace SL o spread - uplatní se jen při SL zadaném na opci."""
         return bool(self.sl_spread_compensated.value) and self.rezim.value in REZIMY_NA_OPCI
 
+    def _refresh_after_open_sec(self) -> float | None:
+        """
+        Prodleva přepočtu po otevření burzy pro zakládané obchody; None
+        znamená přepočet nepoužít (vypnutý přepínač). Prázdné nebo záporné
+        pole spadne zpět na hodnotu z konfigurace, ať se přepočet neřídí
+        náhodným číslem. Bez vykreslených prvků platí konfigurace celá.
+        """
+        imp = self.cfg.import_
+        zapnuto = imp.refresh_after_open
+        if self.refresh_checkbox is not None:
+            zapnuto = bool(self.refresh_checkbox.value)
+        if not zapnuto:
+            return None
+        hodnota = self._cislo(
+            self.refresh_sec_input.value if self.refresh_sec_input is not None else None
+        )
+        if hodnota is None or hodnota < 0:
+            return float(imp.refresh_after_open_sec)
+        return float(hodnota)
+
     def _zadana_hodnota(self) -> float | None:
         """
         Číslo vyplněné v poli aktuálního režimu. Prázdné i nekladné pole
@@ -1149,7 +1211,15 @@ class ImportDialog:
             popis_runneru = f", runner {flow.runner_quantity} ks"
             if nasobek is not None:
                 popis_runneru += f" na {nasobek:g}×"
-        text = f"Zadáno {flow.id} – {flow.state.label}{popis_runneru}"
+        # Přepočet po otevření burzy: čekající obchod na něj ještě čeká,
+        # nebo už proběhl; obchod bez volby ani po nákupu nic nehlásí
+        popis_prepoctu = ""
+        if flow.refresh_after_open_sec is not None:
+            if flow.refresh_after_open_done:
+                popis_prepoctu = ", přepočteno po otevření"
+            elif flow.state.is_before_entry:
+                popis_prepoctu = f", přepočet {flow.refresh_after_open_sec:g} s po otevření"
+        text = f"Zadáno {flow.id} – {flow.state.label}{popis_runneru}{popis_prepoctu}"
         if radek.poznamka:
             return f"{text}; {radek.poznamka}", "stav-import-varovani"
         if flow.state.is_active:
@@ -1276,6 +1346,7 @@ class ImportDialog:
         max_spread = self._max_spread()
         sl_spread = self._sl_spread()
         pomer = self._pomer()
+        prepocet_sec = self._refresh_after_open_sec()
         rezim_cile = self.rezim.value
         rezim_urovni = uroven_cile(rezim_cile)
 
@@ -1317,6 +1388,8 @@ class ImportDialog:
                     max_spread_pct=max_spread,
                     sl_spread_compensated=sl_spread,
                     sl_to_pt_ratio=pomer,
+                    # Přepočet po otevření burzy platí pro celou dávku
+                    refresh_after_open_sec=prepocet_sec,
                     # Jediná volba cíle určuje režim PT i SL a na příznaky
                     # zadání se rozbaluje jedním voláním, takže se úrovně
                     # nemohou rozejít. Procenta prémie se přenášejí jen

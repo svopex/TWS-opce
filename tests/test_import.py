@@ -398,6 +398,23 @@ class TestZamekRadku(unittest.TestCase):
     def test_nezadany_radek_neni_zamceny(self):
         self.assertFalse(self.dialog._zamceno(RadekPozice(pozice=self.pozice)))
 
+    def test_stav_hlasi_cekajici_i_hotovy_prepocet(self):
+        # Čekající obchod s volbou hlásí, kdy se přepočítá; hotový, že už proběhl
+        radek = self.radek(FlowState.ARMED)
+        flow = self.engine.flows["AMZN-1"]
+        self.assertNotIn("přepoč", self.dialog._stav_zadaneho(radek)[0])
+
+        flow.refresh_after_open_sec = 60
+        self.assertIn("přepočet 60 s po otevření", self.dialog._stav_zadaneho(radek)[0])
+
+        flow.refresh_after_open_done = True
+        self.assertIn("přepočteno po otevření", self.dialog._stav_zadaneho(radek)[0])
+
+        # Nakoupený obchod bez proběhlého přepočtu už nic neslibuje
+        flow.refresh_after_open_done = False
+        flow.state = FlowState.EXIT_ARMED
+        self.assertNotIn("přepoč", self.dialog._stav_zadaneho(radek)[0])
+
     def test_obchod_cekajici_na_vstup_lze_prepsat(self):
         # Tyhle stavy engine při novém zadání sám zruší a nahradí
         for stav in (
@@ -591,6 +608,36 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(zadani.premium_base, 3.00)
         self.assertFalse(zadani.pt_on_underlying)
         self.assertFalse(zadani.sl_on_underlying)
+
+    async def test_prepocet_po_otevreni_jde_do_zadani_z_konfigurace(self):
+        # Bez vykreslených prvků platí konfigurace: zapnuto, 60 s
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani[0].refresh_after_open_sec, 60.0)
+
+    async def test_prepocet_po_otevreni_podle_prepinace_a_pole(self):
+        self.dialog.refresh_checkbox = Zaskrtavatko(True)
+        self.dialog.refresh_sec_input = Pole(90)
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani[0].refresh_after_open_sec, 90.0)
+
+        # Vypnutý přepínač znamená nepřepočítávat - bez ohledu na pole
+        self.dialog.refresh_checkbox.set_value(False)
+        await self.zadej(self.radek())
+        self.assertIsNone(self.zadani[1].refresh_after_open_sec)
+
+    async def test_prazdne_pole_prodlevy_bere_konfiguraci(self):
+        self.dialog.refresh_checkbox = Zaskrtavatko(True)
+        self.dialog.refresh_sec_input = Pole(None)
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani[0].refresh_after_open_sec, 60.0)
+
+        # Nula je platná prodleva (přepočet hned po otevření), záporná ne
+        self.dialog.refresh_sec_input.set_value(0)
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani[1].refresh_after_open_sec, 0.0)
+        self.dialog.refresh_sec_input.set_value(-5)
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani[2].refresh_after_open_sec, 60.0)
 
     async def test_usd_na_opci_nechava_obe_urovne_v_usd(self):
         self.dialog.rezim.set_value(REZIM_USD)
@@ -916,6 +963,21 @@ class TestKonfiguraceImportu(unittest.TestCase):
         self.cfg.import_.max_spread_pct = None
         self.cfg.import_.rrr = None
         self.cfg.import_.sl_spread_compensated = None
+        validate_config(self.cfg)
+
+    def test_vychozi_prepocet_po_otevreni(self):
+        # Výchozí stav: zapnuto s minutovou prodlevou
+        self.assertTrue(self.cfg.import_.refresh_after_open)
+        self.assertEqual(self.cfg.import_.refresh_after_open_sec, 60.0)
+
+    def test_zaporna_prodleva_prepoctu_neprojde(self):
+        self.cfg.import_.refresh_after_open_sec = -1
+        with self.assertRaises(ValueError) as chyba:
+            validate_config(self.cfg)
+        self.assertIn("import.refresh_after_open_sec", str(chyba.exception))
+
+    def test_nulova_prodleva_prepoctu_projde(self):
+        self.cfg.import_.refresh_after_open_sec = 0
         validate_config(self.cfg)
 
 

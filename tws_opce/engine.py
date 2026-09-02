@@ -545,116 +545,13 @@ class FlowEngine:
             await self.ib.wait_for_quotes(
                 option, self.cfg.engine.market_data_timeout_sec, self.cfg.engine.quotes_grace_sec
             )
-            bid, ask, delta = self.ib.option_quotes(option)
-            preview.option_bid = bid
-            preview.option_ask = ask
-            preview.option_price, preview.option_price_source = self.ib.option_price(option)
-            preview.spread_pct = calc.spread_pct(bid, ask)
-            preview.delta = delta
-
-            # TWS model greeks u opcí neposílá spolehlivě, proto se delta v takovém
-            # případě dopočítá z tržní ceny opce; teprve pak se sáhne po náhradní hodnotě
-            if delta is None:
-                delta = self._estimate_delta(preview)
-                if delta is not None:
-                    preview.delta = delta
-                    preview.delta_estimated = True
-
-            # Delta z TWS i dopočet z ceny opce platí pro dnešní cenu podkladu,
-            # jenže opce se kupuje teprve na vstupní úrovni. Leží-li vstup od
-            # trhu daleko, je dnešní delta výrazně nižší - rozhoduje proto ta
-            # při vstupu, dnešní zbývá jen tam, kde model spočítat nelze
-            preview.entry_delta = self._entry_delta(preview, entry_price)
-            rozhodna_delta = preview.entry_delta if preview.entry_delta is not None else delta
-
-            if rozhodna_delta is None:
-                preview.warnings.append(
-                    f"Deltu opce se nepodařilo získat ani dopočítat - množství je spočítáno "
-                    f"s náhradní hodnotou {self.cfg.trading.default_delta:g}."
-                )
-            used_delta = (
-                rozhodna_delta if rozhodna_delta is not None else self.cfg.trading.default_delta
+            # Kotace, delta a odhad nákupní ceny; z nich pak SL a množství.
+            # Stejné dva kroky používá i přepočet čekajícího obchodu po
+            # otevření burzy, proto jsou vyčleněné do samostatných metod
+            used_delta = self._load_option_market(preview, entry_price)
+            self._derive_levels(
+                preview, entry_price, profit_target, stop_loss, used_delta, limit_spreadu
             )
-
-            # Delta vybrané opce se kontroluje proti mezím z konfigurace - není
-            # to kritérium výběru, jen upozornění na kontrakt mimo obvyklé pásmo
-            varovani_delta = self._delta_warning(rozhodna_delta)
-            if varovani_delta is not None:
-                preview.warnings.append(varovani_delta)
-
-            # Odhad nákupní ceny opce - čistý výpočet z už načtených kotací
-            preview.expected_fill_price = self._expected_fill_price(preview, entry_price)
-
-            # Odhad kompenzace SL: spread vybrané opce v USD na kontrakt.
-            # Skutečně se připočte až spread zaplacený při nákupu. Stropuje se
-            # limitem spreadu - příkaz se nad ním do trhu nedostane a nevyplněný
-            # se z něj odstraní, takže širší spread obchod nezaplatí a množství
-            # by podle něj vyšlo zbytečně malé. Vypnuté zrušení příkazu při
-            # překročení limitu strop ruší: takový příkaz zůstává v trhu
-            # i po rozšíření spreadu a vyplnit se může za jakýkoliv
-            if preview.sl_spread_compensated:
-                preview.sl_spread_usd = calc.capped_spread_usd(
-                    bid,
-                    ask,
-                    limit_spreadu if self.cfg.trading.cancel_on_spread_breach else None,
-                    preview.expected_fill_price,
-                )
-
-            # SL buď zadaný uživatelem, nebo dopočtený podle poměru z konfigurace;
-            # při smíšeném režimu PT a SL se převádí přes cenu opce, proto až teď,
-            # kdy jsou k dispozici kotace vybrané opce
-            preview.stop_loss = (
-                stop_loss
-                if stop_loss is not None
-                else self._default_stop_loss(preview, entry_price, profit_target, used_delta)
-            )
-
-            # Množství z riskované částky a ztráty na kontrakt: při SL na podkladu
-            # se ztráta odhaduje přes deltu, při SL na opci je zadaná přímo v USD
-            if sl_on_underlying:
-                preview.quantity = calc.suggest_quantity(
-                    self.risk_amount,
-                    entry_price,
-                    preview.stop_loss,
-                    used_delta,
-                    self.cfg.trading.min_quantity,
-                    self.cfg.trading.max_quantity,
-                )
-            else:
-                # Ztráta na kontrakt se stropuje zaplacenou prémií. SL nad ní
-                # znamená stop na nejnižší možné ceně, který pozici prakticky
-                # nechrání - na to se musí upozornit už v náhledu, sám příkaz
-                # by později vypadal v pořádku
-                # Kompenzovaný SL zvětšuje ztrátu na kontrakt, takže se musí
-                # promítnout i do množství a do kontroly stropu prémie
-                ztrata = preview.stop_loss + preview.sl_spread_usd
-                cena = preview.expected_fill_price
-                if cena is not None:
-                    varovani = self._premium_cap_text(ztrata, cena, preview.min_tick, odhad=True)
-                    if varovani is not None:
-                        preview.warnings.append(varovani)
-                    ztrata = min(ztrata, calc.max_option_loss(cena, preview.min_tick))
-                preview.quantity = calc.suggest_quantity_for_loss(
-                    self.risk_amount,
-                    ztrata,
-                    self.cfg.trading.min_quantity,
-                    self.cfg.trading.max_quantity,
-                )
-
-            # Závěrečná cena je jediná dostupná mimo obchodní hodiny; pohnul-li se
-            # mezitím podklad (typicky pre-market gap), vyjde z ní nesmyslná
-            # implikovaná volatilita a s ní i dopočítané úrovně a množství
-            if preview.option_price_source == "close":
-                preview.warnings.append(
-                    "Opce nemá aktuální kotace, model počítá ze závěrečné ceny - "
-                    "dopočítané úrovně i doporučené množství mohou být nepřesné."
-                )
-
-            if preview.spread_pct is not None and preview.spread_pct > limit_spreadu:
-                preview.warnings.append(
-                    f"Aktuální spread {preview.spread_pct:.2f} % překračuje limit "
-                    f"{limit_spreadu:g} %."
-                )
 
             self._replace_preview(preview)
             return preview
@@ -667,6 +564,150 @@ class FlowEngine:
             if self._preview is not preview:
                 self.ib.unsubscribe(preview.underlying)
                 self.ib.unsubscribe(preview.option)
+
+    def _load_option_market(self, preview: Preview, entry_price: float) -> float:
+        """
+        Načte do náhledu tržní data vybrané opce (kotace, cena pro model,
+        spread, delta) a odhad nákupní ceny při vstupu; vrací deltu, se
+        kterou se dál počítá množství.
+
+        Sdílí ji příprava zadání i přepočet čekajícího obchodu po otevření
+        burzy, aby obě cesty došly ke stejným číslům. Kontrakt opce musí být
+        v náhledu už vybraný a odebíraný.
+        """
+        option = preview.option
+        bid, ask, delta = self.ib.option_quotes(option)
+        preview.option_bid = bid
+        preview.option_ask = ask
+        preview.option_price, preview.option_price_source = self.ib.option_price(option)
+        preview.spread_pct = calc.spread_pct(bid, ask)
+        preview.delta = delta
+
+        # TWS model greeks u opcí neposílá spolehlivě, proto se delta v takovém
+        # případě dopočítá z tržní ceny opce; teprve pak se sáhne po náhradní hodnotě
+        if delta is None:
+            delta = self._estimate_delta(preview)
+            if delta is not None:
+                preview.delta = delta
+                preview.delta_estimated = True
+
+        # Delta z TWS i dopočet z ceny opce platí pro dnešní cenu podkladu,
+        # jenže opce se kupuje teprve na vstupní úrovni. Leží-li vstup od
+        # trhu daleko, je dnešní delta výrazně nižší - rozhoduje proto ta
+        # při vstupu, dnešní zbývá jen tam, kde model spočítat nelze
+        preview.entry_delta = self._entry_delta(preview, entry_price)
+        rozhodna_delta = preview.entry_delta if preview.entry_delta is not None else delta
+
+        if rozhodna_delta is None:
+            preview.warnings.append(
+                f"Deltu opce se nepodařilo získat ani dopočítat - množství je spočítáno "
+                f"s náhradní hodnotou {self.cfg.trading.default_delta:g}."
+            )
+        used_delta = (
+            rozhodna_delta if rozhodna_delta is not None else self.cfg.trading.default_delta
+        )
+
+        # Delta vybrané opce se kontroluje proti mezím z konfigurace - není
+        # to kritérium výběru, jen upozornění na kontrakt mimo obvyklé pásmo
+        varovani_delta = self._delta_warning(rozhodna_delta)
+        if varovani_delta is not None:
+            preview.warnings.append(varovani_delta)
+
+        # Odhad nákupní ceny opce - čistý výpočet z už načtených kotací
+        preview.expected_fill_price = self._expected_fill_price(preview, entry_price)
+
+        return used_delta
+
+    def _derive_levels(
+        self,
+        preview: Preview,
+        entry_price: float,
+        profit_target: float,
+        stop_loss: float | None,
+        used_delta: float,
+        limit_spreadu: float,
+    ) -> None:
+        """
+        Dopočítá z načtených tržních dat zbytek náhledu: odhad kompenzace SL,
+        chybějící SL podle poměru SL:PT a množství z riskované částky; k tomu
+        varování na strop prémie, závěrečnou cenu a spread nad limitem.
+
+        Zadaný stop_loss má přednost, None znamená dopočítat. Druhý krok
+        přípravy zadání, sdílený s přepočtem obchodu po otevření burzy.
+        """
+        preview.profit_target = profit_target
+        bid, ask = preview.option_bid, preview.option_ask
+
+        # Odhad kompenzace SL: spread vybrané opce v USD na kontrakt.
+        # Skutečně se připočte až spread zaplacený při nákupu. Stropuje se
+        # limitem spreadu - příkaz se nad ním do trhu nedostane a nevyplněný
+        # se z něj odstraní, takže širší spread obchod nezaplatí a množství
+        # by podle něj vyšlo zbytečně malé. Vypnuté zrušení příkazu při
+        # překročení limitu strop ruší: takový příkaz zůstává v trhu
+        # i po rozšíření spreadu a vyplnit se může za jakýkoliv
+        if preview.sl_spread_compensated:
+            preview.sl_spread_usd = calc.capped_spread_usd(
+                bid,
+                ask,
+                limit_spreadu if self.cfg.trading.cancel_on_spread_breach else None,
+                preview.expected_fill_price,
+            )
+
+        # SL buď zadaný uživatelem, nebo dopočtený podle poměru z konfigurace;
+        # při smíšeném režimu PT a SL se převádí přes cenu opce, proto až teď,
+        # kdy jsou k dispozici kotace vybrané opce
+        preview.stop_loss = (
+            stop_loss
+            if stop_loss is not None
+            else self._default_stop_loss(preview, entry_price, profit_target, used_delta)
+        )
+
+        # Množství z riskované částky a ztráty na kontrakt: při SL na podkladu
+        # se ztráta odhaduje přes deltu, při SL na opci je zadaná přímo v USD
+        if preview.sl_on_underlying:
+            preview.quantity = calc.suggest_quantity(
+                self.risk_amount,
+                entry_price,
+                preview.stop_loss,
+                used_delta,
+                self.cfg.trading.min_quantity,
+                self.cfg.trading.max_quantity,
+            )
+        else:
+            # Ztráta na kontrakt se stropuje zaplacenou prémií. SL nad ní
+            # znamená stop na nejnižší možné ceně, který pozici prakticky
+            # nechrání - na to se musí upozornit už v náhledu, sám příkaz
+            # by později vypadal v pořádku
+            # Kompenzovaný SL zvětšuje ztrátu na kontrakt, takže se musí
+            # promítnout i do množství a do kontroly stropu prémie
+            ztrata = preview.stop_loss + preview.sl_spread_usd
+            cena = preview.expected_fill_price
+            if cena is not None:
+                varovani = self._premium_cap_text(ztrata, cena, preview.min_tick, odhad=True)
+                if varovani is not None:
+                    preview.warnings.append(varovani)
+                ztrata = min(ztrata, calc.max_option_loss(cena, preview.min_tick))
+            preview.quantity = calc.suggest_quantity_for_loss(
+                self.risk_amount,
+                ztrata,
+                self.cfg.trading.min_quantity,
+                self.cfg.trading.max_quantity,
+            )
+
+        # Závěrečná cena je jediná dostupná mimo obchodní hodiny; pohnul-li se
+        # mezitím podklad (typicky pre-market gap), vyjde z ní nesmyslná
+        # implikovaná volatilita a s ní i dopočítané úrovně a množství
+        if preview.option_price_source == "close":
+            preview.warnings.append(
+                "Opce nemá aktuální kotace, model počítá ze závěrečné ceny - "
+                "dopočítané úrovně i doporučené množství mohou být nepřesné."
+            )
+
+        if preview.spread_pct is not None and preview.spread_pct > limit_spreadu:
+            preview.warnings.append(
+                f"Aktuální spread {preview.spread_pct:.2f} % překračuje limit "
+                f"{limit_spreadu:g} %."
+            )
 
     def _model_delta(
         self,
@@ -1323,6 +1364,9 @@ class FlowEngine:
                 sl_in_premium=request.sl_in_premium,
                 premium_base=request.premium_base,
                 primary_level=request.primary_level,
+                # Přepočet po otevření burzy si obchod nese s sebou - dialog,
+                # který ho zadal, může být dávno zavřený
+                refresh_after_open_sec=request.refresh_after_open_sec,
                 # Z náhledu, ne ze zadání - ten už má doplněnou hodnotu
                 # z konfigurace pro případ nevyplněného pole RRR
                 sl_to_pt_ratio=preview.sl_to_pt_ratio,
@@ -2773,6 +2817,18 @@ class FlowEngine:
         # když mezi dneškem a cílem přeskočí hodina letního času
         return cil.timestamp() - ted.timestamp()
 
+    def market_open_elapsed(self) -> float | None:
+        """
+        Počet sekund od dnešního otevření burzy; None mimo obchodní hodiny.
+
+        Opírá se o market_open_seconds, aby oba údaje vycházely z téhož času
+        burzy - a aby jej testy mohly podvrhnout na jednom místě.
+        """
+        if self.market_open_seconds() is not None:
+            return None
+        ted = self._exchange_now()
+        return (ted - self._exchange_open(ted)).total_seconds()
+
     def auto_close_seconds(self) -> float | None:
         """
         Počet sekund do začátku automatického uzavírání obchodů.
@@ -3488,6 +3544,19 @@ class FlowEngine:
         if self._entry_missed(flow):
             return True
 
+        # Po otevření burzy se čekající obchod jednou přepočítá podle živých
+        # kotací. Obsluha spreadu běží hned poté, aby se příkaz blokovaný
+        # spreadem vracel do trhu už s přepočteným množstvím
+        prepocteno = self._refresh_after_open(flow)
+        return self._handle_spread(flow) or prepocteno
+
+    def _handle_spread(self, flow: Flow) -> bool:
+        """
+        Hlídání spreadu u obchodu před nákupem: příkaz nad limitem se z trhu
+        odstraňuje a po návratu spreadu pod limit zase zadává, čekání na
+        kotace končí zadáním příkazu a nevyplněnému příkazu se průběžně
+        upravuje limitní cena. Vrací True při změně stavu obchodu.
+        """
         spread = flow.option_spread_pct
         trading = self.cfg.trading
 
@@ -3528,6 +3597,169 @@ class FlowEngine:
             return self._update_entry_limit(flow)
 
         return False
+
+    def _preview_from_flow(self, flow: Flow, cena_podkladu: float) -> Preview:
+        """
+        Náhled nad kontraktem čekajícího obchodu - podklad pro přepočet úrovní
+        a množství stejnými kroky, jakými vzniklo původní zadání. Kontrakt se
+        nevybírá znovu: vstupní cena, od které se strike odvozuje, se nemění,
+        a příkaz v trhu se stejně dá upravit jen na témže kontraktu.
+        """
+        return Preview(
+            symbol=flow.symbol,
+            current_price=cena_podkladu,
+            right=flow.right,
+            expiration=flow.expiration,
+            strike=flow.strike,
+            profit_target=flow.profit_target,
+            pt_on_underlying=flow.pt_on_underlying,
+            sl_on_underlying=flow.sl_on_underlying,
+            # Starší uložený obchod poměr nezná - pak platí konfigurace
+            sl_to_pt_ratio=flow.sl_to_pt_ratio or self.cfg.trading.sl_to_pt_ratio,
+            sl_spread_compensated=flow.sl_spread_compensated,
+            risk_amount=self.risk_amount,
+            account_size=self.account_size,
+            underlying=flow.underlying_contract,
+            option=flow.option_contract,
+            min_tick=flow.min_tick,
+        )
+
+    def _refresh_after_open(self, flow: Flow) -> bool:
+        """
+        Jednorázový přepočet čekajícího obchodu po otevření burzy podle
+        živých kotací.
+
+        Obchod zadaný před otevřením má PT, SL i množství spočítané z odhadu
+        prémie (typicky ze závěrečné ceny), který po gapu neplatí. Po uplynutí
+        prodlevy od otevření se úrovně i množství dopočítají znovu stejnými
+        kroky jako při přípravě zadání - PT zadané procentem prémie i samo
+        z aktuální odhadované nákupní ceny, PT v USD a na podkladu zůstává -
+        a příkaz čekající v trhu se upraví na místě (stejné orderId), takže
+        se neruší a nezávodí s vyplněním.
+
+        Dokud nejsou kotace použitelné (chybí, nebo je spread nad limitem),
+        TWS příkaz právě mění, nebo není známa velikost účtu, přepočet počká
+        na další průchod smyčkou. Runner zapnutý před nákupem se přepočítá na
+        nové úrovně. Vrací True, pokud se obchod změnil.
+        """
+        if flow.refresh_after_open_sec is None or flow.refresh_after_open_done:
+            return False
+        uplynulo = self.market_open_elapsed()
+        if uplynulo is None or uplynulo < flow.refresh_after_open_sec:
+            return False
+
+        # Smíšený režim úrovní hromadné zadání nevytváří; přepočet by musel
+        # převádět přes referenční opci, kterou obchod nedrží
+        if flow.pt_on_underlying != flow.sl_on_underlying:
+            flow.refresh_after_open_done = True
+            self.log_event(
+                f"{flow.id}: přepočet po otevření vynechán - PT a SL jsou "
+                f"v různých režimech."
+            )
+            return True
+
+        # Bez známé velikosti účtu by množství vyšlo z nulového rizika
+        if self.account_size <= 0:
+            return False
+
+        # Příkaz, který TWS teprve přijímá, ruší nebo už plní, se upravovat nesmí
+        trade = flow.entry_trade
+        if trade is not None:
+            if trade.orderStatus.filled > 0:
+                return False
+            if trade.orderStatus.status not in MODIFIABLE_ORDER_STATES:
+                return False
+
+        # Použitelné kotace: cena podkladu, živý BID i ASK a spread v limitu.
+        # Ze širokého spreadu by odhad prémie vyšel stejně špatně jako před
+        # otevřením, a příkaz nad limitem v trhu stejně není
+        cena_podkladu = self.ib.underlying_price(flow.underlying_contract)
+        bid, ask, _ = self.ib.option_quotes(flow.option_contract)
+        spread = calc.spread_pct(bid, ask)
+        if cena_podkladu is None or spread is None or spread > flow.max_spread_pct:
+            return False
+
+        preview = self._preview_from_flow(flow, cena_podkladu)
+        used_delta = self._load_option_market(preview, flow.entry_price)
+
+        # PT v procentech prémie se odvíjí od ceny opce: totéž procento se
+        # přepočítá z nové odhadované nákupní ceny (stejný základ jako
+        # v dialogu - odhad při vstupu, jinak ASK, nakonec cena pro model).
+        # Procento se vrací z uložené úrovně a ceny, ze které vyšla
+        profit_target = flow.profit_target
+        premie: float | None = None
+        if flow.pt_in_premium and flow.premium_base:
+            premie = (
+                preview.expected_fill_price or preview.option_ask or preview.option_price
+            )
+            if not premie or premie <= 0:
+                return False
+            profit_target = round(flow.profit_target / flow.premium_base * premie, 2)
+
+        self._derive_levels(
+            preview, flow.entry_price, profit_target, None, used_delta, flow.max_spread_pct
+        )
+        if preview.quantity < 1:
+            return False
+
+        # Násobek cíle runneru se čte před přepisem úrovní - počítá se z nich
+        nasobek_runneru = flow.runner_multiple if flow.runner_active else None
+        puvodni_pt, puvodni_sl, puvodni_ks = flow.profit_target, flow.stop_loss, flow.quantity
+        popis_pt, popis_sl = flow.level_text("pt"), flow.level_text("sl")
+
+        flow.profit_target = profit_target
+        flow.original_profit_target = profit_target
+        flow.stop_loss = preview.stop_loss
+        flow.original_stop_loss = preview.stop_loss
+        flow.quantity = preview.quantity
+        if premie is not None:
+            flow.premium_base = premie
+        flow.refresh_after_open_done = True
+
+        # Runner zapnutý před nákupem se přepočítá na nové úrovně; když už na
+        # něj množství nestačí, vypne se - jako při převzetí z nahrazeného obchodu
+        if nasobek_runneru is not None:
+            if flow.quantity <= flow.runner_quantity:
+                flow.runner_profit_target = None
+                flow.runner_quantity = 0
+                flow.runner_stop_loss = None
+                self.log_event(
+                    f"{flow.id}: runner po přepočtu vypnut - množství "
+                    f"{flow.quantity} ks na něj nestačí."
+                )
+            else:
+                flow.runner_profit_target = flow.scaled_target(nasobek_runneru)
+                flow.runner_stop_loss = flow.stop_loss
+
+        # Příkaz v trhu se upraví na místě - odeslání se stejným orderId je
+        # modifikace, příkaz se neruší a nevzniká mezera, ve které by vstup
+        # utekl. Limit se srovná s aktuální kotací při téže úpravě
+        if trade is not None and flow.quantity != puvodni_ks:
+            order = trade.order
+            order.totalQuantity = flow.quantity
+            limit = self._entry_limit(flow)
+            if limit is not None:
+                order.lmtPrice = limit
+                flow.entry_limit = limit
+            flow.entry_trade = self.ib.place(flow.option_contract, order)
+
+        zmeny = []
+        if flow.profit_target != puvodni_pt:
+            zmeny.append(f"PT {popis_pt} → {flow.level_text('pt')}")
+        if flow.stop_loss != puvodni_sl:
+            zmeny.append(f"SL {popis_sl} → {flow.level_text('sl')}")
+        if flow.quantity != puvodni_ks:
+            zmeny.append(f"množství {puvodni_ks} → {flow.quantity} ks")
+        souhrn = ", ".join(zmeny) if zmeny else "hodnoty se nezměnily"
+        zaklad = f", prémie ≈ {premie * calc.OPTION_MULTIPLIER:.0f} USD" if premie else ""
+        vyhrady = f" Výhrady: {' '.join(preview.warnings)}" if preview.warnings else ""
+        self.log_event(
+            f"{flow.id}: přepočteno {uplynulo:.0f} s po otevření burzy podle živých "
+            f"kotací - {souhrn}{zaklad}.{vyhrady}"
+        )
+        flow.touch(f"{flow.message} Přepočteno po otevření burzy.".strip())
+        self._compute_expected_pnl(flow)
+        return True
 
     def _entry_missed(self, flow: Flow) -> bool:
         """
