@@ -314,7 +314,7 @@ import:
 
   # Poměr PT:SL tak, jak se zadává v dialogu - RRR 2 znamená, že PT je
   # dvakrát dál než SL. Prázdná hodnota se odvodí z trading.sl_to_pt_ratio.
-  rrr: 0.75
+  rrr: 0.5
   sl_spread_compensated: true
 
   # Přepočet po otevření burzy. Obchody zadané před otevřením mají PT (v %
