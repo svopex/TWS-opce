@@ -838,9 +838,9 @@ a jednotlivé pozice pak jen doladit. Výchozí stav určuje
 `import.runner_multiple` (0 = *Nepoužít runner*).
 
 Runner ale dostanou jen dost velké pozice: pole **Runner od [ks]** vpravo od
-tlačítek říká, kolik kontraktů musí řádek *překročit*, aby se mu volba
+tlačítek říká, kolik kontraktů musí řádek mít *alespoň*, aby se mu volba
 zapsala — s výchozí trojkou (`import.runner_min_quantity`) tedy runner
-připadne pozicím se 4 a více kontrakty, menší zůstanou na *Bez*. Rozdělení se
+připadne pozicím se 3 a více kontrakty, menší zůstanou na *Bez*. Rozdělení se
 srovná při každém přepočtu, po ruční změně množství v řádku i po změně tohoto
 pole nebo výchozí volby runneru; v jednotlivém řádku jde runner přesto zapnout
 ručně. Hodnota v poli platí jen pro otevřený dialog, do konfigurace se nezapisuje.

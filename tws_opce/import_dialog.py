@@ -408,8 +408,8 @@ class ImportDialog:
                 "zvlášť. Runner je část pozice "
                 f"({self.cfg.trading.runner_quantity} ks podle konfigurace) "
                 "s vlastním, vzdálenějším cílem na zvoleném násobku původní "
-                "vzdálenosti PT od vstupu. Runner dostanou jen pozice s větším "
-                "množstvím, než je hodnota v poli vpravo; ostatní zůstanou "
+                "vzdálenosti PT od vstupu. Runner dostanou jen pozice s množstvím "
+                "alespoň takovým, jaké je v poli vpravo; menší zůstanou "
                 "na volbě Bez."
             )
             self.runner_buttons: dict[str, Any] = {}
@@ -439,8 +439,8 @@ class ImportDialog:
                 .classes("pole pole-runner-min")
                 .props("outlined dense")
                 .tooltip(
-                    "Runner se nastaví jen pozicím s větším počtem kontraktů, "
-                    "než je tato hodnota; menší pozice zůstanou na volbě Bez. "
+                    "Runner se nastaví jen pozicím s alespoň tímto počtem "
+                    "kontraktů (včetně); menší pozice zůstanou na volbě Bez. "
                     "Výchozí hodnota je import.runner_min_quantity "
                     "z konfigurace."
                 )
@@ -755,7 +755,7 @@ class ImportDialog:
 
     def _runner_min(self) -> int:
         """
-        Nejmenší množství, nad kterým řádek runner dostane. Prázdné nebo
+        Nejmenší množství, od kterého (včetně) řádek runner dostane. Prázdné nebo
         nesmyslné pole spadne zpět na hodnotu z konfigurace, ať se runner
         nerozdává podle náhodného čísla.
         """
@@ -769,11 +769,12 @@ class ImportDialog:
     def _runner_pro_radek(self, radek: RadekPozice) -> str:
         """
         Volba runneru, která řádku podle jeho množství náleží: globální
-        nastavení u pozic s větším množstvím, než je zadané minimum,
+        nastavení u pozic s množstvím alespoň rovným zadanému minimu,
         jinak "Bez". Řádek bez spočítaného množství runner nedostane.
         """
         mnozstvi = self._cislo(radek.qty_input.value) if radek.qty_input else None
-        if mnozstvi is None or mnozstvi <= self._runner_min():
+        # Hranice je včetně: pozice s množstvím rovným minimu runner dostane
+        if mnozstvi is None or mnozstvi < self._runner_min():
             return RUNNER_VYPNUTO
         return self.runner_value
 

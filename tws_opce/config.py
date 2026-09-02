@@ -156,8 +156,8 @@ class ImportConfig:
     # Výchozí volba runneru jako násobek původní vzdálenosti PT od vstupu.
     # Povolené jsou násobky nabízené tlačítky, 0 znamená runner nepoužít
     runner_multiple: float = 1.5
-    # Nejmenší velikost pozice, které hromadné zadání runner nastaví. Pozice
-    # s menším nebo stejným počtem kontraktů dostanou ve sloupci Runner volbu
+    # Nejmenší velikost pozice, které hromadné zadání runner nastaví (včetně).
+    # Pozice s menším počtem kontraktů dostanou ve sloupci Runner volbu
     # "Bez"; ručně ji tam lze přesto přepnout
     runner_min_quantity: int = 3
     # Volby sdílené s formulářem zadání; null = převzít hodnotu z trading

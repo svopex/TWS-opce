@@ -301,9 +301,9 @@ import:
   # 0 znamená runner nepoužít.
   runner_multiple: 1.5
 
-  # Nejmenší velikost pozice, které se runner nastaví. Vyplní se do pole
-  # vedle tlačítek Runner a řádky se stejným nebo menším počtem kontraktů
-  # dostanou volbu "Bez"; ručně ji tam lze přesto přepnout.
+  # Nejmenší velikost pozice, které se runner nastaví (včetně). Vyplní se do
+  # pole vedle tlačítek Runner a řádky s menším počtem kontraktů dostanou
+  # volbu "Bez"; ručně ji tam lze přesto přepnout.
   runner_min_quantity: 3
 
   # Následující tři volby má i běžný formulář zadání. Prázdná hodnota (null)

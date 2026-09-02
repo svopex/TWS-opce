@@ -680,7 +680,7 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
 class TestMinimumProRunner(unittest.TestCase):
     """
     Rozdělení runneru podle velikosti pozice: volbu dostanou jen řádky
-    s větším množstvím, než je minimum nad tabulkou; ostatní zůstanou "Bez".
+    s množstvím alespoň rovným minimu nad tabulkou; ostatní zůstanou "Bez".
     """
 
     def setUp(self) -> None:
@@ -708,22 +708,24 @@ class TestMinimumProRunner(unittest.TestCase):
         self.dialog._obnov_runner_vsech()
         return [radek.runner_select.value for radek in self.dialog.radky]
 
-    def test_runner_dostanou_jen_vetsi_pozice(self):
+    def test_runner_dostanou_jen_dost_velke_pozice(self):
         self.dialog.runner_value = "1.5"
-        # Minimum 3 znamená runner od čtyř kontraktů výš
+        # Minimum 3 znamená runner od tří kontraktů včetně
         self.assertEqual(
             self.volby(5, 4, 3, 2, None),
-            ["1.5", "1.5", RUNNER_VYPNUTO, RUNNER_VYPNUTO, RUNNER_VYPNUTO],
+            ["1.5", "1.5", "1.5", RUNNER_VYPNUTO, RUNNER_VYPNUTO],
         )
 
     def test_zmena_minima_prerozdeli_runnery(self):
         self.dialog.runner_value = "2"
-        self.dialog.runner_min_input.set_value(1)
+        # Snížení minima na 2 pustí runner i dvoukontraktové pozici
+        self.dialog.runner_min_input.set_value(2)
         self.assertEqual(self.volby(2, 1), ["2", RUNNER_VYPNUTO])
 
     def test_globalni_volba_respektuje_minimum(self):
+        # Pozice přesně na minimu (3 ks) runner dostane, menší ne
         maly = self.radek(2)
-        velky = self.radek(4)
+        velky = self.radek(3)
         self.dialog.radky = [maly, velky]
         self.dialog._nastav_runner("3")
         self.assertEqual(maly.runner_select.value, RUNNER_VYPNUTO)
@@ -738,7 +740,7 @@ class TestMinimumProRunner(unittest.TestCase):
         self.cfg.import_.runner_min_quantity = 4
         self.dialog.runner_value = "1"
         self.dialog.runner_min_input.set_value(None)
-        self.assertEqual(self.volby(5, 4), ["1", RUNNER_VYPNUTO])
+        self.assertEqual(self.volby(4, 3), ["1", RUNNER_VYPNUTO])
 
     def test_zmena_mnozstvi_v_radku_prepocita_runner(self):
         self.dialog.runner_value = "1.5"
