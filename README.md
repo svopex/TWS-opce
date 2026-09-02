@@ -819,6 +819,14 @@ přepne volbu u všech nezamčených řádků naráz (tedy i u řádků, jejich�
 teprve čeká před nákupem nebo už skončil), takže stačí nastavit ji globálně
 a jednotlivé pozice pak jen doladit. Výchozí stav je *Nepoužít runner*.
 
+Runner ale dostanou jen dost velké pozice: pole **Runner od [ks]** vpravo od
+tlačítek říká, kolik kontraktů musí řádek *překročit*, aby se mu volba
+zapsala — s výchozí trojkou (`trading.runner_min_quantity`) tedy runner
+připadne pozicím se 4 a více kontrakty, menší zůstanou na *Bez*. Rozdělení se
+srovná při každém přepočtu, po ruční změně množství v řádku i po změně tohoto
+pole nebo výchozí volby runneru; v jednotlivém řádku jde runner přesto zapnout
+ručně. Hodnota v poli platí jen pro otevřený dialog, do konfigurace se nezapisuje.
+
 Zvolený násobek zapne u založeného obchodu runner (počet kusů podle
 `trading.runner_quantity`) s cílem na tomto násobku původní vzdálenosti PT od
 vstupu — přesně jako tlačítka runneru v řádku přehledu. Zapíná se až na hotovém

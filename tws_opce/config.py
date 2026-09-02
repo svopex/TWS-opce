@@ -105,6 +105,10 @@ class TradingConfig:
     # prodává samostatným příkazem s vlastním (vzdálenějším) cílem.
     # Runner lze zapnout jen u obchodu s větším množstvím, než je tato hodnota.
     runner_quantity: int = 1
+    # Nejmenší velikost pozice, u které hromadné zadání ze souboru samo
+    # nastaví runner. Pozice s menším nebo stejným počtem kontraktů dostanou
+    # ve sloupci Runner volbu "Bez"; ručně ji tam lze přesto přepnout.
+    runner_min_quantity: int = 3
     # Chování při změně PT u obchodu, který ještě nenakoupil:
     #   keep        = ponechat původní strike, mění se jen cílová úroveň
     #   recalculate = přepočítat strike podle nového PT a příkaz přezadat
@@ -331,6 +335,8 @@ def validate_config(cfg: AppConfig) -> None:
         )
     if cfg.trading.runner_quantity < 1:
         problems.append("trading.runner_quantity musí být alespoň 1")
+    if cfg.trading.runner_min_quantity < 1:
+        problems.append("trading.runner_min_quantity musí být alespoň 1")
     if cfg.trading.pt_change_strike not in PT_STRIKE_MODES:
         problems.append(
             f"trading.pt_change_strike musí být jedna z {PT_STRIKE_MODES}, "

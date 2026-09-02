@@ -194,6 +194,9 @@ class ImportDialog:
         self.on_created = on_created
         # Zvolené nastavení runneru pro zakládané pozice (klíč tlačítka)
         self.runner_value: str = RUNNER_VYPNUTO
+        # Pole s nejmenším množstvím, od kterého se runner nastavuje. Vzniká
+        # až s vykresleným dialogem, do té doby platí hodnota z konfigurace
+        self.runner_min_input: Any = None
         # Načtené pozice v pořadí ze souboru
         self.radky: list[RadekPozice] = []
         # Jméno naposledy načteného souboru - ukazuje se nad tabulkou
@@ -373,8 +376,9 @@ class ImportDialog:
                 "zvlášť. Runner je část pozice "
                 f"({self.cfg.trading.runner_quantity} ks podle konfigurace) "
                 "s vlastním, vzdálenějším cílem na zvoleném násobku původní "
-                "vzdálenosti PT od vstupu. Pozice s menším množstvím runner "
-                "nedostane a dá se to poznat ve sloupci Stav."
+                "vzdálenosti PT od vstupu. Runner dostanou jen pozice s větším "
+                "množstvím, než je hodnota v poli vpravo; ostatní zůstanou "
+                "na volbě Bez."
             )
             self.runner_buttons: dict[str, Any] = {}
             for hodnota, popisek in runner_volby().items():
@@ -389,6 +393,29 @@ class ImportDialog:
                 tlacitko.tooltip(napoveda)
                 self.runner_buttons[hodnota] = tlacitko
             self._zvyrazni_runner()
+            # Nejmenší velikost pozice, které se runner nastaví. Výchozí
+            # hodnota je z konfigurace, změna přerozdělí runnery ve všech
+            # řádcích podle právě spočítaného množství
+            self.runner_min_input = (
+                ui.number(
+                    "Runner od [ks]",
+                    value=self.cfg.trading.runner_min_quantity,
+                    format="%.0f",
+                    step=1,
+                    min=1,
+                )
+                .classes("pole pole-runner-min")
+                .props("outlined dense")
+                .tooltip(
+                    "Runner se nastaví jen pozicím s větším počtem kontraktů, "
+                    "než je tato hodnota; menší pozice zůstanou na volbě Bez. "
+                    "Výchozí hodnota je trading.runner_min_quantity "
+                    "z konfigurace."
+                )
+            )
+            self.runner_min_input.on_value_change(
+                lambda _=None: self._obnov_runner_vsech()
+            )
 
         # Výchozí režim rozhoduje, které pole cíle je vidět a zda je dostupná
         # kompenzace spreadu
@@ -573,9 +600,15 @@ class ImportDialog:
         # ve _vycisti_urovne a _zahod_dopocet nastavuje až po zápisu do polí
         for pole in (radek.pt_input, radek.sl_input, radek.qty_input):
             pole.on_value_change(lambda _=None, r=radek: self._rucni_zmena(r))
-        # Runner se nastavuje u každé pozice zvlášť; výchozí je globální volba
+        # Množství rozhoduje, zda řádek runner dostane. Obsluha běží i při
+        # programovém zápisu, takže volbu srovná i přepočet celé tabulky
+        radek.qty_input.on_value_change(
+            lambda _=None, r=radek: self._obnov_runner_radku(r)
+        )
+        # Runner se nastavuje u každé pozice zvlášť. Řádek začíná bez něj -
+        # globální volbu dostane až podle spočítaného množství
         radek.runner_select = (
-            ui.select(runner_volby(kratke=True), value=self.runner_value)
+            ui.select(runner_volby(kratke=True), value=RUNNER_VYPNUTO)
             .classes("bunka-import pole-import vyber-runner")
             .props("outlined dense options-dense")
         )
@@ -671,9 +704,46 @@ class ImportDialog:
         """
         self.runner_value = hodnota
         self._zvyrazni_runner()
+        self._obnov_runner_vsech()
+
+    def _runner_min(self) -> int:
+        """
+        Nejmenší množství, nad kterým řádek runner dostane. Prázdné nebo
+        nesmyslné pole spadne zpět na hodnotu z konfigurace, ať se runner
+        nerozdává podle náhodného čísla.
+        """
+        hodnota = self._cislo(
+            self.runner_min_input.value if self.runner_min_input is not None else None
+        )
+        if hodnota is None or hodnota < 1:
+            return self.cfg.trading.runner_min_quantity
+        return int(hodnota)
+
+    def _runner_pro_radek(self, radek: RadekPozice) -> str:
+        """
+        Volba runneru, která řádku podle jeho množství náleží: globální
+        nastavení u pozic s větším množstvím, než je zadané minimum,
+        jinak "Bez". Řádek bez spočítaného množství runner nedostane.
+        """
+        mnozstvi = self._cislo(radek.qty_input.value) if radek.qty_input else None
+        if mnozstvi is None or mnozstvi <= self._runner_min():
+            return RUNNER_VYPNUTO
+        return self.runner_value
+
+    def _obnov_runner_radku(self, radek: RadekPozice) -> None:
+        """
+        Srovná volbu runneru v řádku s globálním nastavením a jeho množstvím.
+        Zamčeného řádku se to netýká - jeho obchod už drží pozici a runner
+        se u něj přepíná tlačítky v přehledu.
+        """
+        if radek.runner_select is None or self._zamceno(radek):
+            return
+        radek.runner_select.set_value(self._runner_pro_radek(radek))
+
+    def _obnov_runner_vsech(self) -> None:
+        """Přerozdělí runner ve všech načtených řádcích."""
         for radek in self.radky:
-            if not self._zamceno(radek) and radek.runner_select is not None:
-                radek.runner_select.set_value(hodnota)
+            self._obnov_runner_radku(radek)
 
     def _zvyrazni_runner(self) -> None:
         """

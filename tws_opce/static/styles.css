@@ -759,6 +759,13 @@ body.body--dark .log-radek {
   padding: 4px 12px;
 }
 
+/* Pole s nejmenším množstvím pro runner stojí vpravo od řady tlačítek.
+   Je užší než pole nad tabulkou a od tlačítek si drží odstup */
+.dialog-import .pole-runner-min {
+  margin-left: 10px;
+  width: 110px;
+}
+
 /* Tabulka načtených pozic. Šířky sloupců drží zarovnání buněk, které jsou
    přímými potomky mřížky; poslední sloupec (stav) dobírá zbytek místa */
 .dialog-import .tabulka-import {

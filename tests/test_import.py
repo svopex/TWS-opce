@@ -671,5 +671,98 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(radek.flow_id, "AMZN-1")
 
 
+class TestMinimumProRunner(unittest.TestCase):
+    """
+    Rozdělení runneru podle velikosti pozice: volbu dostanou jen řádky
+    s větším množstvím, než je minimum nad tabulkou; ostatní zůstanou "Bez".
+    """
+
+    def setUp(self) -> None:
+        self.cfg = AppConfig()
+        self.cfg.state.enabled = False
+        self.engine = FlowEngine(self.cfg, FakeIBService(self.cfg))
+        # Dialog se nevykresluje, ovládací prvky nahrazují jednoduché atrapy
+        self.dialog = ImportDialog(self.cfg, self.engine, self.engine.ib, None)
+        self.dialog.runner_buttons = {}
+        self.dialog.runner_min_input = Pole(3)
+        self.pozice = importer.ImportedPosition(
+            key="AMZN Long+", symbol="AMZN", entry_price=266.4, target_price=269.33
+        )
+
+    def radek(self, mnozstvi: float | None, flow_id: str = "") -> RadekPozice:
+        """Řádek s daným množstvím a zatím nezvoleným runnerem."""
+        radek = RadekPozice(pozice=self.pozice, flow_id=flow_id)
+        radek.qty_input = Pole(mnozstvi)
+        radek.runner_select = Pole(RUNNER_VYPNUTO)
+        return radek
+
+    def volby(self, *mnozstvi: float | None) -> list[str]:
+        """Volby runneru, které řádkům s daným množstvím dialog přiřadí."""
+        self.dialog.radky = [self.radek(ks) for ks in mnozstvi]
+        self.dialog._obnov_runner_vsech()
+        return [radek.runner_select.value for radek in self.dialog.radky]
+
+    def test_runner_dostanou_jen_vetsi_pozice(self):
+        self.dialog.runner_value = "1.5"
+        # Minimum 3 znamená runner od čtyř kontraktů výš
+        self.assertEqual(
+            self.volby(5, 4, 3, 2, None),
+            ["1.5", "1.5", RUNNER_VYPNUTO, RUNNER_VYPNUTO, RUNNER_VYPNUTO],
+        )
+
+    def test_zmena_minima_prerozdeli_runnery(self):
+        self.dialog.runner_value = "2"
+        self.dialog.runner_min_input.set_value(1)
+        self.assertEqual(self.volby(2, 1), ["2", RUNNER_VYPNUTO])
+
+    def test_globalni_volba_respektuje_minimum(self):
+        maly = self.radek(2)
+        velky = self.radek(4)
+        self.dialog.radky = [maly, velky]
+        self.dialog._nastav_runner("3")
+        self.assertEqual(maly.runner_select.value, RUNNER_VYPNUTO)
+        self.assertEqual(velky.runner_select.value, "3")
+
+    def test_vypnuty_runner_nedostane_ani_velka_pozice(self):
+        self.dialog.runner_value = RUNNER_VYPNUTO
+        self.assertEqual(self.volby(10), [RUNNER_VYPNUTO])
+
+    def test_prazdne_pole_minima_bere_hodnotu_z_konfigurace(self):
+        # Vymazané pole nesmí runner rozdat podle náhodného čísla
+        self.cfg.trading.runner_min_quantity = 4
+        self.dialog.runner_value = "1"
+        self.dialog.runner_min_input.set_value(None)
+        self.assertEqual(self.volby(5, 4), ["1", RUNNER_VYPNUTO])
+
+    def test_zmena_mnozstvi_v_radku_prepocita_runner(self):
+        self.dialog.runner_value = "1.5"
+        radek = self.radek(2)
+        self.dialog.radky = [radek]
+        self.dialog._obnov_runner_radku(radek)
+        self.assertEqual(radek.runner_select.value, RUNNER_VYPNUTO)
+        # Obchodník množství ručně zvedl - runner se má objevit
+        radek.qty_input.set_value(6)
+        self.dialog._obnov_runner_radku(radek)
+        self.assertEqual(radek.runner_select.value, "1.5")
+
+    def test_zamceny_radek_si_volbu_podrzi(self):
+        # Obchod už drží pozici; runner se u něj přepíná tlačítky v přehledu
+        radek = self.radek(10, flow_id="AMZN-1")
+        radek.runner_select.set_value("2")
+        self.engine.flows["AMZN-1"] = Flow(
+            id="AMZN-1",
+            symbol="AMZN",
+            entry_price=266.4,
+            profit_target=269.33,
+            stop_loss=265.0,
+            quantity=10,
+            max_spread_pct=5.0,
+            state=FlowState.EXIT_ARMED,
+        )
+        self.dialog.radky = [radek]
+        self.dialog._nastav_runner(RUNNER_VYPNUTO)
+        self.assertEqual(radek.runner_select.value, "2")
+
+
 if __name__ == "__main__":
     unittest.main()

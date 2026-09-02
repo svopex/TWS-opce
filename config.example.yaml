@@ -144,7 +144,7 @@ trading:
   # Je-li spread vyšší, nákupní příkaz se do trhu nezadá; pokud už zadán byl
   # a dosud se nevyplnil, aplikace jej z trhu odstraní. Hodnotu lze pro každý
   # obchod přepsat přímo ve formuláři.
-  max_spread_pct: 10.0
+  max_spread_pct: 6.0
 
   # Typ nákupního příkazu, který se použije po splnění cenové podmínky
   # na podkladovém aktivu:
@@ -231,6 +231,12 @@ trading:
   # se zobrazují jen u obchodů s větším množstvím, než je tato hodnota -
   # po oddělení runneru musí v hlavní části zbýt alespoň jeden kontrakt.
   runner_quantity: 1
+
+  # Nejmenší velikost pozice, u které hromadné zadání ze souboru samo nastaví
+  # runner. Vyplní se do pole vedle tlačítek Runner v dialogu načtení pozic
+  # a řádky se stejným nebo menším počtem kontraktů dostanou volbu "Bez".
+  # Hodnotu lze v dialogu přepsat, do konfigurace se ale nezapisuje.
+  runner_min_quantity: 3
 
   # Co se má stát se strikem, když v monitoringu posunete cíl obchodu
   # tlačítky s násobky (1×, 1,5×, 2× …):
