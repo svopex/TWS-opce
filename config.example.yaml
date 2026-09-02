@@ -329,7 +329,7 @@ expiration:
   #   0 = povolena i dnešní expirace (0DTE)
   #   2 = přeskočí se expirace dřívější než za dva dny
   # Pokud žádná expirace podmínku nesplní, použije se nejvzdálenější dostupná.
-  min_dte: 0
+  min_dte: 1
 
   # Pevné datum expirace ve formátu YYYYMMDD, například 20260828.
   # Uplatní se pouze při mode: fixed, jinak se ignoruje.
