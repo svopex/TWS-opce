@@ -627,6 +627,52 @@ class TradingUI:
                         lambda e: self._on_mode_change("pt", str(e.value))
                     )
 
+                # Přepočet po otevření burzy - tatáž volba, jakou nabízí hromadné
+                # zadání ze souboru. Obchod zadaný před otevřením má úrovně
+                # i množství z odhadu prémie (typicky ze závěrečné ceny), který po
+                # gapu neplatí; engine mu po zadané prodlevě od otevření dopočítá
+                # PT, SL a množství z živých kotací a čekající příkaz upraví na
+                # místě. Volba se zapisuje do zakládaného obchodu, takže platí
+                # i po zavření stránky. Jako poslední blok přepínačů dědí linku
+                # i svislý rytmus ostatních bloků, jen stojí ve dvou sloupcích
+                with ui.row().classes("skupina-prepinacu blok-prepoctu"):
+                    # Výchozí stav je vypnuto, protože formulář slouží hlavně
+                    # k ručnímu zadání během seance - tam by se přepočet spustil
+                    # hned při nejbližším průchodu monitorovací smyčkou. Sama se
+                    # volba zapíná jen při načtení obchodu, který přepočet čeká
+                    self.refresh_checkbox = (
+                        ui.checkbox("Po otevření trhu přepočítat", value=False)
+                        .props("dense")
+                        .classes("prepinac")
+                        .tooltip(
+                            "Zaškrtnuto: obchod, který po otevření burzy ještě čeká "
+                            "na vstup, se po uplynutí prodlevy vpravo jednou přepočítá "
+                            "podle živých kotací - PT v procentech prémie, SL i množství "
+                            "vyjdou ze skutečné ceny opce místo odhadu ze závěrečné ceny. "
+                            "Čekající příkaz v trhu se upraví na místě, neruší se. Obchod, "
+                            "který už nakoupil, se nemění. Zadává-li se obchod až za "
+                            "otevřeného trhu, přepočet proběhne hned - volba patří "
+                            "k obchodům chystaným před otevřením."
+                        )
+                    )
+                    self.refresh_sec_input = (
+                        ui.number(
+                            "Prodleva [s]",
+                            value=self.cfg.import_.refresh_after_open_sec,
+                            format="%.0f",
+                            step=5,
+                            min=0,
+                        )
+                        .classes("pole-prepocet-sec")
+                        .props("outlined dense")
+                        .tooltip(
+                            "Kolik sekund po otevření burzy se přepočet provede. "
+                            "V prvních okamžicích jsou kotace opcí nejširší, proto "
+                            "chvíli počkat. Výchozí hodnota je "
+                            "import.refresh_after_open_sec z konfigurace."
+                        )
+                    )
+
             # Pole úrovní se rozmístí podle výchozí prvotní úrovně
             self._arrange_level_groups()
 
@@ -864,6 +910,19 @@ class TradingUI:
         _, sl_mode = self._form_level_modes()
         return bool(self.sl_spread_compensated.value) and sl_mode in MODES_ON_OPTION
 
+    def _form_refresh_sec(self) -> float | None:
+        """
+        Prodleva přepočtu po otevření burzy pro zakládaný obchod; None znamená
+        přepočet nepoužít (nezaškrtnutá volba). Prázdné či záporné pole spadne
+        zpět na hodnotu z konfigurace, ať se přepočet neřídí náhodným číslem.
+        """
+        if not self.refresh_checkbox.value:
+            return None
+        hodnota = self.refresh_sec_input.value
+        if hodnota in (None, "") or float(hodnota) < 0:
+            return float(self.cfg.import_.refresh_after_open_sec)
+        return float(hodnota)
+
     def _set_modes(
         self,
         pt_on_underlying: bool,
@@ -1034,6 +1093,16 @@ class TradingUI:
         self._zapis_sl(flow)
         self.spread_input.set_value(flow.max_spread_pct)
         self.qty_input.set_value(flow.quantity)
+        # Přepočet po otevření se přenáší, aby ho nové zadání téhož obchodu
+        # tiše neztratilo - zadání do trhu obchod nahrazuje novým a ten by
+        # jinak zůstal bez přepočtu. Už provedený přepočet se ale neopakuje:
+        # hodnoty ve formuláři z něj vyšly a druhý běh by je přepsal znovu
+        ceka_prepocet = (
+            flow.refresh_after_open_sec is not None and not flow.refresh_after_open_done
+        )
+        self.refresh_checkbox.set_value(ceka_prepocet)
+        if ceka_prepocet:
+            self.refresh_sec_input.set_value(flow.refresh_after_open_sec)
 
     def _prevezmi_premii(self, flow: Flow) -> tuple[bool, bool]:
         """
@@ -1099,6 +1168,9 @@ class TradingUI:
         """
         for pole in (self.entry_input, self.pt_input, self.sl_input, self.qty_input):
             pole.set_value(None)
+        # Přepočet po otevření patřil předchozímu obchodu - na jiný ticker
+        # se nepřenáší, prodleva v poli zůstává pro případné další zapnutí
+        self.refresh_checkbox.set_value(False)
         # Limit spreadu, režimy PT/SL i prvotní úroveň se vrací na konfiguraci
         self.spread_input.set_value(self.cfg.trading.max_spread_pct)
         self._set_modes(
@@ -1643,6 +1715,9 @@ class TradingUI:
             sl_in_premium=sl_mode == MODE_PREMIUM,
             premium_base=premie,
             primary_level=self._form_primary(),
+            # Přepočet po otevření si obchod nese s sebou - formulář může být
+            # mezitím přepsaný jiným zadáním
+            refresh_after_open_sec=self._form_refresh_sec(),
         )
 
         # Založení obchodu si znovu načítá data z TWS, indikace platí i zde

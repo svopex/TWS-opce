@@ -647,6 +647,30 @@ body.body--dark .log-radek {
   margin-top: 2px;
 }
 
+/* Blok přepočtu po otevření trhu je poslední skupinou přepínačů - linku
+   nad sebou i svislý rytmus dědí po ostatních blocích. Na rozdíl od nich
+   stojí ve dvou sloupcích: volba vlevo, pole s prodlevou vpravo. Odsazení
+   nemá žádné - výšku bloku určuje pole a jeho okraje samy drží volbu
+   uprostřed; mezeru k náhledu pod ním dává karta */
+.prepinace .blok-prepoctu {
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 0;
+}
+
+/* Zaškrtávátko nemá kolem sebe obal jako přepínače, takže se s nimi srovná
+   bez záporného okraje - ten by je posunul o 8 px vlevo od jejich koleček */
+.prepinace .blok-prepoctu .prepinac {
+  margin-left: 0;
+}
+
+/* Pole s prodlevou stojí u pravého okraje, kde končí i pole nad přepínači */
+.prepinace .blok-prepoctu .pole-prepocet-sec {
+  margin-left: auto;
+  width: 120px;
+}
+
 /* --- Bubliny s nápovědou --- */
 /* Ukotvení nad prvkem řeší props v ui.py, zde jen tvar: raději užší a vyšší
    bublina než jeden dlouhý pruh přes půl obrazovky. Delší text se zalomí */
