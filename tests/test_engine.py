@@ -2443,13 +2443,12 @@ class TestUkliduNeobchodovanych(ZakladTestu):
         Přehled se zástupcem každého zajímavého stavu: čekající před nákupem,
         otevřená pozice, uzavřený obchod, zrušený, propásnutý a chybový.
         """
-        cekajici = await self.zaloz_call(symbol="AAPL")
-
         otevreny = await self.zaloz_call(symbol="MSFT", quantity=1)
         self.ib.fill(otevreny.entry_trade, 1, 3.00)
         await self.engine._tick()
         await self.engine._tick()
 
+        # Uzavření přes PT vyžaduje podklad nad cílem 235; cena se hned vrací
         uzavreny = await self.zaloz_call(symbol="AMZN", quantity=1)
         self.ib.fill(uzavreny.entry_trade, 1, 3.00)
         await self.engine._tick()
@@ -2458,6 +2457,12 @@ class TestUkliduNeobchodovanych(ZakladTestu):
         self.ib.fill(uzavreny.exit_trade, 1, 4.00)
         await self.engine._tick()
         self.ib.price_underlying = 230.0
+
+        # Čekající obchod vzniká až po výletu ceny nad 235: kontrola
+        # propásnutého vstupu běží ve všech stavech před nákupem a mimo
+        # obchodní hodiny by čekající příkaz se vstupem 232 při ceně 235,5
+        # zrušila jako propásnutý - test by pak závisel na denní době
+        cekajici = await self.zaloz_call(symbol="AAPL")
 
         zruseny = await self.zaloz_call(symbol="TSLA")
         await self.engine.cancel_flow(zruseny.id)
