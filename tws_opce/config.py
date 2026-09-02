@@ -126,8 +126,9 @@ class TradingConfig:
     # Časová zóna burzy - uzavírání se časuje v ní, takže posuny letního
     # a zimního času vůči místnímu času počítače nehrají roli
     exchange_timezone: str = "America/New_York"
-    # Čas otevření burzy ve formátu HH:MM (v časové zóně burzy).
-    # Slouží jen k odpočtu v hlavičce, obchodování neovlivňuje.
+    # Čas otevření burzy ve formátu HH:MM (v časové zóně burzy). Řídí odpočet
+    # v hlavičce, rozlišení obchodních hodin pro kontrolu propásnutého vstupu
+    # a okamžik přepočtu čekajících obchodů po otevření (import.refresh_after_open)
     exchange_open_time: str = "09:30"
     # Čas zavření burzy ve formátu HH:MM (v časové zóně burzy).
     # Zkrácené obchodní dny (např. před svátky) aplikace nezná.

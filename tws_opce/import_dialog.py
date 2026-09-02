@@ -296,48 +296,89 @@ class ImportDialog:
         # Výchozí obsah formuláře je z konfigurace; klíče režimů se shodují
         # s hodnotami import.pt_mode, takže se přebírají přímo
         imp = self.cfg.import_
-        with ui.column().classes("prepinace prepinace-import"):
-            with ui.column().classes("skupina-prepinacu"):
-                self.rezim = (
-                    ui.radio(
-                        {
-                            REZIM_PCT: "PT na podkladu v % dráhy k cíli",
-                            REZIM_USD: "PT na opci v USD/ks",
-                            REZIM_PREMIUM: "PT na opci v % prémie",
-                        },
-                        value=imp.pt_mode,
+        # Přepínače režimu cíle vlevo; vpravo od nich, v jinak prázdném místě,
+        # stojí blok přepočtu po otevření burzy
+        with ui.row().classes("radek radek-rezim"):
+            with ui.column().classes("prepinace prepinace-import"):
+                with ui.column().classes("skupina-prepinacu"):
+                    self.rezim = (
+                        ui.radio(
+                            {
+                                REZIM_PCT: "PT na podkladu v % dráhy k cíli",
+                                REZIM_USD: "PT na opci v USD/ks",
+                                REZIM_PREMIUM: "PT na opci v % prémie",
+                            },
+                            value=imp.pt_mode,
+                        )
+                        .props("dense")
+                        .classes("prepinac")
+                        .tooltip(
+                            "% dráhy k cíli: PT je cena podkladu, 100 % je přesně cílová "
+                            "cena ze souboru; SL se dopočítá také na podkladu podle poměru "
+                            "SL:PT z konfigurace. USD/ks: PT je zisk na jedné opci a SL "
+                            "ztráta na opci, obojí podle téhož poměru. % prémie: totéž, "
+                            "ale zadané podílem z ceny opce - 30 % z opce za 3,00 je "
+                            "90 USD na kontrakt, takže levná i drahá opce riskuje stejný "
+                            "díl vložených peněz. V obou opčních režimech se cílová cena "
+                            "ze souboru nepoužívá."
+                        )
                     )
+                    self.rezim.on_value_change(lambda _: self._on_rezim_change())
+
+                    # Kompenzace spreadu patří k SL na opci, tedy jen k režimu v USD
+                    self.sl_spread_compensated = (
+                        ui.checkbox(
+                            "SL o zaplacený spread dál",
+                            value=vychozi(
+                                imp.sl_spread_compensated,
+                                self.cfg.trading.sl_spread_compensated,
+                            ),
+                        )
+                        .props("dense")
+                        .classes("prepinac prepinac-podrizeny")
+                        .tooltip(
+                            "Zaškrtnuto: k SL na opci se při nákupu připočte skutečně "
+                            "zaplacený spread (nákupní cena minus BID), takže zadaná "
+                            "hodnota odpovídá pohybu ceny opce. Ztráta na kontrakt "
+                            "o tento spread naroste a množství úměrně klesne."
+                        )
+                    )
+
+            # Přepočet po otevření burzy. Obchody zadané před otevřením vychází
+            # z odhadu prémie ze závěrečné ceny, který po gapu neplatí; engine
+            # je po zadané prodlevě od otevření přepočítá podle živých kotací
+            # a čekající příkaz upraví na místě. Volba se zapisuje do každého
+            # zakládaného obchodu, takže platí i po zavření dialogu
+            with ui.row().classes("blok-obnova"):
+                self.refresh_checkbox = (
+                    ui.checkbox("Po otevření trhu přepočítat", value=imp.refresh_after_open)
                     .props("dense")
                     .classes("prepinac")
                     .tooltip(
-                        "% dráhy k cíli: PT je cena podkladu, 100 % je přesně cílová "
-                        "cena ze souboru; SL se dopočítá také na podkladu podle poměru "
-                        "SL:PT z konfigurace. USD/ks: PT je zisk na jedné opci a SL "
-                        "ztráta na opci, obojí podle téhož poměru. % prémie: totéž, "
-                        "ale zadané podílem z ceny opce - 30 % z opce za 3,00 je "
-                        "90 USD na kontrakt, takže levná i drahá opce riskuje stejný "
-                        "díl vložených peněz. V obou opčních režimech se cílová cena "
-                        "ze souboru nepoužívá."
+                        "Zaškrtnuto: obchody z této dávky, které po otevření burzy "
+                        "ještě čekají na vstup, se po uplynutí prodlevy vpravo jednou "
+                        "přepočítají podle živých kotací - PT v procentech prémie, SL "
+                        "i množství vyjdou ze skutečné ceny opce místo odhadu ze "
+                        "závěrečné ceny. Čekající příkaz v trhu se upraví na místě, "
+                        "neruší se. Obchod, který už nakoupil, se nemění. Dokud je "
+                        "spread nad limitem, přepočet počká."
                     )
                 )
-                self.rezim.on_value_change(lambda _: self._on_rezim_change())
-
-                # Kompenzace spreadu patří k SL na opci, tedy jen k režimu v USD
-                self.sl_spread_compensated = (
-                    ui.checkbox(
-                        "SL o zaplacený spread dál",
-                        value=vychozi(
-                            imp.sl_spread_compensated,
-                            self.cfg.trading.sl_spread_compensated,
-                        ),
+                self.refresh_sec_input = (
+                    ui.number(
+                        "Prodleva [s]",
+                        value=imp.refresh_after_open_sec,
+                        format="%.0f",
+                        step=5,
+                        min=0,
                     )
-                    .props("dense")
-                    .classes("prepinac prepinac-podrizeny")
+                    .classes("pole pole-obnova-sec")
+                    .props("outlined dense")
                     .tooltip(
-                        "Zaškrtnuto: k SL na opci se při nákupu připočte skutečně "
-                        "zaplacený spread (nákupní cena minus BID), takže zadaná "
-                        "hodnota odpovídá pohybu ceny opce. Ztráta na kontrakt "
-                        "o tento spread naroste a množství úměrně klesne."
+                        "Kolik sekund po otevření burzy se přepočet provede. "
+                        "V prvních okamžicích jsou kotace opcí nejširší, proto "
+                        "chvíli počkat. Výchozí hodnota je "
+                        "import.refresh_after_open_sec z konfigurace."
                     )
                 )
 
@@ -451,44 +492,6 @@ class ImportDialog:
             )
             self.runner_min_input.on_value_change(
                 lambda _=None: self._obnov_runner_vsech()
-            )
-
-        # Přepočet po otevření burzy. Obchody zadané před otevřením vychází
-        # z odhadu prémie ze závěrečné ceny, který po gapu neplatí; engine je
-        # po zadané prodlevě od otevření přepočítá podle živých kotací
-        # a čekající příkaz upraví na místě. Volba se zapisuje do každého
-        # zakládaného obchodu, takže platí i po zavření dialogu
-        with ui.row().classes("radek radek-obnova"):
-            self.refresh_checkbox = (
-                ui.checkbox("Po otevření trhu přepočítat", value=imp.refresh_after_open)
-                .props("dense")
-                .classes("prepinac")
-                .tooltip(
-                    "Zaškrtnuto: obchody z této dávky, které po otevření burzy "
-                    "ještě čekají na vstup, se po uplynutí prodlevy vpravo jednou "
-                    "přepočítají podle živých kotací - PT v procentech prémie, SL "
-                    "i množství vyjdou ze skutečné ceny opce místo odhadu ze "
-                    "závěrečné ceny. Čekající příkaz v trhu se upraví na místě, "
-                    "neruší se. Obchod, který už nakoupil, se nemění. Dokud je "
-                    "spread nad limitem, přepočet počká."
-                )
-            )
-            self.refresh_sec_input = (
-                ui.number(
-                    "Prodleva [s]",
-                    value=imp.refresh_after_open_sec,
-                    format="%.0f",
-                    step=5,
-                    min=0,
-                )
-                .classes("pole pole-obnova-sec")
-                .props("outlined dense")
-                .tooltip(
-                    "Kolik sekund po otevření burzy se přepočet provede. "
-                    "V prvních okamžicích jsou kotace opcí nejširší, proto "
-                    "chvíli počkat. Výchozí hodnota je "
-                    "import.refresh_after_open_sec z konfigurace."
-                )
             )
 
         # Výchozí režim rozhoduje, které pole cíle je vidět a zda je dostupná

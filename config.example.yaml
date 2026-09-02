@@ -269,8 +269,9 @@ trading:
   # a zimního času vůči místnímu času počítače nehrají roli
   exchange_timezone: "America/New_York"
 
-  # Čas otevření burzy ve formátu HH:MM (v časové zóně burzy).
-  # Slouží jen k odpočtu v hlavičce, obchodování neovlivňuje.
+  # Čas otevření burzy ve formátu HH:MM (v časové zóně burzy). Řídí odpočet
+  # v hlavičce, rozlišení obchodních hodin pro kontrolu propásnutého vstupu
+  # a okamžik přepočtu čekajících obchodů po otevření (import.refresh_after_open).
   exchange_open_time: "09:30"
 
   # Čas zavření burzy ve formátu HH:MM (v časové zóně burzy).

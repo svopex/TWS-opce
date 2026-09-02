@@ -717,9 +717,24 @@ body.body--dark .log-radek {
   width: 130px;
 }
 
-/* Přepínače dialogu stojí těsněji než ve formuláři zadání */
+/* Přepínače dialogu stojí těsněji než ve formuláři zadání a nezabírají
+   celou šířku - vpravo od nich je místo pro blok přepočtu po otevření */
 .dialog-import .prepinace-import {
   margin: 0;
+  width: auto;
+}
+
+/* Řádek s přepínači režimu cíle a blokem přepočtu: obojí zarovnané k hornímu
+   okraji, blok si drží odstup od přepínačů */
+.dialog-import .radek-rezim {
+  align-items: flex-start;
+}
+
+.dialog-import .blok-obnova {
+  align-items: center;
+  gap: 6px;
+  margin-left: 28px;
+  margin-top: 4px;
 }
 
 .dialog-import .prepinace-import .skupina-prepinacu {
@@ -766,13 +781,7 @@ body.body--dark .log-radek {
   width: 110px;
 }
 
-/* Řádek přepočtu po otevření burzy - přepínač a pole s prodlevou v sekundách */
-.dialog-import .radek-obnova {
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-}
-
+/* Pole s prodlevou přepočtu po otevření - stejně úzké jako pole runneru */
 .dialog-import .pole-obnova-sec {
   margin-left: 10px;
   width: 110px;
