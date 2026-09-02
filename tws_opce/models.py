@@ -292,6 +292,11 @@ class Flow:
     # Kolik USD na kontrakt už bylo k SL připočteno; formulář o to zapsanou
     # hodnotu zase snižuje, aby se navýšení při dalším zadání neřetězilo
     sl_spread_usd: float = 0.0
+    # Odhad kompenzace SL se stropuje limitem spreadu - nad něj se příkaz
+    # do trhu nedostane, takže širší spread obchod nezaplatí. Vypnuté
+    # trading.cancel_on_spread_breach strop ruší: takový příkaz zůstává
+    # v trhu i po rozšíření spreadu a vyplnit se může za jakýkoliv
+    sl_spread_capped: bool = True
 
     # Jednotka, ve které obchodník úroveň na opci zadal: True = procento
     # zaplacené prémie. Obchod i engine počítají výhradně s USD na kontrakt,
@@ -470,12 +475,22 @@ class Flow:
         opce, aby přehled ukazoval skutečné riziko, a ne hodnotu, která se po
         nákupu skokem změní. Po nákupu, u SL na podkladu, u break even i bez
         kotací je nula.
+
+        Odhad se stropuje limitem spreadu, stejně jako při dopočtu množství -
+        nad limitem se nenakupuje, takže širší spread obchod nezaplatí a bez
+        stropu by přehled ukazoval riziko, které nemůže nastat. Základem
+        procenta je střed trhu; odhad nákupní ceny obchod na rozdíl od
+        náhledu nedrží.
         """
         if not self.sl_spread_compensated or self.sl_on_underlying:
             return 0.0
         if self.sl_spread_usd or self.fill_price is not None or self.stop_loss <= 0:
             return 0.0
-        return calc.spread_usd(self.option_bid, self.option_ask)
+        return calc.capped_spread_usd(
+            self.option_bid,
+            self.option_ask,
+            self.max_spread_pct if self.sl_spread_capped else None,
+        )
 
     def sl_with_pending(self, hodnota: float) -> float:
         """

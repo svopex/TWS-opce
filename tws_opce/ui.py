@@ -1148,6 +1148,14 @@ class TradingUI:
             return None
         return round(usd / premie, 2)
 
+    def _max_spread(self) -> float | None:
+        """
+        Limit spreadu z formuláře. Prázdné pole vrací None - platí pak
+        hodnota z konfigurace. Náhled i zadání čtou limit odsud, aby se
+        množství počítalo podle téhož čísla, jaké obchod dostane.
+        """
+        return float(self.spread_input.value) if self.spread_input.value else None
+
     def _urovne_v_usd(
         self, pt: float | None, sl: float | None, premie: float | None
     ) -> tuple[float | None, float | None]:
@@ -1187,14 +1195,14 @@ class TradingUI:
         if MODE_PREMIUM not in (pt_mode, sl_mode):
             self.premium_used = None
             return await self.engine.prepare(
-                symbol, entry, pt, sl, pt_on, sl_on, sl_spread, pomer
+                symbol, entry, pt, sl, pt_on, sl_on, sl_spread, pomer, self._max_spread()
             )
 
         premie = self._premie_pro(symbol)
         if premie is None:
             # Hrubý první průchod jen kvůli ceně opce; jeho úrovně se zahodí
             odhad = await self.engine.prepare(
-                symbol, entry, pt, sl, pt_on, sl_on, sl_spread, pomer
+                symbol, entry, pt, sl, pt_on, sl_on, sl_spread, pomer, self._max_spread()
             )
             self._zapamatuj_premii(odhad)
             premie = self._premie_pro(symbol)
@@ -1209,7 +1217,7 @@ class TradingUI:
         self.premium_used = premie
         pt_usd, sl_usd = self._urovne_v_usd(pt, sl, premie)
         preview = await self.engine.prepare(
-            symbol, entry, pt_usd, sl_usd, pt_on, sl_on, sl_spread, pomer
+            symbol, entry, pt_usd, sl_usd, pt_on, sl_on, sl_spread, pomer, self._max_spread()
         )
         self._zapamatuj_premii(preview)
         return preview
@@ -1617,7 +1625,7 @@ class TradingUI:
             pt, sl = self._urovne_v_usd(pt, sl, premie)
 
         quantity = int(self.qty_input.value) if self.qty_input.value else None
-        max_spread = float(self.spread_input.value) if self.spread_input.value else None
+        max_spread = self._max_spread()
         pt_on, sl_on = self._form_modes()
 
         request = FlowRequest(

@@ -1636,6 +1636,52 @@ class TestKompenzaceSpreadu(ZakladRezimu):
         self.assertAlmostEqual(flow.runner_sl_trade.order.auxPrice, 2.70)
 
 
+class TestStropuSpreaduVOdhadu(ZakladRezimu):
+    """
+    Odhad kompenzace SL před nákupem se stropuje limitem spreadu. Nad limit
+    se příkaz do trhu nedostane, takže širší spread obchod nezaplatí a ztráta
+    v přehledu by bez stropu ukazovala riziko, které nemůže nastat.
+    """
+
+    async def zaloz_siroky_spread(self, **zmeny):
+        """
+        Obchod se SL 10 USD/ks a kompenzací; kotace se pak rozšíří na
+        2,60 / 3,40 - spread 80 USD/ks při limitu 5 % z ceny kolem 3,00.
+        """
+        flow = await self.zaloz(
+            False, False, 10.0, 10.0, quantity=2, sl_spread_compensated=True, **zmeny
+        )
+        self.ib.price_bid, self.ib.price_ask = 2.60, 3.40
+        await self.engine._tick()
+        return flow
+
+    async def test_odhad_nepresahne_limit_spreadu(self):
+        flow = await self.zaloz_siroky_spread()
+
+        # Strop je 5 % ze středu trhu (3,00), tedy 15 USD/ks místo plných 80
+        self.assertAlmostEqual(flow.pending_sl_spread, 15.0)
+        self.assertEqual(flow.level_text("sl"), "≈ -25.00 USD")
+        self.assertAlmostEqual(flow.expected_loss, -50.0)
+
+    async def test_bez_rusení_pri_prekroceni_limitu_se_nestropuje(self):
+        # Příkaz zůstává v trhu i po rozšíření spreadu, takže se obchod
+        # může vyplnit za jakýkoliv - odhad pak musí ukázat celý spread
+        self.cfg.trading.cancel_on_spread_breach = False
+        flow = await self.zaloz_siroky_spread()
+
+        self.assertAlmostEqual(flow.pending_sl_spread, 80.0)
+        self.assertAlmostEqual(flow.expected_loss, -180.0)
+
+    async def test_spread_pod_limitem_se_nekrati(self):
+        # Kotace 3,00 / 3,10: spread 10 USD/ks je pod stropem 15,25 USD
+        flow = await self.zaloz(
+            False, False, 10.0, 10.0, quantity=2, sl_spread_compensated=True
+        )
+        await self.engine._tick()
+
+        self.assertAlmostEqual(flow.pending_sl_spread, 10.0)
+
+
 class TestJednotkyZadani(ZakladRezimu):
     """
     Paměť jednotky, ve které byly úrovně na opci zadané. Engine s ní nepočítá,

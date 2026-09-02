@@ -40,6 +40,7 @@ SAVED_FIELDS = (
     "sl_on_underlying",
     "sl_spread_compensated",
     "sl_spread_usd",
+    "sl_spread_capped",
     "pt_in_premium",
     "sl_in_premium",
     "premium_base",

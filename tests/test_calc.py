@@ -96,6 +96,44 @@ class TestSpread(unittest.TestCase):
         self.assertIsNone(calc.spread_pct(3.10, 3.00))
 
 
+class TestStropuSpreadu(unittest.TestCase):
+    """
+    Spread omezený limitem, který obchod musí splnit. Nad limitem se
+    nenakupuje, takže širší spread nemá zdražovat ztrátu na kontrakt.
+    """
+
+    def test_spread_nad_limitem_se_ustrihne(self):
+        # Opce za 2,41 (GOOGL): spread 0,30 = 30 USD, limit 6 % = 14,46 USD
+        self.assertAlmostEqual(
+            calc.capped_spread_usd(2.26, 2.56, 6.0), 14.46, places=2
+        )
+
+    def test_spread_pod_limitem_zustava_cely(self):
+        # Spread 0,11 = 11 USD je pod stropem 6 % z 2,195 (13,17 USD)
+        self.assertAlmostEqual(
+            calc.capped_spread_usd(2.14, 2.25, 6.0), 11.00, places=2
+        )
+
+    def test_zakladem_procenta_je_odhad_nakupni_ceny(self):
+        # Nakupuje se teprve na vstupní úrovni, kde bude opce dražší -
+        # strop se počítá z její odhadované ceny, ne z dnešního středu trhu
+        self.assertAlmostEqual(
+            calc.capped_spread_usd(2.26, 2.56, 6.0, 2.95), 17.70, places=2
+        )
+
+    def test_bez_limitu_se_vraci_cely_spread(self):
+        self.assertAlmostEqual(calc.capped_spread_usd(2.26, 2.56), 30.00, places=2)
+        self.assertAlmostEqual(calc.capped_spread_usd(2.26, 2.56, 0.0), 30.00, places=2)
+
+    def test_bez_kotaci_je_nula(self):
+        self.assertEqual(calc.capped_spread_usd(None, 2.56, 6.0), 0.0)
+
+    def test_nepouzitelna_cena_spadne_na_stred_trhu(self):
+        self.assertAlmostEqual(
+            calc.capped_spread_usd(2.26, 2.56, 6.0, 0.0), 14.46, places=2
+        )
+
+
 class TestMnozstvi(unittest.TestCase):
     """Doporučené množství kontraktů podle rizika."""
 

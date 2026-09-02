@@ -814,6 +814,13 @@ class ImportDialog:
         rrr = self._cislo(self.rrr_input.value)
         return pomer_z_rrr(rrr) if rrr is not None and rrr > 0 else None
 
+    def _max_spread(self) -> float | None:
+        """
+        Limit spreadu z pole nad tabulkou. Prázdné pole vrací None - platí
+        pak hodnota z konfigurace, stejně jako u zadání obchodu.
+        """
+        return self._cislo(self.spread_input.value)
+
     def _sl_spread(self) -> bool:
         """Kompenzace SL o spread - uplatní se jen při SL zadaném na opci."""
         return bool(self.sl_spread_compensated.value) and self.rezim.value in REZIMY_NA_OPCI
@@ -950,6 +957,8 @@ class ImportDialog:
                 True,
                 True,
                 False,
+                None,
+                self._max_spread(),
             )
         except Exception as exc:
             radek.premie = None
@@ -1035,6 +1044,7 @@ class ImportDialog:
                 sl_on,
                 self._sl_spread(),
                 self._pomer(),
+                self._max_spread(),
             )
         except Exception as exc:
             self._zahod_dopocet(radek)
@@ -1262,7 +1272,7 @@ class ImportDialog:
         # Všechna společná nastavení se čtou jednou pro celou dávku - ovládací
         # prvky zůstávají během zadávání živé a jejich změna uprostřed by
         # rozešla jednotku úrovní s příznaky, které už jsou zafixované
-        max_spread = self._cislo(self.spread_input.value)
+        max_spread = self._max_spread()
         sl_spread = self._sl_spread()
         pomer = self._pomer()
         rezim_cile = self.rezim.value

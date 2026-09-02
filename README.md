@@ -206,7 +206,24 @@ projít.
    sloupce *SL* a *Ztráta na SL* v přehledu odhad **včetně** spreadu
    z aktuální kotace (`≈ -20.00 USD`, resp. odpovídající ztráta), aby se
    hodnota po nákupu neměnila skokem; jakmile je spread znám, značka
-   přibližné rovnosti zmizí. Připočtený spread nese
+   přibližné rovnosti zmizí.
+
+   Odhad se **stropuje limitem spreadu** (*Max. spread [%]* z formuláře,
+   jinak `trading.max_spread_pct`): nad limitem se nenakupuje — příkaz se
+   do trhu nezadá a nevyplněný se z něj odstraní — takže širší spread
+   obchod reálně nezaplatí a nemá pozici zmenšovat. Opce s kotací
+   2,26 / 2,56 (spread 30 USD/ks, 12,45 %) se tak při limitu 6 % počítá
+   jen s 6 % ceny opce, tedy asi 18 USD/ks; z menší ztráty na kontrakt
+   vyjde odpovídajícím dílem větší množství. Základem procenta je
+   **odhadovaná nákupní cena** — limit se měří proti kotaci v okamžiku
+   nákupu, ne proti dnešní; v přehledu, kde obchod odhad nákupní ceny
+   nedrží, slouží střed trhu. Strop platí jen při zapnutém
+   `trading.cancel_on_spread_breach`; bez něj příkaz v trhu po rozšíření
+   spreadu zůstává, může se vyplnit za jakýkoliv, a počítá se proto
+   s celým aktuálním spreadem. Zárukou to ani tak není: kontrola běží
+   v monitorovací smyčce, takže vyplnění těsně po rozšíření spreadu
+   vyloučit nelze a skutečná ztráta pak riziko na obchod přesáhne.
+   Připočtený spread nese
    obchod v poli `sl_spread_usd`, takže *Načíst* vrátí do formuláře
    původně zadanou hodnotu a kompenzace se při dalším zadání neřetězí.
    Break even se nekompenzuje — jeho stop má stát na zaplacené ceně;

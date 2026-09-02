@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.fake_ib import UNDERLYING_CONID
 from tests.zaklad import ZakladEnginu
+from tws_opce import calc
 from tws_opce.models import FlowRequest, FlowState
 
 
@@ -224,6 +225,60 @@ class TestLongShortSoucasne(ZakladTestu):
         # S určeným směrem se zruší jen odpovídající obchod
         zruseny = await self.engine.cancel_by_symbol("AAPL", right="P")
         self.assertIs(zruseny, short)
+
+
+class TestStropuSpreaduVMnozstvi(ZakladTestu):
+    """
+    Množství se počítá se spreadem omezeným limitem. Nad limitem se
+    nenakupuje (nevyplněný příkaz se z trhu odstraní), takže širší spread
+    obchod nezaplatí a nemá pozici zbytečně zmenšovat.
+    """
+
+    async def priprav(self, limit: float | None = None):
+        """Náhled s SL 10 USD/ks na opci a širokým spreadem 2,60 / 3,40."""
+        # Větší účet, ať je na rozdílu v množství co poznat
+        self.cfg.account.size = 50_000.0
+        self.ib.price_underlying = 230.0
+        self.ib.price_bid, self.ib.price_ask = 2.60, 3.40
+        return await self.engine.prepare(
+            "AAPL", 232.0, 10.0, 10.0, False, False, True, None, limit
+        )
+
+    async def test_spread_nad_limitem_se_v_odhadu_ustrihne(self):
+        preview = await self.priprav()
+
+        # Strop je limit (5 %) krát odhadovaná nákupní cena opce
+        strop = round(self.cfg.trading.max_spread_pct * preview.expected_fill_price, 2)
+        self.assertAlmostEqual(preview.sl_spread_usd, strop)
+        self.assertLess(preview.sl_spread_usd, calc.spread_usd(2.60, 3.40))
+
+    async def test_strop_zvetsi_mnozstvi(self):
+        se_stropem = await self.priprav()
+
+        # Vypnuté zrušení příkazu při překročení limitu strop ruší - příkaz
+        # zůstává v trhu a vyplnit se může za jakýkoliv spread
+        self.cfg.trading.cancel_on_spread_breach = False
+        bez_stropu = await self.priprav()
+
+        self.assertAlmostEqual(bez_stropu.sl_spread_usd, 80.0)
+        self.assertGreater(se_stropem.quantity, bez_stropu.quantity)
+
+    async def test_strop_se_ridi_limitem_z_formulare(self):
+        preview = await self.priprav(limit=10.0)
+
+        # Formulář posílá vlastní limit; konfigurace platí, jen když chybí
+        strop = round(10.0 * preview.expected_fill_price, 2)
+        self.assertAlmostEqual(preview.sl_spread_usd, min(80.0, strop))
+
+    async def test_uzky_spread_zustava_cely(self):
+        self.cfg.account.size = 50_000.0
+        self.ib.price_underlying = 230.0
+        self.ib.price_bid, self.ib.price_ask = 3.00, 3.10
+        preview = await self.engine.prepare(
+            "AAPL", 232.0, 10.0, 10.0, False, False, True
+        )
+
+        self.assertAlmostEqual(preview.sl_spread_usd, 10.0)
 
 
 class TestVyberuStrike(ZakladTestu):

@@ -85,6 +85,38 @@ def paid_spread_usd(fill_price: float | None, bid: float | None) -> float:
     return round((fill_price - bid) * OPTION_MULTIPLIER, 2)
 
 
+def capped_spread_usd(
+    bid: float | None,
+    ask: float | None,
+    max_spread_pct: float | None = None,
+    price: float | None = None,
+) -> float:
+    """
+    Spread opce v USD na kontrakt, omezený limitem, který obchod musí splnit.
+
+    Nad limitem se nákupní příkaz do trhu nedostane a nevyplněný se z něj
+    odstraní, takže širší spread obchod reálně nezaplatí - počítat s ním
+    celým by nadhodnotilo ztrátu na kontrakt a zbytečně srazilo množství.
+    Ze vzorce spread_pct = (ASK-BID)/MID*100 plyne, že jednomu procentu
+    odpovídá právě cena opce v USD, strop je tedy limit krát cena.
+
+    Základem procenta je odhad nákupní ceny (limit se měří proti kotaci
+    v okamžiku nákupu, ne proti dnešní); bez něj poslouží střed trhu.
+    Bez limitu i bez použitelné ceny se vrací celý spread.
+    """
+    spread = spread_usd(bid, ask)
+    if spread <= 0 or max_spread_pct is None or max_spread_pct <= 0:
+        return spread
+
+    zaklad = price if price and math.isfinite(price) and price > 0 else None
+    if zaklad is None and bid is not None and ask is not None:
+        zaklad = (bid + ask) / 2.0
+    if zaklad is None or zaklad <= 0:
+        return spread
+
+    return min(spread, round(max_spread_pct * zaklad, 2))
+
+
 def suggest_quantity_for_loss(
     risk_amount: float,
     loss_per_contract: float,

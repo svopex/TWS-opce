@@ -360,6 +360,7 @@ class FlowEngine:
         sl_on_underlying: bool = True,
         sl_spread_compensated: bool = False,
         sl_to_pt_ratio: float | None = None,
+        max_spread_pct: float | None = None,
     ) -> Preview:
         """
         Připraví zadání obchodu: načte cenu podkladu, určí typ opce, expiraci,
@@ -375,6 +376,10 @@ class FlowEngine:
         sl_spread_compensated připočte k SL na opci spread opce, aby zadaná
         hodnota odpovídala potřebnému pohybu trhu; náhled používá spread
         z aktuální kotace, skutečný obchod ten zaplacený při nákupu.
+
+        max_spread_pct je limit spreadu, se kterým obchod poběží (z formuláře;
+        bez něj platí konfigurace). Odhad kompenzace SL se jím stropuje - nad
+        limitem se nenakupuje, takže širší spread obchod nezaplatí.
         """
         if not self.ib.connected:
             raise RuntimeError("Není navázáno spojení s TWS.")
@@ -398,6 +403,14 @@ class FlowEngine:
                 if sl_to_pt_ratio is not None and sl_to_pt_ratio > 0
                 else self.cfg.trading.sl_to_pt_ratio
             ),
+        )
+
+        # Limit spreadu, se kterým obchod poběží. Formulář ho posílá s sebou,
+        # aby se náhled počítal podle téhož čísla, jaké obchod dostane
+        limit_spreadu = (
+            max_spread_pct
+            if max_spread_pct is not None and max_spread_pct > 0
+            else self.cfg.trading.max_spread_pct
         )
 
         # Odběry tržních dat zakládá příprava sama; nedoběhne-li (chyba,
@@ -538,10 +551,6 @@ class FlowEngine:
             preview.option_price, preview.option_price_source = self.ib.option_price(option)
             preview.spread_pct = calc.spread_pct(bid, ask)
             preview.delta = delta
-            # Odhad kompenzace SL: spread vybrané opce v USD na kontrakt.
-            # Skutečně se připočte až spread zaplacený při nákupu
-            if preview.sl_spread_compensated:
-                preview.sl_spread_usd = calc.spread_usd(bid, ask)
 
             # TWS model greeks u opcí neposílá spolehlivě, proto se delta v takovém
             # případě dopočítá z tržní ceny opce; teprve pak se sáhne po náhradní hodnotě
@@ -575,6 +584,21 @@ class FlowEngine:
 
             # Odhad nákupní ceny opce - čistý výpočet z už načtených kotací
             preview.expected_fill_price = self._expected_fill_price(preview, entry_price)
+
+            # Odhad kompenzace SL: spread vybrané opce v USD na kontrakt.
+            # Skutečně se připočte až spread zaplacený při nákupu. Stropuje se
+            # limitem spreadu - příkaz se nad ním do trhu nedostane a nevyplněný
+            # se z něj odstraní, takže širší spread obchod nezaplatí a množství
+            # by podle něj vyšlo zbytečně malé. Vypnuté zrušení příkazu při
+            # překročení limitu strop ruší: takový příkaz zůstává v trhu
+            # i po rozšíření spreadu a vyplnit se může za jakýkoliv
+            if preview.sl_spread_compensated:
+                preview.sl_spread_usd = calc.capped_spread_usd(
+                    bid,
+                    ask,
+                    limit_spreadu if self.cfg.trading.cancel_on_spread_breach else None,
+                    preview.expected_fill_price,
+                )
 
             # SL buď zadaný uživatelem, nebo dopočtený podle poměru z konfigurace;
             # při smíšeném režimu PT a SL se převádí přes cenu opce, proto až teď,
@@ -626,10 +650,10 @@ class FlowEngine:
                     "dopočítané úrovně i doporučené množství mohou být nepřesné."
                 )
 
-            if preview.spread_pct is not None and preview.spread_pct > self.cfg.trading.max_spread_pct:
+            if preview.spread_pct is not None and preview.spread_pct > limit_spreadu:
                 preview.warnings.append(
                     f"Aktuální spread {preview.spread_pct:.2f} % překračuje limit "
-                    f"{self.cfg.trading.max_spread_pct:g} %."
+                    f"{limit_spreadu:g} %."
                 )
 
             self._replace_preview(preview)
@@ -1215,6 +1239,7 @@ class FlowEngine:
                 request.sl_on_underlying,
                 request.sl_spread_compensated,
                 request.sl_to_pt_ratio,
+                request.max_spread_pct,
             )
 
             # Propásnutý vstup se hlásí dřív než ostatní kontroly, jinak by
@@ -1290,6 +1315,7 @@ class FlowEngine:
                 pt_on_underlying=request.pt_on_underlying,
                 sl_on_underlying=request.sl_on_underlying,
                 sl_spread_compensated=preview.sl_spread_compensated,
+                sl_spread_capped=self.cfg.trading.cancel_on_spread_breach,
                 # Jednotka zadání úrovní si jede s obchodem, aby ji formulář
                 # při načtení obchodu nabídl znovu; totéž platí pro prvotní
                 # úroveň a poměr, kterým se ta druhá dopočítala

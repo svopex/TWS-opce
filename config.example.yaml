@@ -209,6 +209,12 @@ trading:
 
   # true = při překročení maximálního spreadu se dosud nevyplněný nákupní
   # příkaz odstraní z trhu (chování požadované zadáním).
+  #
+  # Zapnuté zrušení zároveň stropuje odhad zaplaceného spreadu, se kterým se
+  # počítá kompenzovaný SL a z něj množství kontraktů: nad limit se příkaz
+  # do trhu nedostane, takže širší spread obchod nezaplatí a nemá pozici
+  # zmenšovat. Při false se počítá s celým aktuálním spreadem - takový příkaz
+  # zůstává v trhu i po jeho rozšíření a vyplnit se může za jakýkoliv.
   cancel_on_spread_breach: true
 
   # true = jakmile spread klesne zpět pod limit, aplikace nákupní příkaz
