@@ -326,7 +326,7 @@ import:
   refresh_after_open: true
   # Kolik sekund po otevření burzy se přepočet provede. V prvních okamžicích
   # jsou kotace opcí nejširší; dokud je spread nad limitem, přepočet počká.
-  refresh_after_open_sec: 60
+  refresh_after_open_sec: 30
 
 
 # -----------------------------------------------------------------------------
