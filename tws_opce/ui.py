@@ -24,6 +24,7 @@ from .models import (
     Flow,
     FlowRequest,
     FlowState,
+    format_countdown,
     level_text,
     pomer_z_rrr,
     rezim_urovne,
@@ -260,23 +261,6 @@ def popisek_urovne(druh: str, rezim: str) -> str:
     return (PT_LABELS if druh == "pt" else SL_LABELS)[rezim]
 
 
-def format_countdown(sekundy: float) -> str:
-    """
-    Zbývající čas pro odpočty v hlavičce. Pod hodinu vyjde MM:SS, do dne
-    H:MM:SS a přes den se přidá počet dní (odpočet do otevření trhu běží
-    i přes víkend, takže může jít o desítky hodin).
-    """
-    celkem = max(0, int(sekundy))
-    dny, zbytek = divmod(celkem, 86400)
-    hodiny, zbytek = divmod(zbytek, 3600)
-    minuty, sek = divmod(zbytek, 60)
-    if dny:
-        return f"{dny} d {hodiny}:{minuty:02d}:{sek:02d}"
-    if hodiny:
-        return f"{hodiny}:{minuty:02d}:{sek:02d}"
-    return f"{minuty:02d}:{sek:02d}"
-
-
 class TradingUI:
     """Sestavuje a obsluhuje uživatelské rozhraní nad obchodním enginem."""
 
@@ -374,6 +358,10 @@ class TradingUI:
             # Odpočet do automatického uzavření obchodů před koncem burzy
             self.auto_close_label = ui.label().classes("odpocet-uzavreni")
             self.auto_close_label.set_visibility(False)
+            # Naplánované zadání pozic ze souboru. Režim běží i se zavřeným
+            # dialogem, takže jinak než tady by nebyl vidět
+            self.plan_label = ui.label().classes("odpocet-plan")
+            self.plan_label.set_visibility(False)
             self.dark_button = ui.button(on_click=self._toggle_dark).props("flat round dense")
             with self.dark_button:
                 ui.tooltip("Přepnout světlý/tmavý vzhled")
@@ -1937,6 +1925,7 @@ class TradingUI:
         # i importní dialog, kterému se tím obnovují zámky zadaných řádků
         self.report_dialog.refresh()
         self.import_dialog.refresh()
+        self._refresh_plan()
 
     def _refresh_market_open(self) -> None:
         """Odpočet do otevření burzy v hlavičce - během seance se skrývá."""
@@ -1947,6 +1936,21 @@ class TradingUI:
 
         self.market_open_label.set_visibility(True)
         self.market_open_label.set_text(f"Otevření trhu za {format_countdown(sekundy)}")
+
+    def _refresh_plan(self) -> None:
+        """
+        Signalizace naplánovaného zadání pozic ze souboru v hlavičce.
+
+        Dialog si popis skládá sám - zná odpočet i počet vybraných pozic;
+        prázdný popis znamená, že režim neběží a pruh se skryje.
+        """
+        popis = self.import_dialog.plan_popis()
+        if popis is None:
+            self.plan_label.set_visibility(False)
+            return
+
+        self.plan_label.set_visibility(True)
+        self.plan_label.set_text(popis)
 
     def _refresh_auto_close(self) -> None:
         """Odpočet do automatického uzavření obchodů v hlavičce."""

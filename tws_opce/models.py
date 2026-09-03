@@ -22,6 +22,23 @@ def cislo_text(hodnota: float, desetin: int = 2) -> str:
     return f"{hodnota:,.{desetin}f}".replace(",", " ")
 
 
+def format_countdown(sekundy: float) -> str:
+    """
+    Zbývající čas pro odpočty v hlavičce. Pod hodinu vyjde MM:SS, do dne
+    H:MM:SS a přes den se přidá počet dní (odpočet do otevření trhu běží
+    i přes víkend, takže může jít o desítky hodin).
+    """
+    celkem = max(0, int(sekundy))
+    dny, zbytek = divmod(celkem, 86400)
+    hodiny, zbytek = divmod(zbytek, 3600)
+    minuty, sek = divmod(zbytek, 60)
+    if dny:
+        return f"{dny} d {hodiny}:{minuty:02d}:{sek:02d}"
+    if hodiny:
+        return f"{hodiny}:{minuty:02d}:{sek:02d}"
+    return f"{minuty:02d}:{sek:02d}"
+
+
 def pomer_z_rrr(rrr: float) -> float:
     """
     Poměr SL:PT pro engine z RRR zadaného ve formuláři.

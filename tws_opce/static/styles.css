@@ -64,6 +64,17 @@
   font-weight: 600;
 }
 
+/* Naplánované zadání pozic ze souboru. Na rozdíl od odpočtů se zobrazuje jen
+   se zapnutým režimem, proto pulzuje - je to stav, který sám pošle pozice
+   do trhu a nemá zapadnout mezi ostatní údaje v hlavičce */
+.odpocet-plan {
+  animation: pulzovani 1.6s ease-in-out infinite;
+  color: #fb923c;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-right: 12px;
+}
+
 /* --- Pruh s upozorněním na pozice bez dozoru --- */
 .pruh-varovani {
   align-items: flex-start;
@@ -933,6 +944,18 @@ body.body--dark .log-radek {
 
 .dialog-import .tlacitko-import-akce {
   flex: 0 0 auto;
+}
+
+/* Tlačítko naplánovaného zadání. Vypnuté je obrysové jako ostatní volby,
+   zapnuté se plní oranžovou a pulzuje - zapnutý režim tak jde poznat na první
+   pohled i bez čtení popisku s odpočtem. Šířka se drží nejdelšího stavu, ať
+   řádek tlačítek s tikajícím odpočtem nepřeskakuje */
+.dialog-import .tlacitko-plan {
+  min-width: 210px;
+}
+
+.dialog-import .tlacitko-plan.plan-aktivni {
+  animation: pulzovani 1.6s ease-in-out infinite;
 }
 
 /* Tlačítko otevírající dialog stojí vpravo v nadpisu formuláře */

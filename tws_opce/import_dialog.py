@@ -29,6 +29,7 @@ from .models import (
     PT_MULTIPLES,
     FlowRequest,
     cislo_text,
+    format_countdown,
     pomer_z_rrr,
     priznaky_urovne,
     rrr_z_pomeru,
@@ -69,6 +70,10 @@ JEDNOTKY_UROVNI = {
 
 # Hodnota volby runneru, která znamená "runner nezapínat"
 RUNNER_VYPNUTO = "0"
+
+# Popisek tlačítka naplánovaného zadání ve vypnutém stavu; zapnutý stav
+# ukazuje odpočet, proto se skládá až za běhu
+POPIS_PLANU_VYPNUTO = "Zadat po otevření trhu"
 
 
 def uroven_cile(rezim: str) -> str:
@@ -232,6 +237,16 @@ class ImportDialog:
         # Právě běží příprava řádků - zadávat se smí až po ní, jinak by šla
         # do trhu čísla z rozpracovaného přepočtu
         self.priprava: bool = False
+        # Naplánované zadání po otevření trhu. plan_aktivni drží zapnutý
+        # režim, dokud okamžik spuštění teprve nastane; plan_bezi pak kryje
+        # vlastní běh (přepočet a zadání dávky), po který se plán nesmí
+        # zrušit ani spustit podruhé. Prodleva se zafixuje při zapnutí, aby
+        # pozdější úprava pole neposunula okamžik, na který se čeká
+        self.plan_aktivni: bool = False
+        self.plan_bezi: bool = False
+        self.plan_prodleva: float = 0.0
+        # Tlačítko plánu vzniká až s vykresleným dialogem
+        self.plan_button: Any = None
 
     # ------------------------------------------------------------------
     # Sestavení dialogu
@@ -245,6 +260,9 @@ class ImportDialog:
         with ui.dialog().classes("dialog-import-obal") as self.dialog, ui.card().classes(
             "dialog-import"
         ):
+            # Zavřený dialog ukončí naplánované zadání, ať se ven dostane
+            # jakkoliv - tlačítkem, klávesou i kliknutím mimo kartu
+            self.dialog.on_value_change(self._na_zavreni_dialogu)
             ui.label("Načtení pozic ze souboru").classes("dialog-nadpis")
             ui.label(
                 "Čerpá se z položek s klíčem končícím plusem - ticker, vstupní "
@@ -287,6 +305,25 @@ class ImportDialog:
                     .classes("tlacitko-import-akce")
                 )
                 self.zadat_button.set_enabled(False)
+                # Naplánované zadání: po otevření trhu a uplynulé prodlevě se
+                # samo provede přepočet a hned po něm zadání vybraných pozic
+                self.plan_button = (
+                    ui.button(POPIS_PLANU_VYPNUTO, on_click=self._prepni_plan)
+                    .props("outline color=orange-8")
+                    .classes("tlacitko-import-akce tlacitko-plan")
+                )
+                self.plan_button.set_enabled(False)
+                self.plan_button.tooltip(
+                    "Zapne jednorázový režim: po otevření trhu a uplynutí "
+                    "prodlevy vpravo nahoře se samo provede přepočet všech "
+                    "nezadaných řádků a hned po něm zadání vybraných pozic "
+                    "do trhu - tytéž dva kroky jako tlačítka Přepočítat "
+                    "a Zadat vybrané pozice do trhu. Použitelné i pro pozice, "
+                    "které v trhu ještě vůbec nejsou. Režim ukončí opětovný "
+                    "stisk, kterékoliv z obou tlačítek, zavření dialogu "
+                    "i načtení jiného souboru. Zapnout jde jen dokud okamžik "
+                    "přepočtu teprve nastane."
+                )
                 ui.button("Zavřít", on_click=self.dialog.close).props("flat").classes(
                     "tlacitko-import-akce"
                 )
@@ -614,6 +651,10 @@ class ImportDialog:
         self.tabulka.set_visibility(bool(pozice))
         # Probíhající dávka drží tlačítko zakázané, dokud nedoběhne
         self.zadat_button.set_enabled(bool(pozice) and not self.zadavani)
+        # Nová tabulka přebíjí plán zapnutý nad předchozím souborem - jinak by
+        # do trhu odešly jiné pozice, než u kterých se režim zapínal
+        self._zrus_plan("Naplánované zadání zrušeno načtením jiného souboru.")
+        self.plan_button.set_enabled(bool(pozice) and not self.plan_bezi)
         self.souhrn_label.set_text("")
         if not pozice:
             return
@@ -952,7 +993,12 @@ class ImportDialog:
         Připraví všechny dosud nezadané pozice podle nastavení nad tabulkou.
         Přepíše u nich PT, SL i množství, stejně jako tlačítko Přepočítat
         v běžném formuláři.
+
+        Ruční přepočet ukončuje naplánované zadání - obchodník právě vzal
+        čísla do vlastních rukou. Přepočet spuštěný samotným plánem se
+        nevypíná, ten už běží.
         """
+        self._zrus_plan("Naplánované zadání zrušeno ručním přepočtem.")
         if not self.radky:
             ui.notify("Nejprve vyberte soubor s pozicemi.", type="warning")
             return
@@ -1271,7 +1317,11 @@ class ImportDialog:
         Udrží otevřený dialog v souladu se skutečností - stav založených
         obchodů, zámky řádků i souhrn pod tabulkou. Volá se z periodické
         smyčky rozhraní; zavřený dialog se přeskakuje.
+
+        Naplánované zadání je z toho vyjmuté - běží i se zavřeným dialogem,
+        protože obchodník ho zapne a dialog odklidí.
         """
+        self._tik_planu()
         if not self.dialog.value or not self.radky:
             return
 
@@ -1296,6 +1346,219 @@ class ImportDialog:
         )
 
     # ------------------------------------------------------------------
+    # Naplánované zadání po otevření trhu
+    # ------------------------------------------------------------------
+
+    def _prodleva_planu(self) -> float:
+        """
+        Prodleva od otevření trhu, po které se naplánované zadání provede.
+
+        Sdílí se s polem u přepočtu po otevření, ale čte se nezávisle na jeho
+        přepínači - plán je samostatná funkce a nesmí ho vypnout odškrtnutý
+        přepočet. Prázdné či záporné pole spadne na hodnotu z konfigurace,
+        ať se okamžik zadání neřídí náhodným číslem.
+        """
+        hodnota = self._cislo(
+            self.refresh_sec_input.value if self.refresh_sec_input is not None else None
+        )
+        if hodnota is None or hodnota < 0:
+            return float(self.cfg.import_.refresh_after_open_sec)
+        return float(hodnota)
+
+    def _plan_zbyva(self) -> float | None:
+        """
+        Sekundy do spuštění naplánovaného zadání; None, když plán neběží.
+
+        Okamžik je otevření trhu plus prodleva. Mimo obchodní hodiny se
+        skládá z odpočtu do otevření, uvnitř seance ze zbytku prodlevy -
+        záporná hodnota tedy znamená, že okamžik už minul.
+        """
+        if not self.plan_aktivni:
+            return None
+        do_otevreni = self.engine.market_open_seconds()
+        if do_otevreni is not None:
+            return do_otevreni + self.plan_prodleva
+        uplynulo = self.engine.market_open_elapsed()
+        return self.plan_prodleva - (uplynulo if uplynulo is not None else 0.0)
+
+    def plan_popis(self) -> str | None:
+        """
+        Popis naplánovaného zadání pro hlavičku stránky; None, když plán
+        neběží. Zapnutý režim je tak vidět i se zavřeným dialogem, odkud by
+        o něm jinak nebylo ani stopy.
+        """
+        if self.plan_bezi:
+            return "Probíhá naplánované zadání pozic"
+        zbyva = self._plan_zbyva()
+        if zbyva is None:
+            return None
+        pocet = sum(
+            1
+            for radek in self.radky
+            if radek.vybrano.value and not self._zamceno(radek)
+        )
+        return f"Naplánováno zadání {pocet} pozic za {format_countdown(zbyva)}"
+
+    def _obnov_plan(self) -> None:
+        """
+        Sladí tlačítko se stavem plánu. Vypnutý je obrysový, zapnutý plný
+        oranžový s odpočtem do spuštění - zapnutý režim tak jde poznat na
+        první pohled, stejně jako u zvolené volby runneru.
+        """
+        if self.plan_button is None:
+            return
+        if self.plan_bezi:
+            self.plan_button.set_text("Zadávám naplánované pozice…")
+            self.plan_button.props(add="color=orange-8", remove="outline")
+            self.plan_button.classes(add="plan-aktivni")
+            return
+        zbyva = self._plan_zbyva()
+        if zbyva is None:
+            self.plan_button.set_text(POPIS_PLANU_VYPNUTO)
+            self.plan_button.props(add="outline color=orange-8")
+            self.plan_button.classes(remove="plan-aktivni")
+            return
+        self.plan_button.set_text(f"Zrušit plán ({format_countdown(zbyva)})")
+        self.plan_button.props(add="color=orange-8", remove="outline")
+        self.plan_button.classes(add="plan-aktivni")
+
+    def _zrus_plan(self, duvod: str = "") -> None:
+        """
+        Ukončí naplánované zadání. Volá se ze všech ručních zásahů, které
+        plán přebíjejí - Přepočítat, Zadat vybrané pozice do trhu, Zavřít
+        i načtení jiného souboru.
+
+        Právě probíhající plán se neruší: přepočet a zadání už běží a vzít
+        se zpět nedají. Ticho při vypnutém plánu nechá volajícího zavolat
+        rušení bez ptaní, jestli je co rušit.
+        """
+        if not self.plan_aktivni or self.plan_bezi:
+            return
+        self.plan_aktivni = False
+        self._obnov_plan()
+        if duvod:
+            ui.notify(duvod, type="info")
+
+    def _prepni_plan(self) -> None:
+        """
+        Obsluha tlačítka naplánovaného zadání - zapne, nebo vypne režim.
+
+        Zapnout jde jen tehdy, když okamžik spuštění teprve nastane. Po
+        otevření trhu s uplynulou prodlevou by plán zadal do trhu hned po
+        stisku, což od tlačítka se slovem "po otevření" nikdo nečeká -
+        v takové chvíli má obchodník po ruce Přepočítat a Zadat vybrané
+        pozice do trhu a udělá totéž vědomě.
+        """
+        if self.plan_bezi:
+            ui.notify("Naplánované zadání právě probíhá.", type="warning")
+            return
+        if self.plan_aktivni:
+            self._zrus_plan("Naplánované zadání zrušeno.")
+            return
+        if not self.radky:
+            ui.notify("Nejprve vyberte soubor s pozicemi.", type="warning")
+            return
+        # Bez vyplněného cíle by naplánovaný přepočet stejně jen ohlásil
+        # chybu a dávka by šla do trhu s prázdnými čísly
+        if self._zadana_hodnota() is None:
+            ui.notify(f"Vyplňte {self._popis_hodnoty()}.", type="warning")
+            return
+        # Plán zadá právě to, co je zaškrtnuté teď - výběr se do spuštění
+        # nemění. Prázdný by tiše skončil zadáním nula pozic, a to až po
+        # otevření trhu, kdy už je na nápravu pozdě: znovu otevřený dialog
+        # zaškrtnutí nepřepočtených řádků sundává
+        if not any(
+            radek.vybrano.value and not self._zamceno(radek) for radek in self.radky
+        ):
+            ui.notify(
+                "Není vybrána žádná pozice - plán by do trhu nezadal nic.",
+                type="warning",
+            )
+            return
+
+        prodleva = self._prodleva_planu()
+        uplynulo = self.engine.market_open_elapsed()
+        if uplynulo is not None and uplynulo >= prodleva:
+            ui.notify(
+                f"Okamžik přepočtu ({prodleva:g} s po otevření trhu) je pryč - "
+                f"trh je otevřený už {format_countdown(uplynulo)}. Použijte "
+                f"Přepočítat a Zadat vybrané pozice do trhu.",
+                type="warning",
+            )
+            return
+
+        self.plan_prodleva = prodleva
+        self.plan_aktivni = True
+        self._obnov_plan()
+        zbyva = self._plan_zbyva() or 0.0
+        ui.notify(
+            f"Přepočet a zadání proběhne za {format_countdown(zbyva)} "
+            f"({prodleva:g} s po otevření trhu).",
+            type="positive",
+        )
+
+    def _tik_planu(self) -> None:
+        """
+        Průchod plánem z periodické obnovy rozhraní - drží odpočet na
+        tlačítku a po dosažení okamžiku spustí přepočet se zadáním.
+
+        Běží i se zavřeným dialogem: obchodník plán zapne a dialog odklidí,
+        spouštěč musí přesto nastat. Vlastní běh se pouští odloženě přes
+        časovač, aby v něm fungovalo ui.notify - stejně jako u přípravy
+        vyvolané přepnutím režimu.
+        """
+        if not self.plan_aktivni or self.plan_bezi:
+            return
+        zbyva = self._plan_zbyva()
+        if zbyva is None:
+            return
+        if zbyva > 0:
+            self._obnov_plan()
+            return
+
+        # Okamžik nastal - zapnutý režim se hned překlápí do běhu, ať ho
+        # další průchod smyčkou nespustí podruhé
+        self.plan_aktivni = False
+        self.plan_bezi = True
+        self._obnov_plan()
+        with self.tabulka:
+            ui.timer(0, self._spust_plan, once=True)
+
+    async def _spust_plan(self) -> None:
+        """
+        Vlastní naplánovaný běh: přepočet všech nezadaných řádků podle
+        nastavení nad tabulkou a hned po něm zadání vybraných pozic do trhu.
+
+        Je to táž dvojice kroků jako ruční Přepočítat a Zadat vybrané pozice
+        do trhu, včetně jejich kontrol - obchod tedy vznikne přesně jako
+        z ruky. Selhání se ohlásí a režim se v každém případě vypne, aby
+        se dávka po chybě neopakovala.
+        """
+        try:
+            await self._priprav_vse()
+            await self._zadej()
+        except Exception as exc:
+            log.exception("Naplánované zadání selhalo.")
+            ui.notify(f"Naplánované zadání selhalo: {exc}", type="negative")
+        finally:
+            self.plan_bezi = False
+            self._obnov_plan()
+
+    def _na_zavreni_dialogu(self, event: Any) -> None:
+        """
+        Zavření dialogu ukončí naplánované zadání - odklizený dialog nemá
+        nechávat běžet režim, který sám od sebe pošle pozice do trhu.
+
+        Visí na změně hodnoty dialogu, takže platí pro všechny cesty ven:
+        tlačítko Zavřít, klávesu i kliknutí mimo kartu. Otevření dialogu
+        (hodnota True) se přeskakuje, stejně jako zavření po doběhlé dávce,
+        kdy plán běží a rušit se nedá.
+        """
+        if event.value:
+            return
+        self._zrus_plan("Naplánované zadání zrušeno zavřením dialogu.")
+
+    # ------------------------------------------------------------------
     # Zadání do trhu
     # ------------------------------------------------------------------
 
@@ -1307,7 +1570,12 @@ class ImportDialog:
         tlačítka by pracoval s výběrem pořízeným ještě před odškrtnutím
         řádků, takže by tytéž pozice poslal do trhu podruhé. Tlačítko se
         proto na dobu běhu zakáže.
+
+        Ruční zadání ukončuje naplánované zadání - pozice jdou do trhu teď
+        a plán by je po otevření hnal podruhé. Dávka spuštěná samotným
+        plánem se nevypíná, ta je jeho druhým krokem.
         """
+        self._zrus_plan("Naplánované zadání zrušeno ručním zadáním do trhu.")
         if self.zadavani:
             ui.notify("Zadávání do trhu už probíhá.", type="warning")
             return
