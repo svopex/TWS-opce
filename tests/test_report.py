@@ -19,6 +19,8 @@ from tws_opce.report_dialog import (
     mez_osy,
     penize,
     penize_s_provizi,
+    procenta,
+    procenta_s_provizi,
     sklonuj,
     trida_vysledku,
 )
@@ -395,6 +397,51 @@ class TestSouhrnSProvizemi(unittest.TestCase):
         self.assertEqual(podle, {"AAPL": 193.0, "NFLX": 78.70, "TSLA": -207.0})
 
 
+class TestProcentUctu(unittest.TestCase):
+    """Výsledek dne vyjádřený podílem z účtu."""
+
+    def setUp(self) -> None:
+        self.dnes = date(2026, 8, 25)
+        zaklad = datetime(2026, 8, 25, 15, 0)
+        # Ziskový obchod (+200, provize 7) a běžící pozice (+80, provize 1,30)
+        self.flows = [
+            obchod(symbol="AAPL", id="AAPL-1", exit_cena=4.00, created_at=zaklad,
+                   updated_at=zaklad + timedelta(minutes=10),
+                   entry_commissions={"E1": 3.5}, exit_commissions={"X1": 3.5}),
+            obchod(symbol="NFLX", id="NFLX-1", stav=FlowState.EXIT_ARMED,
+                   exit_cena=None, option_bid=3.40, option_ask=3.50,
+                   created_at=zaklad, entry_commissions={"E3": 1.30}),
+        ]
+
+    def sestav(self, account_size: float = 5000.0) -> report.DenniReport:
+        """Přehled nad připravenými obchody se zadanou velikostí účtu."""
+        return report.sestav(
+            self.flows, report.ROZSAH_DNES, self.dnes, account_size=account_size
+        )
+
+    def test_vysledek_dne_v_procentech_uctu(self):
+        # +193 realizováno a +78,70 v pozicích z účtu 5 000 USD
+        souhrn = self.sestav().souhrn
+        self.assertAlmostEqual(souhrn.celkem_s_provizi, 271.70)
+        self.assertAlmostEqual(souhrn.procento_uctu(souhrn.celkem_s_provizi), 5.434)
+
+    def test_procenta_pocitaji_i_ztratu(self):
+        souhrn = self.sestav().souhrn
+        self.assertAlmostEqual(souhrn.procento_uctu(-250.0), -5.0)
+
+    def test_bez_znameho_uctu_procenta_nejsou(self):
+        # Velikost účtu z TWS nedorazila a konfigurace ji nemá - dělit nulou
+        # nelze a odhad by lhal
+        souhrn = self.sestav(account_size=0.0).souhrn
+        self.assertIsNone(souhrn.procento_uctu(souhrn.celkem_s_provizi))
+
+    def test_vychozi_sestaveni_ucet_nezna(self):
+        # Volání bez velikosti účtu zůstává platné, procenta jen nejsou
+        souhrn = report.sestav(self.flows, report.ROZSAH_DNES, self.dnes).souhrn
+        self.assertEqual(souhrn.account_size, 0.0)
+        self.assertIsNone(souhrn.procento_uctu(100.0))
+
+
 class TestFormatovani(unittest.TestCase):
     """Pomocné funkce pro zobrazení hodnot v přehledu."""
 
@@ -415,6 +462,17 @@ class TestFormatovani(unittest.TestCase):
         self.assertEqual(penize_s_provizi(-85.0, -85.0), "")
         self.assertEqual(penize_s_provizi(None, -85.0), "")
         self.assertEqual(penize_s_provizi(-85.0, None), "")
+
+    def test_procenta_uctu_maji_znamenko_i_jednotku(self):
+        self.assertEqual(procenta(0.62), "+0.62 %")
+        self.assertEqual(procenta(-1.5), "-1.50 %")
+        self.assertEqual(procenta(None), "-")
+
+    def test_zavorka_procent_ukazuje_hodnotu_bez_provizi(self):
+        self.assertEqual(procenta_s_provizi(0.62, 0.68), "(+0.68 %)")
+        # Shodná procenta se neopakují dvakrát
+        self.assertEqual(procenta_s_provizi(0.62, 0.62), "")
+        self.assertEqual(procenta_s_provizi(None, 0.68), "")
 
     def test_pnl_v_tabulce_spojuje_obe_hodnoty(self):
         self.assertEqual(pnl_text(-92.0, -85.0), "-92.00 (-85.00)")

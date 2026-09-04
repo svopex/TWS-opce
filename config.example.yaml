@@ -300,7 +300,7 @@ import:
   # Výchozí volba runneru - násobek původní vzdálenosti PT od vstupu.
   # Povolené jsou násobky nabízené tlačítky (1, 1.5, 2, 2.5, 3),
   # 0 znamená runner nepoužít.
-  runner_multiple: 1.5
+  runner_multiple: 2.5
 
   # Nejmenší velikost pozice, které se runner nastaví (včetně). Vyplní se do
   # pole vedle tlačítek Runner a řádky s menším počtem kontraktů dostanou

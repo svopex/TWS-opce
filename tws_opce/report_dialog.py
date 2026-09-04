@@ -22,7 +22,7 @@ from nicegui import ui
 from . import report
 from .config import AppConfig
 from .engine import FlowEngine
-from .models import Flow, FlowState
+from .models import Flow, FlowState, cislo_text
 
 # Popisky přepínače rozsahu přehledu
 ROZSAHY = {report.ROZSAH_DNES: "Dnes", report.ROZSAH_VSE: "Vše"}
@@ -35,6 +35,7 @@ VSECHNY_STAVY = " ".join(sorted({stav.css_class for stav in FlowState}))
 # doplňuje _hodnoty_dlazdic podle spočítaného souhrnu
 DLAZDICE = (
     ("celkem", "Výsledek dne"),
+    ("z_uctu", "Z účtu"),
     ("realizovano", "Realizováno"),
     ("otevreno", "Otevřené pozice"),
     ("uspesnost", "Úspěšnost"),
@@ -68,6 +69,29 @@ def penize_s_provizi(cisty: float | None, hruby: float | None) -> str:
     if abs(hruby - cisty) < 0.005:
         return ""
     return f"({penize(hruby)})"
+
+
+def procenta(hodnota: float | None, desetin: int = 2) -> str:
+    """
+    Podíl z účtu v procentech - '+0.62 %'. Znaménko se uvádí vždy, aby se
+    zisk od ztráty poznal stejně jako u částek. Chybějící hodnota (neznámá
+    velikost účtu) je pomlčka.
+    """
+    if hodnota is None:
+        return "-"
+    return f"{hodnota:+,.{desetin}f} %".replace(",", " ")
+
+
+def procenta_s_provizi(cisty: float | None, hruby: float | None) -> str:
+    """
+    Podíl z účtu před provizemi do závorky - obdoba penize_s_provizi.
+    Shodují-li se obě hodnoty na zobrazovaná místa, závorka zůstává prázdná.
+    """
+    if cisty is None or hruby is None:
+        return ""
+    if abs(hruby - cisty) < 0.005:
+        return ""
+    return f"({procenta(hruby)})"
 
 
 def trida_vysledku(hodnota: float | None) -> str:
@@ -341,7 +365,12 @@ class ReportDialog:
         if not self.dialog.value:
             return
 
-        podklad = report.sestav(list(self.engine.flows.values()), self.rozsah)
+        podklad = report.sestav(
+            list(self.engine.flows.values()),
+            self.rozsah,
+            # Procenta z účtu počítá souhrn, potřebuje k tomu jeho velikost
+            account_size=self.engine.account_size,
+        )
         self.datum_label.set_text(f"{datetime.now():%d.%m.%Y %H:%M:%S}")
         self._vykresli_dlazdice(podklad)
         self._vykresli_bezici(podklad)
@@ -406,6 +435,28 @@ class ReportDialog:
         # Popisek se do dlaždice nemusí vejít celý a to, co se z něj ořízne
         # (realizováno, v pozicích), má stejně vlastní dlaždici vedle
         provize = f"provize {penize(-s.provize)} · " if s.provize else ""
+
+        # Výsledek dne v procentech účtu. Bez známé velikosti účtu (konfigurace
+        # ji nemá a z TWS zatím nedorazila) není z čeho počítat, dlaždice pak
+        # jen řekne proč. Popisek rozpadá procenta na realizovaná a otevřená,
+        # ať je vidět, kolik z nich ještě visí v trhu
+        pct_celkem = s.procento_uctu(s.celkem_s_provizi)
+        if pct_celkem is None:
+            z_uctu = ("-", "", "velikost účtu není známa", "")
+        else:
+            v_pozicich = (
+                f" · v pozicích {procenta(s.procento_uctu(s.otevreno_s_provizi))}"
+                if s.otevrenych_pozic
+                else ""
+            )
+            z_uctu = (
+                procenta(pct_celkem),
+                procenta_s_provizi(pct_celkem, s.procento_uctu(s.celkem)),
+                f"účet {cislo_text(s.account_size, 0)} USD · realizováno "
+                f"{procenta(s.procento_uctu(s.realizovano_s_provizi))}{v_pozicich}",
+                trida_vysledku(pct_celkem),
+            )
+
         return {
             "celkem": (
                 penize(s.celkem_s_provizi),
@@ -414,6 +465,7 @@ class ReportDialog:
                 f"v pozicích {penize(s.otevreno_s_provizi)}",
                 trida_vysledku(s.celkem_s_provizi),
             ),
+            "z_uctu": z_uctu,
             "realizovano": (
                 penize(s.realizovano_s_provizi),
                 penize_s_provizi(s.realizovano_s_provizi, s.realizovano),

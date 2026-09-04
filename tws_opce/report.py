@@ -93,6 +93,9 @@ class Souhrn:
     nejhorsi: tuple[str, float] | None = None
     # Kolik kontraktů je právě otevřeno v trhu
     otevrenych_kusu: int = 0
+    # Velikost účtu, ze které se výsledek přepočítává na procenta. Nula
+    # znamená "není známa" - konfigurace ji nemá a z TWS zatím nedorazila
+    account_size: float = 0.0
 
     @property
     def celkem(self) -> float:
@@ -160,6 +163,20 @@ class Souhrn:
             return None
         return self.hruba_ztrata / self.ztratovych
 
+    def procento_uctu(self, castka: float) -> float | None:
+        """
+        Částka vyjádřená v procentech velikosti účtu - kolik z účtu obchodní
+        den přinesl, nebo ubral.
+
+        Základem je aktuální velikost účtu (z konfigurace, nebo z TWS), takže
+        u živého účtu už dnešní výsledek obsahuje; rozdíl je v řádu desetin
+        procenta a proti dělení dvěma různými základy je to čitelnější.
+        Bez známé velikosti účtu vrací None - dělit nulou nelze.
+        """
+        if self.account_size <= 0:
+            return None
+        return castka / self.account_size * 100.0
+
 
 @dataclass
 class DenniReport:
@@ -206,7 +223,9 @@ def _serad_bezici(flows: list[Flow]) -> list[Flow]:
     return sorted(flows, key=lambda f: (f.fill_price is None, f.symbol, f.id))
 
 
-def _spocti_souhrn(bezici: list[Flow], ukoncene: list[Flow]) -> Souhrn:
+def _spocti_souhrn(
+    bezici: list[Flow], ukoncene: list[Flow], account_size: float = 0.0
+) -> Souhrn:
     """
     Sečte výsledky obchodů do souhrnných čísel.
 
@@ -215,7 +234,9 @@ def _spocti_souhrn(bezici: list[Flow], ukoncene: list[Flow]) -> Souhrn:
     úspěšnosti počítají jen ukončené obchody, aby je nezkresloval výsledek,
     který se ještě může otočit.
     """
-    souhrn = Souhrn(bezicich=len(bezici), ukoncenych=len(ukoncene))
+    souhrn = Souhrn(
+        bezicich=len(bezici), ukoncenych=len(ukoncene), account_size=account_size
+    )
 
     for flow in bezici:
         realizovano = flow.realized_pnl
@@ -313,13 +334,17 @@ def _podle_tickeru(bezici: list[Flow], ukoncene: list[Flow]) -> list[TickerSouhr
 
 
 def sestav(
-    flows: list[Flow], rozsah: str = ROZSAH_DNES, den: date | None = None
+    flows: list[Flow],
+    rozsah: str = ROZSAH_DNES,
+    den: date | None = None,
+    account_size: float = 0.0,
 ) -> DenniReport:
     """
     Sestaví kompletní přehled výsledků ze seznamu obchodů.
 
     Parametr rozsah rozhoduje, co se do přehledu dostane (ROZSAH_DNES /
-    ROZSAH_VSE), den umožňuje testům určit „dnešek" napevno.
+    ROZSAH_VSE), den umožňuje testům určit „dnešek" napevno. Velikost účtu
+    slouží k přepočtu výsledku na procenta účtu; nula znamená, že známa není.
     """
     vybrane = vyber(flows, rozsah, den)
     bezici = [flow for flow in vybrane if flow.state.is_active]
@@ -329,7 +354,7 @@ def sestav(
         rozsah=rozsah,
         bezici=_serad_bezici(bezici),
         ukoncene=_serad_ukoncene(ukoncene),
-        souhrn=_spocti_souhrn(bezici, ukoncene),
+        souhrn=_spocti_souhrn(bezici, ukoncene, account_size),
         krivka=_krivka(ukoncene),
         podle_tickeru=_podle_tickeru(bezici, ukoncene),
     )

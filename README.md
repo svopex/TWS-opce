@@ -728,11 +728,19 @@ prodejem. Uzavřenému obchodu patří obě strany.
 | Dlaždice | Co ukazuje |
 | --- | --- |
 | Výsledek dne | realizovaný i otevřený výsledek dohromady, v popisku i celkem zaplacené provize |
+| Z účtu | tentýž výsledek dne jako podíl z účtu v procentech, v popisku velikost účtu a rozpad na realizovanou a otevřenou část |
 | Realizováno | výsledek už prodaných kusů; zvlášť se uvádí část z obchodů, které dosud běží (prodaný runner) |
 | Otevřené pozice | nerealizovaný výsledek otevřených pozic oceněný BIDem |
 | Úspěšnost | podíl ziskových obchodů z ukončených, které skutečně nakoupily |
 | Profit factor | poměr součtu ziskových obchodů ke ztrátovým, pod ním průměrný zisk a průměrná ztráta |
 | Obchody | kolik jich běží, kolik skončilo a kolik se nedostalo k nákupu |
+
+Procenta z účtu se počítají z **aktuální** velikosti účtu — z `account.size`,
+nebo z hodnoty převzaté z TWS. U živého účtu je v ní dnešní výsledek už
+obsažen; rozdíl proti počítání ze stavu na začátku dne je v řádu desetin
+procenta a jeden základ pro všechna čísla je čitelnější. Dokud velikost účtu
+není známa (`account.size = 0` a z TWS zatím nic nedorazilo), ukazuje dlaždice
+pomlčku — dělit nulou nelze a odhad by lhal.
 
 Statistiky úspěšnosti počítají **jen ukončené obchody s nákupem** — běžící
 pozice se do nich nezapočítává, dokud se výsledek může ještě otočit, a
