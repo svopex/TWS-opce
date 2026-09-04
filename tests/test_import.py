@@ -670,6 +670,21 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         await self.zadej(self.radek())
         self.assertEqual(self.zadani[0].primary_level, "pt")
 
+    async def test_smer_ze_souboru_jde_do_zadani(self):
+        # V obou režimech na opci je soubor jediným zdrojem směru - bez něj
+        # by engine typ opce určil z okamžité polohy ceny podkladu
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani[0].intended_right, "C")
+
+    async def test_short_ze_souboru_posila_put(self):
+        # Cíl pod vstupem znamená short; kdyby se směr neposlal, mohl by se
+        # obchod po poklesu ceny pod vstup založit jako CALL
+        self.pozice = ImportedPosition(
+            key="AMZN Short+", symbol="AMZN", entry_price=266.4, target_price=263.5
+        )
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani[0].intended_right, "P")
+
     async def test_bez_pt_je_prvotni_urovni_sl(self):
         # Obchod si nemá pamatovat úroveň, kterou obchodník nezadal - jinak
         # by formulář při načtení přepsal ručně zadaný SL dopočtem z PT

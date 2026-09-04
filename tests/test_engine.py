@@ -616,6 +616,101 @@ class TestSmeruVstupu(ZakladTestu):
         self.assertIn("vstup propásnut", flow.message)
 
 
+class TestSmeruZeZadani(ZakladTestu):
+    """
+    Směr uvedený v zadání (intended_right) proti odvození z ceny podkladu.
+
+    Jsou-li PT i SL zadané na opci, z čísel se směr určit nedá a bez tohoto
+    údaje o typu opce rozhodne poloha vstupu vůči aktuální ceně - short
+    zadaný pod aktuální cenou by se pak založil jako CALL.
+    """
+
+    async def zaloz_na_opci(self, entry: float, **zmeny):
+        """Obchod s PT i SL v USD na kontrakt: podklad 230, PT 10 USD/ks."""
+        self.ib.price_underlying = 230.0
+        pozadavek = FlowRequest(
+            symbol="AAPL",
+            entry_price=entry,
+            profit_target=10.0,
+            pt_on_underlying=False,
+            sl_on_underlying=False,
+        )
+        for klic, hodnota in zmeny.items():
+            setattr(pozadavek, klic, hodnota)
+        return await self.engine.start_flow(pozadavek)
+
+    async def test_short_nad_cenou_se_zada_jako_put(self):
+        # Vstup 229 je pod cenou 230, průraz dolů teprve nastane
+        self.ib.greek_delta = -0.35
+        flow = await self.zaloz_na_opci(229.0, intended_right="P")
+
+        self.assertEqual(flow.right, "P")
+        self.assertEqual(flow.state, FlowState.ARMED)
+
+    async def test_short_pod_cenou_se_odmitne_misto_zalozeni_callu(self):
+        # Vstup 231 je nad cenou 230: short čekal průraz dolů, ten už nastat
+        # nemůže. Bez směru v zadání by z ceny vyšel CALL a koupila by se
+        # opačná opce
+        with self.assertRaises(ValueError) as ctx:
+            await self.zaloz_na_opci(231.0, intended_right="P")
+
+        self.assertIn("propásnutý", str(ctx.exception))
+        self.assertEqual(self.ib.placed, [])
+
+    async def test_long_nad_cenou_se_odmitne(self):
+        # Zrcadlově: long se vstupem 229 pod cenou 230 už také ujel
+        with self.assertRaises(ValueError) as ctx:
+            await self.zaloz_na_opci(229.0, intended_right="C")
+
+        self.assertIn("propásnutý", str(ctx.exception))
+        self.assertEqual(self.ib.placed, [])
+
+    async def test_odmitnuty_short_nezrusi_cekajici_long(self):
+        # Nahrazuje se jen obchod stejného směru. Kdyby se short založil jako
+        # CALL, sebral by místo čekajícímu longu téhož tickeru
+        long_flow = await self.zaloz_call()
+        self.assertEqual(long_flow.state, FlowState.ARMED)
+
+        with self.assertRaises(ValueError):
+            await self.zaloz_na_opci(231.0, intended_right="P")
+
+        self.assertIn(long_flow.id, self.engine.flows)
+        self.assertEqual(long_flow.state, FlowState.ARMED)
+        self.assertEqual(self.ib.cancelled, [])
+        self.assertEqual(len(self.ib.placed), 1)
+
+    async def test_bez_smeru_v_zadani_rozhoduje_cena(self):
+        # Běžný formulář směr neuvádí - u úrovní na opci zůstává rozhodnutí
+        # na poloze vstupu vůči aktuální ceně
+        flow = await self.zaloz_na_opci(231.0)
+
+        self.assertEqual(flow.right, "C")
+        self.assertEqual(flow.state, FlowState.ARMED)
+
+    async def test_smer_odporujici_urovnim_na_podkladu_se_odmitne(self):
+        # Cena podkladu nedorazila, takže typ opce vyšel z polohy PT nad
+        # vstupem (CALL) - zadaný short je proti němu protichůdné zadání
+        self.ib.price_underlying = None
+        with self.assertRaises(ValueError) as ctx:
+            await self.engine.start_flow(
+                FlowRequest(
+                    symbol="AAPL",
+                    entry_price=232.0,
+                    profit_target=235.0,
+                    intended_right="P",
+                )
+            )
+
+        self.assertIn("neodpovídá", str(ctx.exception))
+        self.assertEqual(self.ib.placed, [])
+
+    async def test_neplatny_smer_se_odmitne(self):
+        with self.assertRaises(ValueError) as ctx:
+            await self.zaloz_na_opci(229.0, intended_right="X")
+
+        self.assertIn("Neplatný směr", str(ctx.exception))
+
+
 class TestSpread(ZakladTestu):
     """Hlídání spreadu před nákupem."""
 

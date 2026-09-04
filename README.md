@@ -956,6 +956,15 @@ nebo přepočet neprojde. Kdyby se přesto takový řádek poslal do trhu, zadá
 odmítne ještě engine a důvod zapíše do sloupce *Stav* — obchod na opačnou
 stranu tedy nevznikne.
 
+Engine to pozná proto, že **směr ze souboru jde do trhu spolu se zadáním**.
+Na tom závisí oba režimy cíle na opci (*USD/ks* i *% prémie*): z úrovní
+zadaných na opci se směr odvodit nedá, takže bez tohoto údaje by o typu opce
+rozhodla okamžitá poloha vstupu vůči ceně podkladu. Cena se přitom mezi
+přípravou řádku a stiskem tlačítka hýbe — přehoupne-li se přes vstup, vyšel by
+ze short zadání CALL, který by navíc jako obchod stejného směru nahradil
+čekající long téhož tickeru. Se směrem ze souboru engine takové zadání odmítne
+jako propásnutý vstup a čekajícího longa nechá být.
+
 ## Velikost účtu
 
 Riskovaná částka se počítá z velikosti účtu, kterou lze zadat dvěma způsoby:

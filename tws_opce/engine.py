@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 from . import calc, store
 from .config import AppConfig
 from .ib_service import IBService, PositionInfo, order_ref, parse_order_ref, valid_price
-from .models import Flow, FlowRequest, FlowState
+from .models import RIGHT_LABELS, Flow, FlowRequest, FlowState
 
 log = logging.getLogger(__name__)
 
@@ -1244,13 +1244,24 @@ class FlowEngine:
             # podkladu: cíl nad vstupem = průraz nahoru (long/CALL), pod
             # vstupem průraz dolů (short/PUT). Jsou-li obě úrovně zadané
             # na opci, rozhoduje až poloha vstupu vůči aktuální ceně.
-            zamer = calc.intended_right(
+            #
+            # Směr uvedený přímo v zadání má přednost - hromadné načtení ze
+            # souboru jej zná (cíl pod vstupem = short) i tehdy, když jsou obě
+            # úrovně na opci a z čísel se odvodit nedá. Bez něj by o typu opce
+            # rozhodla okamžitá poloha ceny podkladu, takže by se ze short
+            # obchodu po poklesu ceny pod vstup tiše stal long CALL
+            zamer = request.intended_right or calc.intended_right(
                 request.entry_price,
                 request.profit_target,
                 request.stop_loss,
                 request.pt_on_underlying,
                 request.sl_on_underlying,
             )
+            if zamer is not None and zamer not in RIGHT_LABELS:
+                raise ValueError(
+                    f"Neplatný směr obchodu {zamer!r} - očekává se 'C' (long), "
+                    f"nebo 'P' (short)."
+                )
 
             def overit_bezici(smer: str) -> Flow | None:
                 """
@@ -1289,11 +1300,20 @@ class FlowEngine:
             # ceny, cena už vstupní úroveň překonala a obchod ujel.
             if zamer is None:
                 zamer = preview.right
-            elif preview.current_price is not None and zamer != preview.right:
-                smer = "nad" if zamer == "C" else "pod"
+            elif zamer != preview.right:
+                if preview.current_price is not None:
+                    smer = "nad" if zamer == "C" else "pod"
+                    raise ValueError(
+                        f"Cena podkladu {preview.current_price:g} je již {smer} vstupem "
+                        f"{request.entry_price:g} - vstup je propásnutý a obchod nelze zadat."
+                    )
+                # Bez ceny podkladu vyšel typ opce z polohy zadaných úrovní.
+                # Odporuje-li směru ze zadání, jde o protichůdná čísla a tichý
+                # výběr jedné z možností by koupil opačnou opci
                 raise ValueError(
-                    f"Cena podkladu {preview.current_price:g} je již {smer} vstupem "
-                    f"{request.entry_price:g} - vstup je propásnutý a obchod nelze zadat."
+                    f"Zadaný směr obchodu ({RIGHT_LABELS[zamer]}) neodpovídá poloze "
+                    f"úrovní vůči vstupu {request.entry_price:g}, ze které vychází "
+                    f"{RIGHT_LABELS[preview.right]} - zkontrolujte zadání."
                 )
 
             # Příprava čeká na odpovědi z TWS a monitorovací smyčka mezitím

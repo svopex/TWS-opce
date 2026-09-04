@@ -1671,6 +1671,15 @@ class ImportDialog:
                     # RRR. U řádku s prázdným PT je to naopak - prvotní je
                     # SL, ať si obchod nepamatuje úroveň, kterou nikdo nezadal
                     primary_level="pt" if pt is not None else "sl",
+                    # Směr má soubor (cíl pod vstupem = short) a v obou
+                    # režimech na opci je to jediný jeho zdroj - engine by
+                    # jinak typ opce určil z okamžité polohy ceny podkladu.
+                    # Mezi přípravou řádku a stiskem tlačítka se cena může
+                    # přehoupnout přes vstup a ze short zadání by se stal
+                    # long CALL, který by k tomu nahradil čekající long
+                    # obchod téhož tickeru. Se směrem engine takové zadání
+                    # odmítne jako propásnutý vstup
+                    intended_right=radek.pozice.right,
                 )
                 try:
                     flow = await self.engine.start_flow(request)

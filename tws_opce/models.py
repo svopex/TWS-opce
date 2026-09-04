@@ -277,6 +277,13 @@ class FlowRequest:
     # obchodu přepočítají PT, SL a množství podle živých kotací. None znamená
     # nepřepočítávat - viz Flow.refresh_after_open_sec
     refresh_after_open_sec: float | None = None
+    # Zamýšlený směr obchodu ('C' = long, 'P' = short), zná-li jej zadavatel
+    # nezávisle na úrovních - hromadný import jej čte ze souboru (cíl pod
+    # vstupem = short). Jsou-li PT i SL zadané na opci, z čísel se směr
+    # odvodit nedá a bez tohoto údaje by o typu opce rozhodla okamžitá
+    # poloha ceny podkladu: short zadaný pod aktuální cenou by se založil
+    # jako CALL. None znamená "neuvedeno" - směr určí engine sám
+    intended_right: str | None = None
 
 
 @dataclass
