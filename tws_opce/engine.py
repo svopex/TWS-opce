@@ -2794,19 +2794,23 @@ class FlowEngine:
         """Aktuální čas v časové zóně burzy (řeší letní/zimní čas)."""
         return datetime.now(ZoneInfo(self.cfg.trading.exchange_timezone))
 
+    def _exchange_time(self, ted: datetime, cas: str) -> datetime:
+        """
+        Dnešní okamžik daný časem HH:MM v časové zóně burzy.
+
+        Sdílí jej odvození otevření, zavření i času rušení čekajících obchodů,
+        aby se tvar zapsaný v konfiguraci vyhodnocoval na jediném místě.
+        """
+        hodina, minuta = (int(cast) for cast in cas.split(":"))
+        return ted.replace(hour=hodina, minute=minuta, second=0, microsecond=0)
+
     def _exchange_close(self, ted: datetime) -> datetime:
         """Dnešní čas zavření burzy v její časové zóně."""
-        hodina, minuta = (
-            int(cast) for cast in self.cfg.trading.exchange_close_time.split(":")
-        )
-        return ted.replace(hour=hodina, minute=minuta, second=0, microsecond=0)
+        return self._exchange_time(ted, self.cfg.trading.exchange_close_time)
 
     def _exchange_open(self, ted: datetime) -> datetime:
         """Dnešní čas otevření burzy v její časové zóně."""
-        hodina, minuta = (
-            int(cast) for cast in self.cfg.trading.exchange_open_time.split(":")
-        )
-        return ted.replace(hour=hodina, minute=minuta, second=0, microsecond=0)
+        return self._exchange_time(ted, self.cfg.trading.exchange_open_time)
 
     def market_open_seconds(self) -> float | None:
         """
@@ -2849,6 +2853,23 @@ class FlowEngine:
         ted = self._exchange_now()
         return (ted - self._exchange_open(ted)).total_seconds()
 
+    def _window_seconds(self, ted: datetime, start: datetime) -> float | None:
+        """
+        Odpočet do okna, které trvá od zadaného startu do zavření burzy.
+
+        Okno leží vždy uvnitř seance: start dřívější než otevření burzy se
+        posune na otevření, aby čas zadaný před ním nerušil obchody právě
+        nachystané na open. None znamená, že okno dnes nenastane - je víkend,
+        burza už zavřela, nebo start vychází až za zavřením; nula znamená,
+        že okno právě běží.
+        """
+        zavirani = self._exchange_close(ted)
+        start = max(start, self._exchange_open(ted))
+        # O víkendu se neobchoduje a po zavření už okno nemá co dělat
+        if ted.weekday() >= 5 or ted >= zavirani or start >= zavirani:
+            return None
+        return max((start - ted).total_seconds(), 0.0)
+
     def auto_close_seconds(self) -> float | None:
         """
         Počet sekund do začátku automatického uzavírání obchodů.
@@ -2860,17 +2881,10 @@ class FlowEngine:
             return None
 
         ted = self._exchange_now()
-        # O víkendu se neobchoduje - odpočet nemá co měřit
-        if ted.weekday() >= 5:
-            return None
-
-        zavirani = self._exchange_close(ted)
-        start = zavirani - timedelta(minutes=self.cfg.trading.auto_close_minutes_before)
-        if ted >= zavirani:
-            return None
-        if ted >= start:
-            return 0.0
-        return (start - ted).total_seconds()
+        start = self._exchange_close(ted) - timedelta(
+            minutes=self.cfg.trading.auto_close_minutes_before
+        )
+        return self._window_seconds(ted, start)
 
     async def _auto_close_flows(self) -> None:
         """
@@ -2908,6 +2922,46 @@ class FlowEngine:
                     reason="Automaticky uzavíráno před koncem obchodování, "
                     "pozice se prodává trhem.",
                 )
+
+    def pending_cancel_seconds(self) -> float | None:
+        """
+        Počet sekund do zrušení čekajících obchodů v pevně daný čas dne.
+
+        None znamená, že se dnes už neruší (funkce vypnutá, víkend, nebo
+        burza už zavřela); nula znamená, že rušicí okno právě běží.
+        """
+        if not self.cfg.trading.pending_cancel_enabled:
+            return None
+
+        ted = self._exchange_now()
+        start = self._exchange_time(ted, self.cfg.trading.pending_cancel_time)
+        return self._window_seconds(ted, start)
+
+    async def _cancel_pending_flows(self) -> None:
+        """
+        V nastavený čas dne zruší obchody, které ještě nenakoupily.
+
+        Na rozdíl od automatického uzavírání před koncem burzy se týká jen
+        obchodů před vstupem - už nakoupené pozice běží dál se svým PT a SL.
+        """
+        if self.pending_cancel_seconds() != 0:
+            return
+
+        cas = self.cfg.trading.pending_cancel_time
+        for flow in list(self.flows.values()):
+            # Stavy před vstupem jsou podmnožinou aktivních, takže tahle
+            # jediná podmínka odfiltruje pozice i už uzavřené obchody
+            if not flow.state.is_before_entry:
+                continue
+            self.log_event(
+                f"{flow.id}: automatické zrušení čekajícího obchodu "
+                f"(čas {cas} burzovního času)."
+            )
+            await self._cancel(
+                flow,
+                reason=f"Automaticky zrušeno v {cas} burzovního času, "
+                "příkaz odstraněn z trhu.",
+            )
 
     def _sync_commissions(self) -> bool:
         """
@@ -2951,6 +3005,9 @@ class FlowEngine:
 
         # Pozice bez dozoru aplikace se kontrolují v delším intervalu
         await self._check_unmanaged()
+
+        # V nastavený čas dne se ruší obchody, které ještě nenakoupily
+        await self._cancel_pending_flows()
 
         # Krátce před zavřením burzy se běžící obchody automaticky uzavírají
         await self._auto_close_flows()

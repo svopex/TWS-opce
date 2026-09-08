@@ -44,22 +44,19 @@
   font-weight: 600;
 }
 
-/* Odpočet do otevření burzy - zobrazuje se mimo obchodní hodiny */
-.odpocet-otevreni {
-  color: #cbd5e1;
-  font-size: 0.8rem;
-  margin-right: 12px;
-}
-
-/* Odpočet do automatického uzavření obchodů před koncem burzy */
+/* Odpočty v hlavičce: do otevření burzy (mimo obchodní hodiny), do zrušení
+   čekajících obchodů v nastavený čas a do uzavření pozic před koncem burzy */
+.odpocet-otevreni,
+.odpocet-cekajici,
 .odpocet-uzavreni {
   color: #cbd5e1;
   font-size: 0.8rem;
   margin-right: 12px;
 }
 
-/* Zvýraznění během běžícího uzavíracího okna */
-.odpocet-uzavreni.odpocet-aktivni {
+/* Zvýraznění po dobu, kdy příslušné okno běží. Pravidlo stojí až za výchozím
+   vzhledem odpočtů, takže při stejné specificitě přebíjí jeho barvu */
+.odpocet-aktivni {
   color: #fbbf24;
   font-weight: 600;
 }

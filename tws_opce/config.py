@@ -123,8 +123,15 @@ class TradingConfig:
     auto_close_enabled: bool = True
     # Kolik minut před zavřením burzy se obchody automaticky uzavírají
     auto_close_minutes_before: float = 15.0
-    # Časová zóna burzy - uzavírání se časuje v ní, takže posuny letního
-    # a zimního času vůči místnímu času počítače nehrají roli
+    # Automatické zrušení čekajících obchodů v pevně daný čas dne. Týká se
+    # jen obchodů před nákupem - už nakoupené pozice běží dál
+    pending_cancel_enabled: bool = True
+    # Čas zrušení čekajících obchodů ve formátu HH:MM (v časové zóně burzy);
+    # okno pak trvá až do zavření burzy
+    pending_cancel_time: str = "12:00"
+    # Časová zóna burzy - uzavírání i rušení čekajících obchodů se časuje
+    # v ní, takže posuny letního a zimního času vůči místnímu času
+    # počítače nehrají roli
     exchange_timezone: str = "America/New_York"
     # Čas otevření burzy ve formátu HH:MM (v časové zóně burzy). Řídí odpočet
     # v hlavičce, rozlišení obchodních hodin pro kontrolu propásnutého vstupu
@@ -365,10 +372,12 @@ def validate_config(cfg: AppConfig) -> None:
             f"trading.exchange_timezone '{cfg.trading.exchange_timezone}' není platná časová zóna"
         )
 
-    # Časy otevření a zavření burzy musí mít tvar HH:MM
+    # Časy otevření a zavření burzy i času zrušení čekajících obchodů
+    # musí mít tvar HH:MM
     for nazev, hodnota in (
         ("exchange_open_time", cfg.trading.exchange_open_time),
         ("exchange_close_time", cfg.trading.exchange_close_time),
+        ("pending_cancel_time", cfg.trading.pending_cancel_time),
     ):
         try:
             hodina, minuta = (int(cast) for cast in hodnota.split(":"))

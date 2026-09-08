@@ -265,8 +265,19 @@ trading:
   # Kolik minut před zavřením burzy se obchody automaticky uzavírají
   auto_close_minutes_before: 5
 
-  # Časová zóna burzy - uzavírání se časuje v ní, takže posuny letního
-  # a zimního času vůči místnímu času počítače nehrají roli
+  # Automatické zrušení čekajících obchodů v pevně daný čas dne. Týká se jen
+  # obchodů, které ještě nenakoupily - už otevřené pozice běží dál se svým
+  # PT a SL a uzavře je až auto_close před koncem obchodování.
+  pending_cancel_enabled: true
+
+  # Čas zrušení čekajících obchodů ve formátu HH:MM (v časové zóně burzy).
+  # Okno trvá od tohoto času do zavření burzy, takže se zruší i obchod
+  # zadaný až po něm.
+  pending_cancel_time: "12:00"
+
+  # Časová zóna burzy - uzavírání i rušení čekajících obchodů se časuje v ní,
+  # takže posuny letního a zimního času vůči místnímu času počítače
+  # nehrají roli
   exchange_timezone: "America/New_York"
 
   # Čas otevření burzy ve formátu HH:MM (v časové zóně burzy). Řídí odpočet

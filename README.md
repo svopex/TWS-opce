@@ -610,6 +610,25 @@ počítače nehrají roli. Čas zavření burzy určuje `trading.exchange_close_
 (výchozí 16:00 newyorského času); zkrácené obchodní dny před svátky aplikace
 nezná. Funkci lze vypnout pomocí `trading.auto_close_enabled: false`.
 
+### Zrušení čekajících obchodů v nastavený čas
+
+Nezávisle na uzavírání před koncem burzy umí aplikace v pevně daný čas dne
+zrušit obchody, které **ještě nenakoupily** (`trading.pending_cancel_time`,
+výchozí 12:00 newyorského času). Nákupní příkazy takových obchodů se odstraní
+z trhu a obchod skončí ve stavu *Zrušeno*. Už otevřených pozic se to netýká —
+běží dál se svým PT a SL a uzavře je až automatické uzavření před koncem
+obchodování. Smyslem je nepouštět do trhu vstupy z druhé poloviny seance,
+u kterých už není dost času na dojití k cíli.
+
+Okno trvá od nastaveného času do zavření burzy, takže obchod zadaný odpoledne
+se zruší prakticky ihned po zadání. Vždy ale leží uvnitř seance: čas dřívější
+než `trading.exchange_open_time` okno posune až na otevření, aby nerušilo
+obchody nachystané právě na open. Čas se počítá ve stejné časové zóně jako
+uzavírání (`trading.exchange_timezone`); o víkendu se nic neděje. Do hlavičky
+stránky se přes den promítá odpočet do zrušení, po jeho spuštění zůstává
+v hlavičce zvýrazněné upozornění, že se čekající obchody ruší. Funkci lze
+vypnout pomocí `trading.pending_cancel_enabled: false`.
+
 ### Odpočet do otevření trhu
 
 Mimo obchodní hodiny ukazuje hlavička odpočet do nejbližšího otevření burzy.

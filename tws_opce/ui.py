@@ -355,6 +355,9 @@ class TradingUI:
             # Odpočet do otevření burzy - mimo obchodní hodiny
             self.market_open_label = ui.label().classes("odpocet-otevreni")
             self.market_open_label.set_visibility(False)
+            # Odpočet do zrušení čekajících obchodů v nastavený čas dne
+            self.pending_cancel_label = ui.label().classes("odpocet-cekajici")
+            self.pending_cancel_label.set_visibility(False)
             # Odpočet do automatického uzavření obchodů před koncem burzy
             self.auto_close_label = ui.label().classes("odpocet-uzavreni")
             self.auto_close_label.set_visibility(False)
@@ -1917,6 +1920,7 @@ class TradingUI:
         self._refresh_warning()
         self._refresh_status()
         self._refresh_market_open()
+        self._refresh_pending_cancel()
         self._refresh_auto_close()
         self._refresh_table()
         self._refresh_log()
@@ -1952,23 +1956,47 @@ class TradingUI:
         self.plan_label.set_visibility(True)
         self.plan_label.set_text(popis)
 
+    def _refresh_window_label(
+        self, label: ui.label, sekundy: float | None, cekani: str, behem: str
+    ) -> None:
+        """
+        Vykreslí odpočet do okna, které engine hlásí počtem sekund.
+
+        None okno skryje, nula a méně znamená, že okno běží - pak se ukáže
+        zvýrazněný text "behem", jinak text "cekani" doplněný o odpočet.
+        """
+        if sekundy is None:
+            label.set_visibility(False)
+            return
+
+        label.set_visibility(True)
+        if sekundy <= 0:
+            label.set_text(behem)
+            label.classes(add="odpocet-aktivni")
+            return
+
+        label.set_text(f"{cekani} {format_countdown(sekundy)}")
+        label.classes(remove="odpocet-aktivni")
+
+    def _refresh_pending_cancel(self) -> None:
+        """Odpočet do zrušení čekajících obchodů v hlavičce."""
+        # Rušicí okno trvá až do zavření burzy - zvýrazněný text připomíná,
+        # že se zruší i obchod zadaný teprve teď
+        self._refresh_window_label(
+            self.pending_cancel_label,
+            self.engine.pending_cancel_seconds(),
+            "Zrušení čekajících obchodů za",
+            f"Čekající obchody se ruší (od {self.cfg.trading.pending_cancel_time})",
+        )
+
     def _refresh_auto_close(self) -> None:
         """Odpočet do automatického uzavření obchodů v hlavičce."""
-        sekundy = self.engine.auto_close_seconds()
-        if sekundy is None:
-            self.auto_close_label.set_visibility(False)
-            return
-
-        self.auto_close_label.set_visibility(True)
-        if sekundy <= 0:
-            self.auto_close_label.set_text("Probíhá automatické uzavírání obchodů")
-            self.auto_close_label.classes(add="odpocet-aktivni")
-            return
-
-        self.auto_close_label.set_text(
-            f"Automatické uzavření všech pozic za {format_countdown(sekundy)}"
+        self._refresh_window_label(
+            self.auto_close_label,
+            self.engine.auto_close_seconds(),
+            "Automatické uzavření všech pozic za",
+            "Probíhá automatické uzavírání obchodů",
         )
-        self.auto_close_label.classes(remove="odpocet-aktivni")
 
     def _refresh_warning(self) -> None:
         """Zobrazí upozornění na opční pozice, které aplikace neřídí."""

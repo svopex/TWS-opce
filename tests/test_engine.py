@@ -2280,11 +2280,9 @@ class TestAutomatickehoUzavreni(ZakladTestu):
     """Automatické uzavření obchodů před koncem obchodování burzy."""
 
     def burza(self, hodina: int, minuta: int, den: int = 19) -> None:
-        """Podvrhne čas burzy - srpen 2026, výchozí den je středa 19. 8."""
+        """Podvrhne čas burzy se zapnutým automatickým uzavíráním."""
         self.cfg.trading.auto_close_enabled = True
-        self.engine._exchange_now = lambda: datetime(
-            2026, 8, den, hodina, minuta, tzinfo=ZoneInfo("America/New_York")
-        )
+        self.podvrhni_cas_burzy(hodina, minuta, den)
 
     async def test_odpocet_sekund_do_uzavirani(self):
         # Čtvrt hodiny před oknem zbývá 900 sekund
@@ -2364,6 +2362,94 @@ class TestAutomatickehoUzavreni(ZakladTestu):
 
         # Pět minut před začátkem okna se ještě nic neděje
         self.burza(15, 40)
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(self.ib.cancelled, [])
+
+
+class TestZruseniCekajicich(ZakladTestu):
+    """Zrušení čekajících obchodů v pevně daný čas dne."""
+
+    def burza(self, hodina: int, minuta: int, den: int = 19) -> None:
+        """Podvrhne čas burzy se zapnutým rušením čekajících obchodů."""
+        self.cfg.trading.pending_cancel_enabled = True
+        self.podvrhni_cas_burzy(hodina, minuta, den)
+
+    async def test_odpocet_sekund_do_zruseni(self):
+        # Půl hodiny před výchozím časem 12:00 zbývá 1800 sekund
+        self.burza(11, 30)
+        self.assertAlmostEqual(self.engine.pending_cancel_seconds(), 1800.0)
+
+        # Uvnitř okna je odpočet nulový - okno trvá až do zavření burzy
+        self.burza(14, 0)
+        self.assertEqual(self.engine.pending_cancel_seconds(), 0.0)
+
+        # Po zavření burzy se dnes už neruší
+        self.burza(16, 5)
+        self.assertIsNone(self.engine.pending_cancel_seconds())
+
+        # Sobota 22. 8. 2026 - burza neobchoduje
+        self.burza(14, 0, den=22)
+        self.assertIsNone(self.engine.pending_cancel_seconds())
+
+        # Čas zadaný až za zavřením burzy okno nikdy neotevře
+        self.burza(11, 30)
+        self.cfg.trading.pending_cancel_time = "17:00"
+        self.assertIsNone(self.engine.pending_cancel_seconds())
+
+        # Vypnutá funkce odpočet nenabízí
+        self.cfg.trading.pending_cancel_time = "12:00"
+        self.cfg.trading.pending_cancel_enabled = False
+        self.assertIsNone(self.engine.pending_cancel_seconds())
+
+    async def test_okno_nezacne_pred_otevrenim_burzy(self):
+        # Čas před otevřením se posune na otevření, aby okno nerušilo
+        # obchody nachystané právě na open
+        self.cfg.trading.pending_cancel_time = "08:00"
+
+        # Půl hodiny před otevřením se odpočet měří k otevření v 9:30
+        self.burza(9, 0)
+        self.assertAlmostEqual(self.engine.pending_cancel_seconds(), 1800.0)
+
+        # Od otevření dál už okno běží
+        self.burza(9, 30)
+        self.assertEqual(self.engine.pending_cancel_seconds(), 0.0)
+
+    async def test_cekajici_se_zrusi_a_pozice_bezi_dal(self):
+        cekajici = await self.zaloz_call()
+        drzeny = await self.zaloz_put()
+        self.ib.fill(drzeny.entry_trade, 1, 3.10)
+        await self.engine._tick()
+        await self.engine._tick()
+
+        self.burza(12, 0)
+        await self.engine._tick()
+
+        # Obchod před nákupem je zrušen a jeho příkaz odstraněn z trhu
+        self.assertEqual(cekajici.state, FlowState.CANCELLED)
+        self.assertIn("12:00", cekajici.message)
+        self.assertIn(cekajici.entry_trade, self.ib.cancelled)
+
+        # Nakoupená pozice běží dál se svým zajištěním
+        self.assertEqual(drzeny.state, FlowState.EXIT_ARMED)
+        self.assertNotIn(drzeny.exit_trade, self.ib.cancelled)
+
+    async def test_pred_casem_se_obchody_nechavaji(self):
+        flow = await self.zaloz_call()
+
+        # Minutu před nastaveným časem se ještě nic neděje
+        self.burza(11, 59)
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(self.ib.cancelled, [])
+
+    async def test_vypnuta_funkce_nerusi(self):
+        flow = await self.zaloz_call()
+
+        self.burza(14, 0)
+        self.cfg.trading.pending_cancel_enabled = False
         await self.engine._tick()
 
         self.assertEqual(flow.state, FlowState.ARMED)

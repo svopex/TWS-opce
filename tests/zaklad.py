@@ -10,7 +10,9 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -22,8 +24,9 @@ from tws_opce.engine import FlowEngine
 def vychozi_config() -> AppConfig:
     """
     Konfigurace pro testy - účet 5000 USD, risk 1 %, limit spreadu 5 %.
-    Stav se nezapisuje na disk a automatické uzavírání před koncem burzy
-    je vypnuté; jinak by sada spuštěná těsně před zavřením obchody uzavírala.
+    Stav se nezapisuje na disk, automatické uzavírání před koncem burzy
+    i rušení čekajících obchodů v nastavený čas jsou vypnuté; jinak by sada
+    spuštěná odpoledne obchody rušila, resp. uzavírala.
     """
     cfg = AppConfig()
     cfg.account.size = 5000.0
@@ -33,6 +36,7 @@ def vychozi_config() -> AppConfig:
     cfg.trading.ask_tolerance_pct = 2.0
     cfg.state.enabled = False
     cfg.trading.auto_close_enabled = False
+    cfg.trading.pending_cancel_enabled = False
     return cfg
 
 
@@ -43,6 +47,17 @@ class ZakladEnginu(unittest.IsolatedAsyncioTestCase):
         self.cfg = vychozi_config()
         self.ib = FakeIBService(self.cfg)
         self.engine = FlowEngine(self.cfg, self.ib)
+
+    def podvrhni_cas_burzy(self, hodina: int, minuta: int, den: int = 19) -> None:
+        """
+        Podvrhne enginu čas burzy - srpen 2026, výchozí den je středa 19. 8.
+
+        Testy odpočtů i časovaných akcí tím obejdou skutečné hodiny, takže
+        výsledek nezávisí na tom, kdy sada běží.
+        """
+        self.engine._exchange_now = lambda: datetime(
+            2026, 8, den, hodina, minuta, tzinfo=ZoneInfo("America/New_York")
+        )
 
 
 class ZakladSeStavem(unittest.IsolatedAsyncioTestCase):
@@ -58,6 +73,7 @@ class ZakladSeStavem(unittest.IsolatedAsyncioTestCase):
         self.cfg.state.file = str(Path(self.tmp.name) / "state.json")
         # Testy si čas burzy řídí samy
         self.cfg.trading.auto_close_enabled = False
+        self.cfg.trading.pending_cancel_enabled = False
         self.ib = FakeIBService(self.cfg)
         self.engine = FlowEngine(self.cfg, self.ib)
 
