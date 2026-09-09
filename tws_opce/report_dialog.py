@@ -666,17 +666,20 @@ class ReportDialog:
             # ten výplň škáluje přes transform, takže by se zaoblení konců
             # s délkou pruhu deformovalo
             with ui.element("div").classes("bunka bunka-pomer"):
-                podil = abs(vysledek or 0.0) / meritko if meritko > 0 else 0.0
-                ztrata = podil if (vysledek or 0) < 0 else 0.0
-                zisk = podil if (vysledek or 0) > 0 else 0.0
-                with ui.element("div").classes("pomer-pulka"):
-                    ui.element("div").classes("pomer-znacka pomer-znacka-ztrata").style(
-                        f"width: {ztrata:.2%}"
-                    )
-                with ui.element("div").classes("pomer-pulka"):
-                    ui.element("div").classes("pomer-znacka pomer-znacka-zisk").style(
-                        f"width: {zisk:.2%}"
-                    )
+                hodnota = vysledek or 0.0
+                podil = abs(hodnota) / meritko if meritko > 0 else 0.0
+                # Značka stojí jen v půlce podle znaménka; barvu si bere ze
+                # stejné třídy jako částka vedle, aby se obojí shodovalo
+                # i v tmavém režimu
+                trida = trida_vysledku(vysledek)
+                for pulka in ("ztrata", "zisk"):
+                    with ui.element("div").classes("pomer-pulka"):
+                        if trida == pulka:
+                            # Předává se jen podíl jako hodnota, šířku z něj
+                            # spočítá pravidlo v CSS
+                            ui.element("div").classes(f"pomer-znacka {trida}").style(
+                                f"--podil: {podil:.4f}"
+                            )
 
     def _vykresli_uzavrene(self, podklad: report.DenniReport) -> None:
         """Vykreslí seznam ukončených obchodů; mění se jen s novým výsledkem."""

@@ -47,25 +47,24 @@
 /* Odpočty v hlavičce: do otevření burzy (mimo obchodní hodiny), do zrušení
    čekajících obchodů v nastavený čas a do uzavření pozic před koncem burzy */
 .odpocet-otevreni,
-.odpocet-cekajici,
-.odpocet-uzavreni {
+.odpocet-okno {
   color: #cbd5e1;
   font-size: 0.8rem;
+}
+
+/* Samotný odpočet otevření trhu stojí v hlavičce sám, odsazení si nese sám;
+   odpočty časovaných oken ho mají od skupiny s přepínačem */
+.odpocet-otevreni {
   margin-right: 12px;
 }
 
-/* Odpočet a přepínač celé funkce drží pohromadě; vlastní odsazení mají
-   od skupiny, ne od textu uvnitř */
+/* Odpočet a přepínač celé funkce drží pohromadě; odsazení má skupina,
+   ne text uvnitř. Zarovnání přebíjí výchozí .nicegui-row */
 .okno-prepinac {
   align-items: center;
   flex-wrap: nowrap;
   gap: 2px;
   margin-right: 12px;
-}
-
-.okno-prepinac .odpocet-cekajici,
-.okno-prepinac .odpocet-uzavreni {
-  margin-right: 0;
 }
 
 /* Zvýraznění po dobu, kdy příslušné okno běží. Pravidlo stojí až za výchozím
@@ -1411,18 +1410,14 @@ body.body--dark .dialog-import .stav-import-varovani {
   padding-left: 3px;
 }
 
-/* Značka je kulatá na obou koncích, tedy i u dělicí čáry */
+/* Značka je kulatá na obou koncích, tedy i u dělicí čáry. Barvu dodává
+   třída .zisk / .ztrata, tedy táž paleta jako u částky v sousední buňce;
+   délku nese proměnná --podil, kterou nastavuje vykreslení řádku */
 .pomer-znacka {
+  background: currentColor;
   border-radius: 999px;
   height: 9px;
-}
-
-.pomer-znacka-ztrata {
-  background: #f44336;
-}
-
-.pomer-znacka-zisk {
-  background: #4caf50;
+  width: calc(var(--podil, 0) * 100%);
 }
 
 /* --- Grafy --- */

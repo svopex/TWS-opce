@@ -2485,26 +2485,22 @@ class TestPrepinacuOken(ZakladTestu):
         self.assertTrue(engine.pending_cancel_on)
         self.assertTrue(engine.auto_close_on)
 
-    async def test_vypnute_ruseni_necha_obchod_bezet(self):
-        self.engine.pending_cancel_on = True
-        self.podvrhni_cas_burzy(14, 0)
-        flow = await self.zaloz_call()
-        # Zadání v běžícím okně obchod rovnou ukončí, proto se vypíná až teď
-        self.assertEqual(flow.state, FlowState.CANCELLED)
-
+    async def test_vypnute_ruseni_pusti_zadani_i_odpoledne(self):
+        # Se zapnutou funkcí by odpolední zadání skončilo rovnou zrušené
+        # (viz TestZadaniVOkne); s vypnutou jde do trhu jako každé jiné
         self.engine.pending_cancel_on = False
-        druhy = await self.zaloz_call()
+        self.podvrhni_cas_burzy(14, 0)
+
+        flow = await self.zaloz_call()
         await self.engine._tick()
 
-        # S vypnutou funkcí se zadává i odpoledne a nic se neruší
-        self.assertEqual(druhy.state, FlowState.ARMED)
+        self.assertEqual(flow.state, FlowState.ARMED)
         self.assertIsNone(self.engine.pending_cancel_seconds())
 
     async def test_vypnute_uzavirani_necha_pozici_bezet(self):
         self.engine.auto_close_on = False
         self.podvrhni_cas_burzy(15, 50)
-        flow = await self.zaloz_call(quantity=1)
-        self.ib.fill(flow.entry_trade, 1, 3.10)
+        flow = await self.zaloz_a_vypln()
         await self.engine._tick()
         await self.engine._tick()
 

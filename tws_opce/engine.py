@@ -2967,6 +2967,11 @@ class FlowEngine:
 
         None znamená, že se dnes už neuzavírá (funkce vypnutá, víkend, nebo
         burza už zavřela); nula znamená, že uzavírací okno právě běží.
+
+        Rozhoduje jen runtime přepínač - konfigurace je pouze jeho výchozí
+        hodnotou při startu (na rozdíl od auto_connect, kde konfigurační
+        klíč zůstává tvrdým zámkem). Vypnutou pojistku tak jde z hlavičky
+        kdykoliv zase nasadit, i když ji soubor vypíná.
         """
         if not self.auto_close_on:
             return None
@@ -3030,6 +3035,9 @@ class FlowEngine:
 
         None znamená, že se dnes už neruší (funkce vypnutá, víkend, nebo
         burza už zavřela); nula znamená, že rušicí okno právě běží.
+
+        Stejně jako u auto_close_seconds rozhoduje jen runtime přepínač;
+        konfigurace dává pouze jeho výchozí hodnotu při startu.
         """
         if not self.pending_cancel_on:
             return None
