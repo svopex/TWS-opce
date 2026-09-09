@@ -1427,16 +1427,8 @@ class FlowEngine:
                     f"závěrečné ceny; zkontrolujte dopočítané úrovně i množství."
                 )
 
-            # Uvnitř rušicího či uzavíracího okna by příkaz šel do TWS jen
-            # proto, aby ho následující průchod smyčky hned zase odstranil -
-            # obchod se proto rovnou uzavře jako zrušený a do trhu se nesahá
-            duvod_okna = self._entry_window_block()
-            if duvod_okna is not None:
-                flow.set_state(FlowState.CANCELLED, duvod_okna)
-                self._release(flow)
-                self.log_event(f"{flow.id}: {flow.message}")
             # Při příliš širokém spreadu se příkaz zatím nezadává
-            elif flow.option_spread_pct is not None and flow.option_spread_pct > max_spread:
+            if flow.option_spread_pct is not None and flow.option_spread_pct > max_spread:
                 flow.set_state(
                     FlowState.SPREAD_BLOCKED,
                     f"Spread {flow.option_spread_pct:.2f} % > limit {max_spread:g} %, "
@@ -1610,6 +1602,18 @@ class FlowEngine:
         Zadá nákupní příkaz s cenovou podmínkou na dosažení vstupní ceny podkladu.
         Vrací False, pokud příkaz zatím zadat nelze - o zadání se pokusí další průchod smyčkou.
         """
+        # Uvnitř rušicího či uzavíracího okna by příkaz do TWS šel jen proto,
+        # aby ho následující průchod smyčky hned zase odstranil. Stráž sedí
+        # tady, protože _place_entry je jediné hrdlo vedoucí do trhu - kromě
+        # nového zadání jím prochází i znovuzadání po přepočtu strike
+        # a návrat příkazu po uvolnění spreadu
+        duvod_okna = self._entry_window_block()
+        if duvod_okna is not None:
+            flow.set_state(FlowState.CANCELLED, duvod_okna)
+            self._release(flow)
+            self.log_event(f"{flow.id}: {flow.message}")
+            return False
+
         # Obchod má smysl jen dokud cena podkladu vstupní úroveň nepřekonala
         cena = self.ib.underlying_price(flow.underlying_contract)
         if cena is None:
@@ -2652,9 +2656,7 @@ class FlowEngine:
         self._cancel_part(flow, "exit")
         self._cancel_part(flow, "runner")
 
-        # Tržní nákup nemusí mít známou cenu, pozice se proto pozná i podle
-        # vyplněného množství
-        v_pozici = flow.fill_price is not None or flow.filled_quantity > 0
+        v_pozici = flow.has_position
 
         if v_pozici and close_position:
             # Už vyplněný prodej hlavní části nesmí zůstat jako exit_trade -
@@ -2684,6 +2686,18 @@ class FlowEngine:
 
         self.log_event(f"{flow.id}: {flow.message}")
         self._notify()
+
+    def _still_before_entry(self, flow: Flow) -> bool:
+        """
+        Dobere pozdní vyplnění a řekne, zda obchod pořád čeká na nákup.
+
+        Rozhodovat se podle samotného stavu nestačí: nákup se mohl vyplnit
+        až po posledním průchodu monitoringu a obchod by se pak i s čerstvou
+        pozicí ukončil jako čekající. Pořadí "nejdřív dobrat, pak se ptát"
+        drží pohromadě tenhle helper, ať ho nejde omylem prohodit.
+        """
+        self._catch_late_fill(flow)
+        return flow.state.is_before_entry
 
     def _catch_late_fill(self, flow: Flow) -> bool:
         """
@@ -2722,6 +2736,20 @@ class FlowEngine:
         self.flows.pop(flow_id, None)
         self._notify()
 
+    def untraded_flows(self) -> list[Flow]:
+        """
+        Obchody, které se nikdy nedostaly k nákupu - zrušené a propásnuté.
+
+        Zrušený obchod, který stihl nakoupit, mezi ně nepatří: drží v TWS
+        otevřenou a nezajištěnou pozici, takže z přehledu zmizet nesmí.
+        """
+        return [
+            flow
+            for flow in self.flows.values()
+            if flow.state in (FlowState.CANCELLED, FlowState.MISSED)
+            and not flow.has_position
+        ]
+
     def remove_untraded(self) -> int:
         """
         Odstraní z přehledu obchody, které se nikdy nedostaly k nákupu -
@@ -2733,12 +2761,7 @@ class FlowEngine:
         ztratit neměly: obchod skončený chybou vyžaduje ruční kontrolu a zrušený
         obchod, který stihl nakoupit, drží v TWS otevřenou a nezajištěnou pozici.
         """
-        k_odstraneni = [
-            flow
-            for flow in self.flows.values()
-            if flow.state in (FlowState.CANCELLED, FlowState.MISSED)
-            and flow.fill_price is None
-        ]
+        k_odstraneni = self.untraded_flows()
         if not k_odstraneni:
             return 0
 
@@ -2772,10 +2795,7 @@ class FlowEngine:
         async with self._lock:
             zruseno = 0
             for flow in list(self.flows.values()):
-                # Nákup vyplněný až po posledním průchodu monitoringu obchod
-                # z úklidu vyřadí - čerstvá pozice nesmí zůstat bez zajištění
-                self._catch_late_fill(flow)
-                if not flow.state.is_before_entry:
+                if not self._still_before_entry(flow):
                     continue
                 self._cancel_locked(
                     flow,
@@ -2951,6 +2971,16 @@ class FlowEngine:
         )
         return self._window_seconds(ted, start)
 
+    @property
+    def auto_close_active(self) -> bool:
+        """Právě běží uzavírací okno před koncem obchodování."""
+        return self.auto_close_seconds() == 0
+
+    @property
+    def pending_cancel_active(self) -> bool:
+        """Právě běží okno, ve kterém se ruší obchody čekající na nákup."""
+        return self.pending_cancel_seconds() == 0
+
     async def _auto_close_flows(self) -> None:
         """
         Krátce před zavřením burzy uzavře všechny běžící obchody.
@@ -2959,18 +2989,14 @@ class FlowEngine:
         vůči místnímu času počítače nehraje roli. Čekající obchody se ruší
         (nákupní příkaz se odstraní z trhu), obchody s pozicí se prodají trhem.
         """
-        if self.auto_close_seconds() != 0:
+        if not self.auto_close_active:
             return
 
         minuty = self.cfg.trading.auto_close_minutes_before
         for flow in list(self.flows.values()):
             if not flow.state.is_active or flow.state == FlowState.CLOSING:
                 continue
-            # Nákup vyplněný až po posledním průchodu monitoringu se dobere
-            # ještě před rozhodnutím, aby se pozice uzavřela trhem a neskončila
-            # jako zrušený čekající obchod
-            self._catch_late_fill(flow)
-            if flow.state.is_before_entry:
+            if self._still_before_entry(flow):
                 self.log_event(
                     f"{flow.id}: automatické zrušení čekajícího obchodu "
                     f"({minuty:g} min před zavřením burzy)."
@@ -3013,17 +3039,14 @@ class FlowEngine:
         Na rozdíl od automatického uzavírání před koncem burzy se týká jen
         obchodů před vstupem - už nakoupené pozice běží dál se svým PT a SL.
         """
-        if self.pending_cancel_seconds() != 0:
+        if not self.pending_cancel_active:
             return
 
         cas = self.cfg.trading.pending_cancel_time
         for flow in list(self.flows.values()):
-            # Vyplnění dobrané těsně před rozhodnutím vyřadí obchod z rušení -
-            # otevřené pozice se rušicí okno netýká, doběhne se svým PT a SL
-            self._catch_late_fill(flow)
             # Stavy před vstupem jsou podmnožinou aktivních, takže tahle
             # jediná podmínka odfiltruje pozice i už uzavřené obchody
-            if not flow.state.is_before_entry:
+            if not self._still_before_entry(flow):
                 continue
             self.log_event(
                 f"{flow.id}: automatické zrušení čekajícího obchodu "
@@ -3044,13 +3067,13 @@ class FlowEngine:
         aktivní podmíněný příkaz a při dotyku vstupní úrovně by se stihl
         vyplnit - proto se v obou oknech nezadává vůbec.
         """
-        if self.pending_cancel_seconds() == 0:
+        if self.pending_cancel_active:
             return (
                 f"Zadáno v době, kdy se čekající obchody ruší "
                 f"(od {self.cfg.trading.pending_cancel_time} burzovního času) - "
                 f"příkaz nebyl do TWS odeslán."
             )
-        if self.auto_close_seconds() == 0:
+        if self.auto_close_active:
             return (
                 f"Zadáno v uzavíracím okně před koncem obchodování "
                 f"({self.cfg.trading.auto_close_minutes_before:g} min před zavřením "
@@ -3694,11 +3717,11 @@ class FlowEngine:
         Stav před nákupem: kontrola vyplnění, hlídání spreadu
         a průběžná aktualizace limitní ceny.
         """
-        trade = flow.entry_trade
-
         # Vyplnění nákupu má přednost před vším ostatním
-        if trade is not None and trade.orderStatus.filled > 0:
-            return self._register_fill(flow)
+        if self._catch_late_fill(flow):
+            return True
+
+        trade = flow.entry_trade
 
         # Příkaz zrušený mimo aplikaci (například ručně v TWS)
         if trade is not None and trade.orderStatus.status in DEAD_ORDER_STATES:

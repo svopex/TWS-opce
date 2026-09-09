@@ -790,6 +790,17 @@ class Flow:
         return self.stop_loss
 
     @property
+    def has_position(self) -> bool:
+        """
+        Obchod drží nakoupené kusy.
+
+        Nákupní cena sama nestačí: tržní nákup ji mít nemusí (TWS nepošle
+        avgFillPrice a limitní cena u MKT příkazu není), a pozice bez ceny
+        je pořád pozice.
+        """
+        return self.fill_price is not None or self.filled_quantity > 0
+
+    @property
     def held_quantity(self) -> int:
         """Počet kontraktů, které pozice ještě drží (po prodaných runnerech)."""
         total = (self.filled_quantity or self.quantity) - self.runner_sold_quantity

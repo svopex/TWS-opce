@@ -737,7 +737,7 @@ class TradingUI:
                     icon="clear_all",
                     on_click=self._on_remove_untraded_and_pending,
                 ).props("outline dense color=primary").classes(
-                    "tlacitko-uklidit-cekajici"
+                    "tlacitko-uklidit"
                 ).tooltip(
                     "Totéž co Uklidit neobchodované, navíc zruší i obchody čekající "
                     "na nákup a odstraní je z přehledu - jejich nákupní příkazy se "
@@ -1850,6 +1850,11 @@ class TradingUI:
             self.form_flow_id = None
         self._refresh()
 
+    def _zapomen_chybejici_flow(self) -> None:
+        """Uvolní odkaz formuláře na obchod, který už v přehledu není."""
+        if self.form_flow_id and self.form_flow_id not in self.engine.flows:
+            self.form_flow_id = None
+
     def _on_remove_untraded(self) -> None:
         """
         Odstraní z přehledu obchody bez nákupu - zrušené a propásnuté.
@@ -1866,9 +1871,7 @@ class TradingUI:
             ui.notify("Žádný zrušený ani propásnutý obchod v přehledu není.", type="info")
             return
 
-        # Formulář už nemá na co odkazovat, pokud ukazoval odstraněný obchod
-        if self.form_flow_id and self.form_flow_id not in self.engine.flows:
-            self.form_flow_id = None
+        self._zapomen_chybejici_flow()
         ui.notify(f"Z přehledu odstraněno {odstraneno} obchodů bez nákupu.", type="warning")
         self._refresh()
 
@@ -1910,12 +1913,7 @@ class TradingUI:
         cekajici = [
             flow for flow in self.engine.flows.values() if flow.state.is_before_entry
         ]
-        bez_nakupu = [
-            flow
-            for flow in self.engine.flows.values()
-            if flow.state in (FlowState.CANCELLED, FlowState.MISSED)
-            and flow.fill_price is None
-        ]
+        bez_nakupu = self.engine.untraded_flows()
         if not cekajici and not bez_nakupu:
             ui.notify("Není co uklízet - žádný takový obchod v přehledu není.", type="info")
             return
@@ -1932,9 +1930,7 @@ class TradingUI:
             ui.notify(str(exc), type="negative")
             return
 
-        # Formulář už nemá na co odkazovat, pokud ukazoval odstraněný obchod
-        if self.form_flow_id and self.form_flow_id not in self.engine.flows:
-            self.form_flow_id = None
+        self._zapomen_chybejici_flow()
         ui.notify(
             f"Zrušeno {zruseno} obchodů čekajících na nákup, "
             f"z přehledu odstraněno {odstraneno} položek.",
@@ -1982,7 +1978,7 @@ class TradingUI:
             return
 
         bezici = [flow for flow in flows if flow.state.is_active]
-        s_pozici = [flow for flow in bezici if flow.fill_price is not None]
+        s_pozici = [flow for flow in bezici if flow.has_position]
         if not await self._potvrd_vycisteni(len(bezici), len(s_pozici), len(flows)):
             return
 

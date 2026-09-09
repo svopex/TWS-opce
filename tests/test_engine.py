@@ -28,6 +28,15 @@ class ZakladTestu(ZakladEnginu):
             setattr(pozadavek, klic, hodnota)
         return await self.engine.start_flow(pozadavek)
 
+    async def zaloz_a_vypln(self, **zmeny):
+        """
+        Založí obchod a vyplní jeho nákup bez průchodu monitorovací smyčkou -
+        tedy přesně tak, jak vypadá vyplnění v mezeře mezi dvěma průchody.
+        """
+        flow = await self.zaloz_call(quantity=1, **zmeny)
+        self.ib.fill(flow.entry_trade, 1, 3.10)
+        return flow
+
     async def zaloz_put(self, **zmeny):
         """Založí vzorové PUT flow: podklad 230, vstup 229, PT 226."""
         self.ib.price_underlying = 230.0
@@ -2459,9 +2468,14 @@ class TestZruseniCekajicich(ZakladTestu):
 class TestZadaniVOkne(ZakladTestu):
     """Zadání obchodu v době, kdy by ho okno vzápětí zrušilo."""
 
+    def burza(self, hodina: int, minuta: int, ruseni=False, uzavirani=False) -> None:
+        """Podvrhne čas burzy se zvolenými okny zapnutými."""
+        self.cfg.trading.pending_cancel_enabled = ruseni
+        self.cfg.trading.auto_close_enabled = uzavirani
+        self.podvrhni_cas_burzy(hodina, minuta)
+
     async def test_zadani_v_rusicim_okne_nejde_do_trhu(self):
-        self.cfg.trading.pending_cancel_enabled = True
-        self.podvrhni_cas_burzy(14, 0)
+        self.burza(14, 0, ruseni=True)
 
         flow = await self.zaloz_call()
 
@@ -2472,8 +2486,7 @@ class TestZadaniVOkne(ZakladTestu):
         self.assertIn("12:00", flow.message)
 
     async def test_zadani_v_uzaviracim_okne_nejde_do_trhu(self):
-        self.cfg.trading.auto_close_enabled = True
-        self.podvrhni_cas_burzy(15, 50)
+        self.burza(15, 50, uzavirani=True)
 
         flow = await self.zaloz_call()
 
@@ -2483,18 +2496,30 @@ class TestZadaniVOkne(ZakladTestu):
         self.assertIn("uzavíracím okně", flow.message)
 
     async def test_zadani_mimo_okna_jde_do_trhu(self):
-        self.cfg.trading.pending_cancel_enabled = True
-        self.cfg.trading.auto_close_enabled = True
-        self.podvrhni_cas_burzy(11, 0)
+        self.burza(11, 0, ruseni=True, uzavirani=True)
 
         flow = await self.zaloz_call()
 
         self.assertEqual(flow.state, FlowState.ARMED)
         self.assertEqual(len(self.ib.placed), 1)
 
+    async def test_znovuzadani_prikazu_v_okne_do_trhu_nejde(self):
+        # Stráž sedí v _place_entry, takže platí i pro cesty, kterými se
+        # příkaz vrací do trhu později - třeba po uvolnění spreadu
+        self.burza(11, 0, ruseni=True)
+        flow = await self.zaloz_call()
+        flow.set_state(FlowState.SPREAD_BLOCKED, "Spread nad limitem.")
+        self.ib.placed.clear()
+
+        self.podvrhni_cas_burzy(12, 0)
+        self.assertFalse(self.engine._place_entry(flow))
+
+        self.assertEqual(flow.state, FlowState.CANCELLED)
+        self.assertEqual(self.ib.placed, [])
+
     async def test_vypnuta_okna_zadani_nebrani(self):
         # Obě funkce vypnuté - odpoledne se zadává normálně
-        self.podvrhni_cas_burzy(14, 0)
+        self.burza(14, 0)
 
         flow = await self.zaloz_call()
 
@@ -2511,15 +2536,13 @@ class TestOpozdenehoVyplneni(ZakladTestu):
     pozice a zůstala v TWS bez zajištění.
     """
 
-    async def zaloz_a_vypln(self):
-        """Založí obchod před polednem a vyplní jej bez průchodu smyčkou."""
+    async def zaloz_pred_polednem(self):
+        """Založí obchod před polednem, tedy mimo obě okna, a vyplní jej."""
         self.podvrhni_cas_burzy(11, 0)
-        flow = await self.zaloz_call()
-        self.ib.fill(flow.entry_trade, 1, 3.10)
-        return flow
+        return await self.zaloz_a_vypln()
 
     async def test_rusici_okno_nesahne_na_prave_nakoupeny_obchod(self):
-        flow = await self.zaloz_a_vypln()
+        flow = await self.zaloz_pred_polednem()
 
         self.cfg.trading.pending_cancel_enabled = True
         self.podvrhni_cas_burzy(12, 0)
@@ -2531,7 +2554,7 @@ class TestOpozdenehoVyplneni(ZakladTestu):
         self.assertIsNotNone(flow.exit_trade)
 
     async def test_uzaviraci_okno_prave_nakoupenou_pozici_proda_trhem(self):
-        flow = await self.zaloz_a_vypln()
+        flow = await self.zaloz_pred_polednem()
 
         self.cfg.trading.auto_close_enabled = True
         self.podvrhni_cas_burzy(15, 50)
@@ -2542,7 +2565,7 @@ class TestOpozdenehoVyplneni(ZakladTestu):
         self.assertEqual(flow.fill_price, 3.10)
 
     async def test_rucni_zruseni_pozici_neprehledne(self):
-        flow = await self.zaloz_a_vypln()
+        flow = await self.zaloz_pred_polednem()
 
         await self.engine.cancel_flow(flow.id)
 
@@ -2554,7 +2577,7 @@ class TestOpozdenehoVyplneni(ZakladTestu):
         self.assertIn("zůstává otevřená", flow.message)
 
     async def test_rucni_zruseni_s_uzavrenim_pozici_proda(self):
-        flow = await self.zaloz_a_vypln()
+        flow = await self.zaloz_pred_polednem()
 
         await self.engine.cancel_flow(flow.id, close_position=True)
 
@@ -2872,8 +2895,7 @@ class TestUkliduSCekajicimi(ZakladPrehleduStavu):
     async def test_prave_vyplneny_obchod_uklid_neodklidi(self):
         # Nákup vyplněný mezi průchody smyčky nesmí skončit jako uklizený
         # obchod s pozicí bez zajištění
-        flow = await self.zaloz_call(symbol="AAPL", quantity=1)
-        self.ib.fill(flow.entry_trade, 1, 3.10)
+        flow = await self.zaloz_a_vypln()
 
         zruseno, odstraneno = await self.engine.remove_untraded_and_pending()
 

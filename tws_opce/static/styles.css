@@ -968,13 +968,6 @@ body.body--dark .log-radek {
   margin-right: 6px;
 }
 
-/* Úklid včetně obchodů čekajících na nákup - delší popisek než ostatní */
-.tlacitko-uklidit-cekajici {
-  flex: 0 0 auto;
-  font-size: 0.72rem;
-  margin-right: 6px;
-}
-
 /* Čtyři tlačítka se na užší obrazovce do jednoho řádku s nadpisem nevejdou,
    proto se v hlavičce monitoringu (na rozdíl od ostatních) smí zalomit */
 .karta-tabulka .radek-nadpis {

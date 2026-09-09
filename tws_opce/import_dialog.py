@@ -1696,8 +1696,9 @@ class ImportDialog:
                 radek.poznamka = ""
                 radek.vybrano.set_value(False)
 
-                # Obchod odmítnutý rušicím či uzavíracím oknem vzniká rovnou
-                # ukončený - do počtu založených nepatří
+                # Obchod, který se do trhu nedostal, vzniká rovnou ukončený -
+                # odmítlo ho rušicí či uzavírací okno, nebo byl vstup už
+                # propásnutý. Do počtu založených ani v jednom případě nepatří
                 if not flow.state.is_active:
                     odmitnuto += 1
                     self._zapis_stav_obchodu(radek)
@@ -1723,15 +1724,15 @@ class ImportDialog:
         if self.on_created:
             self.on_created()
 
-        if chyb or odmitnuto:
-            duvody = []
-            if chyb:
-                duvody.append(f"{chyb} se nezdařilo")
-            if odmitnuto:
-                duvody.append(f"{odmitnuto} nebylo zadáno do trhu")
+        duvody = []
+        if chyb:
+            duvody.append(f"{chyb} se nezdařilo")
+        if odmitnuto:
+            duvody.append(f"{odmitnuto} nebylo zadáno do trhu")
+        if duvody:
             ui.notify(
-                f"Založeno {zalozeno} obchodů, " + " a ".join(duvody) +
-                " - podrobnosti jsou ve sloupci Stav.",
+                f"Založeno {zalozeno} obchodů, {' a '.join(duvody)} - "
+                f"podrobnosti jsou ve sloupci Stav.",
                 type="warning",
             )
             return
