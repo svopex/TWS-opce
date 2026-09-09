@@ -661,23 +661,22 @@ class ReportDialog:
                     "hodnota-hrube"
                 )
 
-            # Rozvážený pruh: ztráta roste doleva od středu, zisk doprava
+            # Rozvážený pruh: ztráta roste doleva od středu, zisk doprava.
+            # Značka je prostý div se šířkou v procentech, ne linear_progress -
+            # ten výplň škáluje přes transform, takže by se zaoblení konců
+            # s délkou pruhu deformovalo
             with ui.element("div").classes("bunka bunka-pomer"):
                 podil = abs(vysledek or 0.0) / meritko if meritko > 0 else 0.0
+                ztrata = podil if (vysledek or 0) < 0 else 0.0
+                zisk = podil if (vysledek or 0) > 0 else 0.0
                 with ui.element("div").classes("pomer-pulka"):
-                    ui.linear_progress(
-                        value=podil if (vysledek or 0) < 0 else 0.0,
-                        show_value=False,
-                        size="9px",
-                        color="red-6",
-                    ).props("reverse rounded track-color=transparent")
+                    ui.element("div").classes("pomer-znacka pomer-znacka-ztrata").style(
+                        f"width: {ztrata:.2%}"
+                    )
                 with ui.element("div").classes("pomer-pulka"):
-                    ui.linear_progress(
-                        value=podil if (vysledek or 0) > 0 else 0.0,
-                        show_value=False,
-                        size="9px",
-                        color="green-6",
-                    ).props("rounded track-color=transparent")
+                    ui.element("div").classes("pomer-znacka pomer-znacka-zisk").style(
+                        f"width: {zisk:.2%}"
+                    )
 
     def _vykresli_uzavrene(self, podklad: report.DenniReport) -> None:
         """Vykreslí seznam ukončených obchodů; mění se jen s novým výsledkem."""

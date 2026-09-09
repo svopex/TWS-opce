@@ -613,7 +613,11 @@ výsledků důvod výstupu „ručně".
 `America/New_York`), takže posuny letního a zimního času vůči místnímu času
 počítače nehrají roli. Čas zavření burzy určuje `trading.exchange_close_time`
 (výchozí 16:00 newyorského času); zkrácené obchodní dny před svátky aplikace
-nezná. Funkci lze vypnout pomocí `trading.auto_close_enabled: false`.
+nezná. Výchozí stav funkce určuje `trading.auto_close_enabled` (v šabloně
+zapnuto); tlačítkem s budíkem vedle odpočtu v hlavičce ji lze kdykoliv vypnout
+a zase zapnout. Vypnutá funkce zůstává v hlavičce vidět jako zšedlé
+*Automatické uzavření pozic vypnuto*, aby se nedala vypnout a zapomenout.
+Po restartu se aplikace vrací k nastavení ze souboru.
 
 ### Zrušení čekajících obchodů v nastavený čas
 
@@ -636,8 +640,11 @@ okno posune až na otevření, aby nerušilo obchody nachystané právě na open
 Čas se počítá ve stejné časové zóně jako uzavírání
 (`trading.exchange_timezone`); o víkendu se nic neděje. Do hlavičky stránky
 se přes den promítá odpočet do zrušení, po jeho spuštění zůstává
-v hlavičce zvýrazněné upozornění, že se čekající obchody ruší. Funkci lze
-vypnout pomocí `trading.pending_cancel_enabled: false`.
+v hlavičce zvýrazněné upozornění, že se čekající obchody ruší.
+
+Výchozí stav funkce určuje `trading.pending_cancel_enabled` (v šabloně
+zapnuto); stejně jako u uzavírání ji tlačítko vedle odpočtu vypne i zapne
+za běhu a vypnutá se hlásí jako zšedlé *Rušení čekajících obchodů vypnuto*.
 
 ### Odpočet do otevření trhu
 

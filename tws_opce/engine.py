@@ -149,6 +149,12 @@ class FlowEngine:
         self._restore_lock = asyncio.Lock()
         # Řídí automatické navazování spojení ve smyčce; ruční odpojení jej vypíná
         self.auto_connect: bool = True
+        # Runtime přepínače časovaných funkcí. Konfigurace dává jen výchozí
+        # hodnotu - obchodník je za běhu vypíná a zapíná z hlavičky a po
+        # restartu se obojí vrací k nastavení ze souboru, aby omylem
+        # vypnutá pojistka nepřežila do dalšího dne
+        self.pending_cancel_on: bool = cfg.trading.pending_cancel_enabled
+        self.auto_close_on: bool = cfg.trading.auto_close_enabled
         # Zjištěná velikost účtu z TWS (používá se při account.use_live_account_size)
         self._live_account_size: float | None = None
         # Uložený stav se z disku čte jen jednou, při prvním spuštění
@@ -2962,7 +2968,7 @@ class FlowEngine:
         None znamená, že se dnes už neuzavírá (funkce vypnutá, víkend, nebo
         burza už zavřela); nula znamená, že uzavírací okno právě běží.
         """
-        if not self.cfg.trading.auto_close_enabled:
+        if not self.auto_close_on:
             return None
 
         ted = self._exchange_now()
@@ -3025,7 +3031,7 @@ class FlowEngine:
         None znamená, že se dnes už neruší (funkce vypnutá, víkend, nebo
         burza už zavřela); nula znamená, že rušicí okno právě běží.
         """
-        if not self.cfg.trading.pending_cancel_enabled:
+        if not self.pending_cancel_on:
             return None
 
         ted = self._exchange_now()

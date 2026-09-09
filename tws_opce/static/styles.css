@@ -54,11 +54,32 @@
   margin-right: 12px;
 }
 
+/* Odpočet a přepínač celé funkce drží pohromadě; vlastní odsazení mají
+   od skupiny, ne od textu uvnitř */
+.okno-prepinac {
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 2px;
+  margin-right: 12px;
+}
+
+.okno-prepinac .odpocet-cekajici,
+.okno-prepinac .odpocet-uzavreni {
+  margin-right: 0;
+}
+
 /* Zvýraznění po dobu, kdy příslušné okno běží. Pravidlo stojí až za výchozím
    vzhledem odpočtů, takže při stejné specificitě přebíjí jeho barvu */
 .odpocet-aktivni {
   color: #fbbf24;
   font-weight: 600;
+}
+
+/* Vypnutá funkce zůstává v hlavičce vidět, ale zšedlá - je to trvalý stav,
+   ne odpočet, a nemá odvádět pozornost od údajů, které se mění */
+.odpocet-vypnuto {
+  color: #94a3b8;
+  font-style: italic;
 }
 
 /* Naplánované zadání pozic ze souboru. Na rozdíl od odpočtů se zobrazuje jen
@@ -1374,17 +1395,34 @@ body.body--dark .dialog-import .stav-import-varovani {
 }
 
 .pomer-pulka {
+  display: flex;
   flex: 1 1 0;
   min-width: 0;
 }
 
+/* Ztráta roste od dělicí čáry doleva, proto se značka drží pravého okraje */
 .pomer-pulka:first-child {
   border-right: 1px solid #cbd5e1;
+  justify-content: flex-end;
   padding-right: 3px;
 }
 
 .pomer-pulka:last-child {
   padding-left: 3px;
+}
+
+/* Značka je kulatá na obou koncích, tedy i u dělicí čáry */
+.pomer-znacka {
+  border-radius: 999px;
+  height: 9px;
+}
+
+.pomer-znacka-ztrata {
+  background: #f44336;
+}
+
+.pomer-znacka-zisk {
+  background: #4caf50;
 }
 
 /* --- Grafy --- */

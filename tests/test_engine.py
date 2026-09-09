@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests.fake_ib import UNDERLYING_CONID
 from tests.zaklad import ZakladEnginu
 from tws_opce import calc, store
+from tws_opce.engine import FlowEngine
 from tws_opce.models import FlowRequest, FlowState
 
 
@@ -2290,7 +2291,7 @@ class TestAutomatickehoUzavreni(ZakladTestu):
 
     def burza(self, hodina: int, minuta: int, den: int = 19) -> None:
         """Podvrhne čas burzy se zapnutým automatickým uzavíráním."""
-        self.cfg.trading.auto_close_enabled = True
+        self.engine.auto_close_on = True
         self.podvrhni_cas_burzy(hodina, minuta, den)
 
     async def test_odpocet_sekund_do_uzavirani(self):
@@ -2311,7 +2312,7 @@ class TestAutomatickehoUzavreni(ZakladTestu):
         self.assertIsNone(self.engine.auto_close_seconds())
 
         # Vypnutá funkce odpočet nenabízí
-        self.cfg.trading.auto_close_enabled = False
+        self.engine.auto_close_on = False
         self.assertIsNone(self.engine.auto_close_seconds())
 
     async def test_odpocet_do_otevreni_trhu(self):
@@ -2337,7 +2338,7 @@ class TestAutomatickehoUzavreni(ZakladTestu):
 
         # Odpočet nezávisí na automatickém uzavírání obchodů
         self.burza(8, 30)
-        self.cfg.trading.auto_close_enabled = False
+        self.engine.auto_close_on = False
         self.assertAlmostEqual(self.engine.market_open_seconds(), 3600.0)
 
     async def test_obchody_se_pred_zavrenim_uzavrou(self):
@@ -2382,7 +2383,7 @@ class TestZruseniCekajicich(ZakladTestu):
 
     def burza(self, hodina: int, minuta: int, den: int = 19) -> None:
         """Podvrhne čas burzy se zapnutým rušením čekajících obchodů."""
-        self.cfg.trading.pending_cancel_enabled = True
+        self.engine.pending_cancel_on = True
         self.podvrhni_cas_burzy(hodina, minuta, den)
 
     async def test_odpocet_sekund_do_zruseni(self):
@@ -2409,7 +2410,7 @@ class TestZruseniCekajicich(ZakladTestu):
 
         # Vypnutá funkce odpočet nenabízí
         self.cfg.trading.pending_cancel_time = "12:00"
-        self.cfg.trading.pending_cancel_enabled = False
+        self.engine.pending_cancel_on = False
         self.assertIsNone(self.engine.pending_cancel_seconds())
 
     async def test_okno_nezacne_pred_otevrenim_burzy(self):
@@ -2458,11 +2459,70 @@ class TestZruseniCekajicich(ZakladTestu):
         flow = await self.zaloz_call()
 
         self.burza(14, 0)
-        self.cfg.trading.pending_cancel_enabled = False
+        self.engine.pending_cancel_on = False
         await self.engine._tick()
 
         self.assertEqual(flow.state, FlowState.ARMED)
         self.assertEqual(self.ib.cancelled, [])
+
+
+class TestPrepinacuOken(ZakladTestu):
+    """
+    Runtime zapnutí a vypnutí časovaných funkcí z hlavičky.
+
+    Konfigurace dává jen výchozí hodnotu; obchodník ji za běhu přebíjí,
+    aniž by se sahalo do souboru.
+    """
+
+    def test_vychozi_hodnota_je_z_konfigurace(self):
+        # Testovací konfigurace má obě funkce vypnuté
+        self.assertFalse(self.engine.pending_cancel_on)
+        self.assertFalse(self.engine.auto_close_on)
+
+        self.cfg.trading.pending_cancel_enabled = True
+        self.cfg.trading.auto_close_enabled = True
+        engine = FlowEngine(self.cfg, self.ib)
+        self.assertTrue(engine.pending_cancel_on)
+        self.assertTrue(engine.auto_close_on)
+
+    async def test_vypnute_ruseni_necha_obchod_bezet(self):
+        self.engine.pending_cancel_on = True
+        self.podvrhni_cas_burzy(14, 0)
+        flow = await self.zaloz_call()
+        # Zadání v běžícím okně obchod rovnou ukončí, proto se vypíná až teď
+        self.assertEqual(flow.state, FlowState.CANCELLED)
+
+        self.engine.pending_cancel_on = False
+        druhy = await self.zaloz_call()
+        await self.engine._tick()
+
+        # S vypnutou funkcí se zadává i odpoledne a nic se neruší
+        self.assertEqual(druhy.state, FlowState.ARMED)
+        self.assertIsNone(self.engine.pending_cancel_seconds())
+
+    async def test_vypnute_uzavirani_necha_pozici_bezet(self):
+        self.engine.auto_close_on = False
+        self.podvrhni_cas_burzy(15, 50)
+        flow = await self.zaloz_call(quantity=1)
+        self.ib.fill(flow.entry_trade, 1, 3.10)
+        await self.engine._tick()
+        await self.engine._tick()
+
+        # Pozice se před koncem seance neuzavírá, běží se svým zajištěním
+        self.assertEqual(flow.state, FlowState.EXIT_ARMED)
+        self.assertIsNone(self.engine.auto_close_seconds())
+
+    async def test_zapnuti_za_behu_funkci_obnovi(self):
+        # Vypnutá funkce v konfiguraci nebrání tomu ji za běhu zapnout
+        self.podvrhni_cas_burzy(14, 0)
+        flow = await self.zaloz_call()
+        self.assertEqual(flow.state, FlowState.ARMED)
+
+        self.engine.pending_cancel_on = True
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.CANCELLED)
+        self.assertIn("12:00", flow.message)
 
 
 class TestZadaniVOkne(ZakladTestu):
@@ -2470,8 +2530,8 @@ class TestZadaniVOkne(ZakladTestu):
 
     def burza(self, hodina: int, minuta: int, ruseni=False, uzavirani=False) -> None:
         """Podvrhne čas burzy se zvolenými okny zapnutými."""
-        self.cfg.trading.pending_cancel_enabled = ruseni
-        self.cfg.trading.auto_close_enabled = uzavirani
+        self.engine.pending_cancel_on = ruseni
+        self.engine.auto_close_on = uzavirani
         self.podvrhni_cas_burzy(hodina, minuta)
 
     async def test_zadani_v_rusicim_okne_nejde_do_trhu(self):
@@ -2544,7 +2604,7 @@ class TestOpozdenehoVyplneni(ZakladTestu):
     async def test_rusici_okno_nesahne_na_prave_nakoupeny_obchod(self):
         flow = await self.zaloz_pred_polednem()
 
-        self.cfg.trading.pending_cancel_enabled = True
+        self.engine.pending_cancel_on = True
         self.podvrhni_cas_burzy(12, 0)
         await self.engine._tick()
 
@@ -2556,7 +2616,7 @@ class TestOpozdenehoVyplneni(ZakladTestu):
     async def test_uzaviraci_okno_prave_nakoupenou_pozici_proda_trhem(self):
         flow = await self.zaloz_pred_polednem()
 
-        self.cfg.trading.auto_close_enabled = True
+        self.engine.auto_close_on = True
         self.podvrhni_cas_burzy(15, 50)
         await self.engine._tick()
 

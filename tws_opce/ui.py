@@ -355,12 +355,23 @@ class TradingUI:
             # Odpočet do otevření burzy - mimo obchodní hodiny
             self.market_open_label = ui.label().classes("odpocet-otevreni")
             self.market_open_label.set_visibility(False)
-            # Odpočet do zrušení čekajících obchodů v nastavený čas dne
-            self.pending_cancel_label = ui.label().classes("odpocet-cekajici")
-            self.pending_cancel_label.set_visibility(False)
+            # Odpočet do zrušení čekajících obchodů v nastavený čas dne,
+            # vedle něj přepínač celé funkce
+            self.pending_cancel_box = ui.row().classes("okno-prepinac")
+            with self.pending_cancel_box:
+                self.pending_cancel_label = ui.label().classes("odpocet-cekajici")
+                self.pending_cancel_button = ui.button(
+                    on_click=self._toggle_pending_cancel
+                ).props("flat round dense size=sm")
+            self.pending_cancel_box.set_visibility(False)
             # Odpočet do automatického uzavření obchodů před koncem burzy
-            self.auto_close_label = ui.label().classes("odpocet-uzavreni")
-            self.auto_close_label.set_visibility(False)
+            self.auto_close_box = ui.row().classes("okno-prepinac")
+            with self.auto_close_box:
+                self.auto_close_label = ui.label().classes("odpocet-uzavreni")
+                self.auto_close_button = ui.button(
+                    on_click=self._toggle_auto_close
+                ).props("flat round dense size=sm")
+            self.auto_close_box.set_visibility(False)
             # Naplánované zadání pozic ze souboru. Režim běží i se zavřeným
             # dialogem, takže jinak než tady by nebyl vidět
             self.plan_label = ui.label().classes("odpocet-plan")
@@ -392,6 +403,27 @@ class TradingUI:
         """Ikona přepínače ukazuje režim, do kterého se lze přepnout."""
         ikona = "light_mode" if self.dark_mode.value else "dark_mode"
         self.dark_button.props(f"icon={ikona}")
+
+    def _toggle_pending_cancel(self) -> None:
+        """Zapne či vypne rušení čekajících obchodů v nastavený čas dne."""
+        self.engine.pending_cancel_on = not self.engine.pending_cancel_on
+        stav = "zapnuto" if self.engine.pending_cancel_on else "vypnuto"
+        self.engine.log_event(
+            f"Rušení čekajících obchodů v {self.cfg.trading.pending_cancel_time} "
+            f"burzovního času {stav} obchodníkem."
+        )
+        ui.notify(f"Rušení čekajících obchodů {stav}.", type="warning")
+        self._refresh()
+
+    def _toggle_auto_close(self) -> None:
+        """Zapne či vypne automatické uzavření pozic před koncem obchodování."""
+        self.engine.auto_close_on = not self.engine.auto_close_on
+        stav = "zapnuto" if self.engine.auto_close_on else "vypnuto"
+        self.engine.log_event(
+            f"Automatické uzavření pozic před koncem obchodování {stav} obchodníkem."
+        )
+        ui.notify(f"Automatické uzavření pozic {stav}.", type="warning")
+        self._refresh()
 
     def _build_form(self) -> None:
         """Formulář pro zadání obchodu."""
@@ -2042,19 +2074,41 @@ class TradingUI:
         self.plan_label.set_text(popis)
 
     def _refresh_window_label(
-        self, label: ui.label, sekundy: float | None, cekani: str, behem: str
+        self,
+        box: ui.row,
+        label: ui.label,
+        button: ui.button,
+        zapnuto: bool,
+        sekundy: float | None,
+        cekani: str,
+        behem: str,
+        vypnuto: str,
     ) -> None:
         """
-        Vykreslí odpočet do okna, které engine hlásí počtem sekund.
+        Vykreslí odpočet do okna i přepínač celé funkce.
 
-        None okno skryje, nula a méně znamená, že okno běží - pak se ukáže
-        zvýrazněný text "behem", jinak text "cekani" doplněný o odpočet.
+        Vypnutá funkce zůstává v hlavičce vidět jako zšedlé "vypnuto" -
+        jinak by se dala vypnout a zapomenout, aniž by to bylo z čeho poznat.
+        U zapnuté funkce None okno skryje (víkend, po zavření burzy), nula
+        a méně znamená, že okno běží - pak se ukáže zvýrazněný text "behem",
+        jinak text "cekani" doplněný o odpočet.
         """
-        if sekundy is None:
-            label.set_visibility(False)
+        # Ikona ukazuje stav funkce, tooltip říká, co udělá kliknutí
+        button.props(f"icon={'alarm_on' if zapnuto else 'alarm_off'}")
+        button.tooltip("Vypnout funkci" if zapnuto else "Zapnout funkci")
+
+        if not zapnuto:
+            box.set_visibility(True)
+            label.set_text(vypnuto)
+            label.classes(remove="odpocet-aktivni", add="odpocet-vypnuto")
             return
 
-        label.set_visibility(True)
+        label.classes(remove="odpocet-vypnuto")
+        if sekundy is None:
+            box.set_visibility(False)
+            return
+
+        box.set_visibility(True)
         if sekundy <= 0:
             label.set_text(behem)
             label.classes(add="odpocet-aktivni")
@@ -2068,19 +2122,27 @@ class TradingUI:
         # Rušicí okno trvá až do zavření burzy - zvýrazněný text připomíná,
         # že se zruší i obchod zadaný teprve teď
         self._refresh_window_label(
+            self.pending_cancel_box,
             self.pending_cancel_label,
+            self.pending_cancel_button,
+            self.engine.pending_cancel_on,
             self.engine.pending_cancel_seconds(),
             "Zrušení čekajících obchodů za",
             f"Čekající obchody se ruší (od {self.cfg.trading.pending_cancel_time})",
+            "Rušení čekajících obchodů vypnuto",
         )
 
     def _refresh_auto_close(self) -> None:
         """Odpočet do automatického uzavření obchodů v hlavičce."""
         self._refresh_window_label(
+            self.auto_close_box,
             self.auto_close_label,
+            self.auto_close_button,
+            self.engine.auto_close_on,
             self.engine.auto_close_seconds(),
             "Automatické uzavření všech pozic za",
             "Probíhá automatické uzavírání obchodů",
+            "Automatické uzavření pozic vypnuto",
         )
 
     def _refresh_warning(self) -> None:
