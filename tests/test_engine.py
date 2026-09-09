@@ -2854,7 +2854,7 @@ class TestUkliduSCekajicimi(ZakladPrehleduStavu):
     """
     Úklid, který kromě neobchodovaných odklidí i obchody čekající na nákup.
 
-    Dědí přípravu přehledu po úklidu neobchodovaných, aby obě varianty
+    Sdílí přípravu přehledu s úklidem neobchodovaných, aby obě varianty
     pracovaly nad stejnou sadou stavů a rozdíl mezi nimi byl vidět.
     """
 
@@ -2884,7 +2884,7 @@ class TestUkliduSCekajicimi(ZakladPrehleduStavu):
 
     async def test_obchod_blokovany_spreadem_se_take_odklidi(self):
         # Blokace spreadem je stav před nákupem, takže do úklidu patří
-        flow = await self.zaloz_call(symbol="AAPL")
+        flow = await self.zaloz_call()
         flow.set_state(FlowState.SPREAD_BLOCKED, "Spread nad limitem.")
 
         zruseno, odstraneno = await self.engine.remove_untraded_and_pending()

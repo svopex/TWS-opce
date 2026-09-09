@@ -3068,18 +3068,18 @@ class FlowEngine:
         vyplnit - proto se v obou oknech nezadává vůbec.
         """
         if self.pending_cancel_active:
-            return (
-                f"Zadáno v době, kdy se čekající obchody ruší "
-                f"(od {self.cfg.trading.pending_cancel_time} burzovního času) - "
-                f"příkaz nebyl do TWS odeslán."
+            duvod = (
+                f"v době, kdy se čekající obchody ruší "
+                f"(od {self.cfg.trading.pending_cancel_time} burzovního času)"
             )
-        if self.auto_close_active:
-            return (
-                f"Zadáno v uzavíracím okně před koncem obchodování "
-                f"({self.cfg.trading.auto_close_minutes_before:g} min před zavřením "
-                f"burzy) - příkaz nebyl do TWS odeslán."
+        elif self.auto_close_active:
+            duvod = (
+                f"v uzavíracím okně před koncem obchodování "
+                f"({self.cfg.trading.auto_close_minutes_before:g} min před zavřením burzy)"
             )
-        return None
+        else:
+            return None
+        return f"Zadáno {duvod} - příkaz nebyl do TWS odeslán."
 
     def _sync_commissions(self) -> bool:
         """
