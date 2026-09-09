@@ -1623,6 +1623,7 @@ class ImportDialog:
 
         zalozeno = 0
         chyb = 0
+        odmitnuto = 0
         celkem = len(vybrane)
         self._set_loading(True, "Zadávám obchody do trhu…")
         try:
@@ -1695,6 +1696,13 @@ class ImportDialog:
                 radek.poznamka = ""
                 radek.vybrano.set_value(False)
 
+                # Obchod odmítnutý rušicím či uzavíracím oknem vzniká rovnou
+                # ukončený - do počtu založených nepatří
+                if not flow.state.is_active:
+                    odmitnuto += 1
+                    self._zapis_stav_obchodu(radek)
+                    continue
+
                 # Runner se zapíná až na hotovém obchodu. Nezdaří-li se
                 # (typicky málo kontraktů), obchod běží dál - jen se to připíše
                 # do stavu, aby to nezapadlo
@@ -1715,10 +1723,15 @@ class ImportDialog:
         if self.on_created:
             self.on_created()
 
-        if chyb:
+        if chyb or odmitnuto:
+            duvody = []
+            if chyb:
+                duvody.append(f"{chyb} se nezdařilo")
+            if odmitnuto:
+                duvody.append(f"{odmitnuto} nebylo zadáno do trhu")
             ui.notify(
-                f"Založeno {zalozeno} obchodů, {chyb} se nezdařilo - "
-                f"podrobnosti jsou ve sloupci Stav.",
+                f"Založeno {zalozeno} obchodů, " + " a ".join(duvody) +
+                " - podrobnosti jsou ve sloupci Stav.",
                 type="warning",
             )
             return

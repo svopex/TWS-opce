@@ -730,6 +730,20 @@ class TradingUI:
                     "obchody zůstávají, stejně jako obchod skončený chybou nebo "
                     "zrušený s otevřenou pozicí. Do TWS se nesahá."
                 )
+                # Týž úklid, navíc i o obchody čekající na nákup - ty se
+                # nejdřív zruší, takže jejich příkazy zmizí i z TWS
+                ui.button(
+                    "Uklidit neobchodované a čekající na nákup",
+                    icon="clear_all",
+                    on_click=self._on_remove_untraded_and_pending,
+                ).props("outline dense color=primary").classes(
+                    "tlacitko-uklidit-cekajici"
+                ).tooltip(
+                    "Totéž co Uklidit neobchodované, navíc zruší i obchody čekající "
+                    "na nákup a odstraní je z přehledu - jejich nákupní příkazy se "
+                    "odstraní z TWS. Otevřené a uzavřené obchody i obchod skončený "
+                    "chybou zůstávají."
+                )
                 # Hromadné zrušení běžících obchodů a vyprázdnění přehledu
                 ui.button(
                     "Zrušit a smazat vše",
@@ -1722,7 +1736,12 @@ class TradingUI:
             self._set_loading(False)
 
         self.form_flow_id = flow.id
-        ui.notify(f"Flow {flow.id} založeno – {flow.state.label}.", type="positive")
+        # Obchod odmítnutý rušicím či uzavíracím oknem vzniká rovnou ukončený -
+        # zelené hlášení o úspěchu by v takovém případě mátlo
+        if flow.state.is_active:
+            ui.notify(f"Flow {flow.id} založeno – {flow.state.label}.", type="positive")
+        else:
+            ui.notify(f"Flow {flow.id} nebylo zadáno do trhu – {flow.message}", type="warning")
         self._refresh()
 
     async def _volba_pro_pozici(self, flow: Flow) -> str | None:
@@ -1851,6 +1870,76 @@ class TradingUI:
         if self.form_flow_id and self.form_flow_id not in self.engine.flows:
             self.form_flow_id = None
         ui.notify(f"Z přehledu odstraněno {odstraneno} obchodů bez nákupu.", type="warning")
+        self._refresh()
+
+    async def _potvrd_uklid_cekajicich(self, cekajici: int, bez_nakupu: int) -> bool:
+        """
+        Vyžádá si potvrzení úklidu, který ruší i obchody čekající na nákup.
+        Vrací True, pokud obchodník akci potvrdil.
+        """
+        with ui.dialog() as dialog, ui.card().classes("dialog-pozice"):
+            ui.label("Uklidit i obchody čekající na nákup").classes("dialog-nadpis")
+            ui.label(
+                f"Zruší se {cekajici} obchodů čekajících na nákup a jejich nákupní "
+                f"příkazy se odstraní z TWS. Z přehledu pak zmizí i s "
+                f"{bez_nakupu} zrušenými a propásnutými obchody."
+            ).classes("dialog-text")
+            ui.label(
+                "Otevřených pozic, uzavřených obchodů ani obchodu skončeného "
+                "chybou se úklid nedotkne."
+            ).classes("dialog-text")
+
+            with ui.column().classes("dialog-tlacitka"):
+                ui.button(
+                    "Uklidit",
+                    on_click=lambda: dialog.submit(True),
+                ).props("color=primary").classes("dialog-tlacitko")
+                ui.button("Zpět", on_click=lambda: dialog.submit(False)).props(
+                    "flat"
+                ).classes("dialog-tlacitko")
+
+        return bool(await dialog)
+
+    async def _on_remove_untraded_and_pending(self) -> None:
+        """
+        Úklid přehledu včetně obchodů čekajících na nákup.
+
+        Na rozdíl od prostého úklidu neobchodovaných sahá do TWS - ruší
+        nákupní příkazy, proto se na akci ptáme.
+        """
+        cekajici = [
+            flow for flow in self.engine.flows.values() if flow.state.is_before_entry
+        ]
+        bez_nakupu = [
+            flow
+            for flow in self.engine.flows.values()
+            if flow.state in (FlowState.CANCELLED, FlowState.MISSED)
+            and flow.fill_price is None
+        ]
+        if not cekajici and not bez_nakupu:
+            ui.notify("Není co uklízet - žádný takový obchod v přehledu není.", type="info")
+            return
+
+        # Bez čekajících obchodů se do TWS nesahá a ptát se nemá na co
+        if cekajici and not await self._potvrd_uklid_cekajicich(
+            len(cekajici), len(bez_nakupu)
+        ):
+            return
+
+        try:
+            zruseno, odstraneno = await self.engine.remove_untraded_and_pending()
+        except Exception as exc:
+            ui.notify(str(exc), type="negative")
+            return
+
+        # Formulář už nemá na co odkazovat, pokud ukazoval odstraněný obchod
+        if self.form_flow_id and self.form_flow_id not in self.engine.flows:
+            self.form_flow_id = None
+        ui.notify(
+            f"Zrušeno {zruseno} obchodů čekajících na nákup, "
+            f"z přehledu odstraněno {odstraneno} položek.",
+            type="warning",
+        )
         self._refresh()
 
     async def _potvrd_vycisteni(self, bezici: int, s_pozici: int, celkem: int) -> bool:

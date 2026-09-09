@@ -491,6 +491,11 @@ projít.
    ztratit. Zůstávají čekající, otevřené i uzavřené obchody a k nim dvě
    výjimky, které vyžadují pozornost: obchod skončený **chybou** a zrušený
    obchod, který stihl nakoupit a **drží v TWS otevřenou pozici**.
+   Vedle stojí tlačítko **Uklidit neobchodované a čekající na nákup**. Dělá
+   totéž, navíc odklidí i obchody, které teprve čekají na nákup — ty se
+   nejprve zruší, takže jejich nákupní příkazy zmizí i z TWS. Protože se
+   tentokrát do TWS sahá, aplikace si vyžádá potvrzení. Otevřených pozic,
+   uzavřených obchodů ani obchodu skončeného chybou se úklid nedotkne.
    Vedle stojí tlačítko **Zrušit a smazat vše**. Po potvrzení zruší všechny
    běžící obchody i jejich příkazy v TWS a přehled vyprázdní. Držené pozice se přitom trhem neuzavírají — zajišťovací příkazy
    pro PT a SL zmizí a pozice zůstanou v TWS otevřené bez zajištění, na což
@@ -599,10 +604,10 @@ Několik minut před zavřením burzy (`trading.auto_close_minutes_before` —
 v šabloně 5 minut, chybí-li klíč, 15) aplikace sama ukončí všechny běžící
 obchody: čekající obchody zruší a odstraní jejich nákupní příkazy z trhu,
 otevřené pozice prodá tržním příkazem. Uzavírací okno trvá až do zavření
-burzy, takže obchod založený uvnitř okna se zruší, resp. uzavře hned;
-o víkendu se nic neděje. Do hlavičky stránky se přes den promítá odpočet
-do začátku uzavírání. Takto uzavřená pozice má v přehledu výsledků důvod
-výstupu „ručně".
+burzy; obchod zadaný uvnitř okna se do trhu vůbec neposílá a rovnou skončí
+jako *Zrušeno*. O víkendu se nic neděje. Do hlavičky stránky se přes den
+promítá odpočet do začátku uzavírání. Takto uzavřená pozice má v přehledu
+výsledků důvod výstupu „ručně".
 
 Čas se počítá v časové zóně burzy (`trading.exchange_timezone`, výchozí
 `America/New_York`), takže posuny letního a zimního času vůči místnímu času
@@ -620,12 +625,17 @@ běží dál se svým PT a SL a uzavře je až automatické uzavření před kon
 obchodování. Smyslem je nepouštět do trhu vstupy z druhé poloviny seance,
 u kterých už není dost času na dojití k cíli.
 
-Okno trvá od nastaveného času do zavření burzy, takže obchod zadaný odpoledne
-se zruší prakticky ihned po zadání. Vždy ale leží uvnitř seance: čas dřívější
-než `trading.exchange_open_time` okno posune až na otevření, aby nerušilo
-obchody nachystané právě na open. Čas se počítá ve stejné časové zóně jako
-uzavírání (`trading.exchange_timezone`); o víkendu se nic neděje. Do hlavičky
-stránky se přes den promítá odpočet do zrušení, po jeho spuštění zůstává
+Okno trvá od nastaveného času do zavření burzy. Obchod zadaný odpoledne se
+proto do TWS vůbec neodešle a rovnou vznikne ve stavu *Zrušeno* se zprávou,
+proč se nezadal; formulář i hromadné načtení to hlásí oranžově. Vyplnil-li
+se nákup těsně předtím, než okno zasáhlo, obchod se nezruší — je to už
+otevřená pozice, která doběhne se svým PT a SL.
+
+Okno vždy leží uvnitř seance: čas dřívější než `trading.exchange_open_time`
+okno posune až na otevření, aby nerušilo obchody nachystané právě na open.
+Čas se počítá ve stejné časové zóně jako uzavírání
+(`trading.exchange_timezone`); o víkendu se nic neděje. Do hlavičky stránky
+se přes den promítá odpočet do zrušení, po jeho spuštění zůstává
 v hlavičce zvýrazněné upozornění, že se čekající obchody ruší. Funkci lze
 vypnout pomocí `trading.pending_cancel_enabled: false`.
 

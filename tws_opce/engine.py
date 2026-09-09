@@ -1427,8 +1427,16 @@ class FlowEngine:
                     f"závěrečné ceny; zkontrolujte dopočítané úrovně i množství."
                 )
 
+            # Uvnitř rušicího či uzavíracího okna by příkaz šel do TWS jen
+            # proto, aby ho následující průchod smyčky hned zase odstranil -
+            # obchod se proto rovnou uzavře jako zrušený a do trhu se nesahá
+            duvod_okna = self._entry_window_block()
+            if duvod_okna is not None:
+                flow.set_state(FlowState.CANCELLED, duvod_okna)
+                self._release(flow)
+                self.log_event(f"{flow.id}: {flow.message}")
             # Při příliš širokém spreadu se příkaz zatím nezadává
-            if flow.option_spread_pct is not None and flow.option_spread_pct > max_spread:
+            elif flow.option_spread_pct is not None and flow.option_spread_pct > max_spread:
                 flow.set_state(
                     FlowState.SPREAD_BLOCKED,
                     f"Spread {flow.option_spread_pct:.2f} % > limit {max_spread:g} %, "
@@ -2635,11 +2643,18 @@ class FlowEngine:
         self, flow: Flow, close_position: bool = False, reason: str | None = None
     ) -> None:
         """Tělo rušení flow - volá se výhradně s již drženým zámkem."""
+        # Nákup se mohl vyplnit až po posledním průchodu monitoringu; bez
+        # dobrání by se obchod s čerstvě otevřenou pozicí ukončil jako
+        # "zrušeno před nákupem" a pozice by zůstala v TWS bez dozoru
+        self._catch_late_fill(flow)
+
         self.ib.cancel(flow.entry_trade)
         self._cancel_part(flow, "exit")
         self._cancel_part(flow, "runner")
 
-        v_pozici = flow.fill_price is not None
+        # Tržní nákup nemusí mít známou cenu, pozice se proto pozná i podle
+        # vyplněného množství
+        v_pozici = flow.fill_price is not None or flow.filled_quantity > 0
 
         if v_pozici and close_position:
             # Už vyplněný prodej hlavní části nesmí zůstat jako exit_trade -
@@ -2669,6 +2684,22 @@ class FlowEngine:
 
         self.log_event(f"{flow.id}: {flow.message}")
         self._notify()
+
+    def _catch_late_fill(self, flow: Flow) -> bool:
+        """
+        Dobere vyplnění nákupu, které monitorovací smyčka ještě nezaznamenala.
+
+        Podmíněný nákupní příkaz se v TWS vyplní kdykoliv, tedy i v mezeře
+        mezi dvěma průchody smyčky. Stav obchodu je do nejbližšího průchodu
+        stále "před nákupem", takže by se s ním zacházelo jako s obchodem
+        bez pozice. Vrací True, když se vyplnění dobralo.
+        """
+        trade = flow.entry_trade
+        if trade is None or not flow.state.is_before_entry:
+            return False
+        if int(trade.orderStatus.filled or 0) < 1:
+            return False
+        return self._register_fill(flow)
 
     def _release(self, flow: Flow) -> None:
         """Uvolní odběry tržních dat držené ukončeným flow."""
@@ -2726,6 +2757,40 @@ class FlowEngine:
         )
         self._notify()
         return len(k_odstraneni)
+
+    async def remove_untraded_and_pending(self) -> tuple[int, int]:
+        """
+        Úklid o krok dál než remove_untraded: kromě zrušených a propásnutých
+        obchodů odstraní z přehledu i ty, které teprve čekají na nákup.
+
+        Čekající obchod se nejprve zruší, takže jeho nákupní příkaz zmizí
+        i z TWS. Obchodů s otevřenou pozicí, uzavřených ani skončených chybou
+        se úklid nedotkne - stejně jako u remove_untraded zůstávají v přehledu.
+
+        Vrací dvojici (zrušeno čekajících, odstraněno položek).
+        """
+        async with self._lock:
+            zruseno = 0
+            for flow in list(self.flows.values()):
+                # Nákup vyplněný až po posledním průchodu monitoringu obchod
+                # z úklidu vyřadí - čerstvá pozice nesmí zůstat bez zajištění
+                self._catch_late_fill(flow)
+                if not flow.state.is_before_entry:
+                    continue
+                self._cancel_locked(
+                    flow,
+                    reason="Zrušeno úklidem přehledu, příkaz odstraněn z trhu.",
+                )
+                zruseno += 1
+
+            if zruseno:
+                self.log_event(
+                    f"Úklidem přehledu zrušeno {zruseno} obchodů čekajících na nákup."
+                )
+
+        # Právě zrušené obchody teď spadají mezi neobchodované, takže je
+        # z přehledu vyřadí tentýž úklid jako zrušené a propásnuté
+        return zruseno, self.remove_untraded()
 
     async def cancel_and_clear_all(self) -> tuple[int, int]:
         """
@@ -2901,6 +2966,10 @@ class FlowEngine:
         for flow in list(self.flows.values()):
             if not flow.state.is_active or flow.state == FlowState.CLOSING:
                 continue
+            # Nákup vyplněný až po posledním průchodu monitoringu se dobere
+            # ještě před rozhodnutím, aby se pozice uzavřela trhem a neskončila
+            # jako zrušený čekající obchod
+            self._catch_late_fill(flow)
             if flow.state.is_before_entry:
                 self.log_event(
                     f"{flow.id}: automatické zrušení čekajícího obchodu "
@@ -2949,6 +3018,9 @@ class FlowEngine:
 
         cas = self.cfg.trading.pending_cancel_time
         for flow in list(self.flows.values()):
+            # Vyplnění dobrané těsně před rozhodnutím vyřadí obchod z rušení -
+            # otevřené pozice se rušicí okno netýká, doběhne se svým PT a SL
+            self._catch_late_fill(flow)
             # Stavy před vstupem jsou podmnožinou aktivních, takže tahle
             # jediná podmínka odfiltruje pozice i už uzavřené obchody
             if not flow.state.is_before_entry:
@@ -2962,6 +3034,29 @@ class FlowEngine:
                 reason=f"Automaticky zrušeno v {cas} burzovního času, "
                 "příkaz odstraněn z trhu.",
             )
+
+    def _entry_window_block(self) -> str | None:
+        """
+        Důvod, proč nový obchod nemá vůbec jít do trhu, nebo None.
+
+        Rušicí i uzavírací okno by příkaz odstranily hned následujícím
+        průchodem monitorovací smyčky. Do té doby by ale ležel v TWS jako
+        aktivní podmíněný příkaz a při dotyku vstupní úrovně by se stihl
+        vyplnit - proto se v obou oknech nezadává vůbec.
+        """
+        if self.pending_cancel_seconds() == 0:
+            return (
+                f"Zadáno v době, kdy se čekající obchody ruší "
+                f"(od {self.cfg.trading.pending_cancel_time} burzovního času) - "
+                f"příkaz nebyl do TWS odeslán."
+            )
+        if self.auto_close_seconds() == 0:
+            return (
+                f"Zadáno v uzavíracím okně před koncem obchodování "
+                f"({self.cfg.trading.auto_close_minutes_before:g} min před zavřením "
+                f"burzy) - příkaz nebyl do TWS odeslán."
+            )
+        return None
 
     def _sync_commissions(self) -> bool:
         """

@@ -2456,6 +2456,124 @@ class TestZruseniCekajicich(ZakladTestu):
         self.assertEqual(self.ib.cancelled, [])
 
 
+class TestZadaniVOkne(ZakladTestu):
+    """Zadání obchodu v době, kdy by ho okno vzápětí zrušilo."""
+
+    async def test_zadani_v_rusicim_okne_nejde_do_trhu(self):
+        self.cfg.trading.pending_cancel_enabled = True
+        self.podvrhni_cas_burzy(14, 0)
+
+        flow = await self.zaloz_call()
+
+        # Obchod vzniká rovnou ukončený a do TWS se neposlalo nic
+        self.assertEqual(flow.state, FlowState.CANCELLED)
+        self.assertIsNone(flow.entry_trade)
+        self.assertEqual(self.ib.placed, [])
+        self.assertIn("12:00", flow.message)
+
+    async def test_zadani_v_uzaviracim_okne_nejde_do_trhu(self):
+        self.cfg.trading.auto_close_enabled = True
+        self.podvrhni_cas_burzy(15, 50)
+
+        flow = await self.zaloz_call()
+
+        self.assertEqual(flow.state, FlowState.CANCELLED)
+        self.assertIsNone(flow.entry_trade)
+        self.assertEqual(self.ib.placed, [])
+        self.assertIn("uzavíracím okně", flow.message)
+
+    async def test_zadani_mimo_okna_jde_do_trhu(self):
+        self.cfg.trading.pending_cancel_enabled = True
+        self.cfg.trading.auto_close_enabled = True
+        self.podvrhni_cas_burzy(11, 0)
+
+        flow = await self.zaloz_call()
+
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(len(self.ib.placed), 1)
+
+    async def test_vypnuta_okna_zadani_nebrani(self):
+        # Obě funkce vypnuté - odpoledne se zadává normálně
+        self.podvrhni_cas_burzy(14, 0)
+
+        flow = await self.zaloz_call()
+
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(len(self.ib.placed), 1)
+
+
+class TestOpozdenehoVyplneni(ZakladTestu):
+    """
+    Nákup vyplněný v mezeře mezi dvěma průchody smyčky.
+
+    Stav obchodu je do nejbližšího průchodu stále "před nákupem", takže bez
+    dobrání vyplnění by se čerstvě otevřená pozice ukončila jako obchod bez
+    pozice a zůstala v TWS bez zajištění.
+    """
+
+    async def zaloz_a_vypln(self):
+        """Založí obchod před polednem a vyplní jej bez průchodu smyčkou."""
+        self.podvrhni_cas_burzy(11, 0)
+        flow = await self.zaloz_call()
+        self.ib.fill(flow.entry_trade, 1, 3.10)
+        return flow
+
+    async def test_rusici_okno_nesahne_na_prave_nakoupeny_obchod(self):
+        flow = await self.zaloz_a_vypln()
+
+        self.cfg.trading.pending_cancel_enabled = True
+        self.podvrhni_cas_burzy(12, 0)
+        await self.engine._tick()
+
+        # Obchod se nezrušil, pozice se zajistila jako každá jiná
+        self.assertEqual(flow.state, FlowState.EXIT_ARMED)
+        self.assertEqual(flow.fill_price, 3.10)
+        self.assertIsNotNone(flow.exit_trade)
+
+    async def test_uzaviraci_okno_prave_nakoupenou_pozici_proda_trhem(self):
+        flow = await self.zaloz_a_vypln()
+
+        self.cfg.trading.auto_close_enabled = True
+        self.podvrhni_cas_burzy(15, 50)
+        await self.engine._tick()
+
+        # Pozice se uzavírá trhem, ne že by se obchod zrušil jako čekající
+        self.assertEqual(flow.state, FlowState.CLOSING)
+        self.assertEqual(flow.fill_price, 3.10)
+
+    async def test_rucni_zruseni_pozici_neprehledne(self):
+        flow = await self.zaloz_a_vypln()
+
+        await self.engine.cancel_flow(flow.id)
+
+        # Pozice se rozpoznala, uživatel dostal varování místo tichého
+        # "zrušeno před nákupem"
+        self.assertEqual(flow.state, FlowState.CANCELLED)
+        self.assertEqual(flow.fill_price, 3.10)
+        self.assertEqual(flow.filled_quantity, 1)
+        self.assertIn("zůstává otevřená", flow.message)
+
+    async def test_rucni_zruseni_s_uzavrenim_pozici_proda(self):
+        flow = await self.zaloz_a_vypln()
+
+        await self.engine.cancel_flow(flow.id, close_position=True)
+
+        self.assertEqual(flow.state, FlowState.CLOSING)
+        await self.engine._tick()
+        self.assertEqual(flow.exit_trade.order.orderType, "MKT")
+
+    async def test_nevyplneny_obchod_se_rusi_beze_zmeny(self):
+        # Kontrola, že dobírání nezasáhlo do běžného rušení čekajícího obchodu
+        self.podvrhni_cas_burzy(11, 0)
+        flow = await self.zaloz_call()
+
+        await self.engine.cancel_flow(flow.id)
+
+        self.assertEqual(flow.state, FlowState.CANCELLED)
+        self.assertIsNone(flow.fill_price)
+        self.assertIn("před nákupem", flow.message)
+
+
 class TestIndikatoruHlidani(ZakladTestu):
     """Příznak, že aplikace obchody skutečně hlídá."""
 
@@ -2616,8 +2734,8 @@ class TestProvizi(ZakladTestu):
         self.assertAlmostEqual(flow.entry_commission, 3.25)
 
 
-class TestUkliduNeobchodovanych(ZakladTestu):
-    """Odstranění obchodů, které se nikdy nedostaly k nákupu."""
+class ZakladPrehleduStavu(ZakladTestu):
+    """Přehled se zástupcem každého stavu - sdílí jej obě varianty úklidu."""
 
     async def priprav_prehled(self) -> dict[str, FlowState]:
         """
@@ -2663,6 +2781,10 @@ class TestUkliduNeobchodovanych(ZakladTestu):
             "chybovy": chybovy.id,
         }
 
+
+class TestUkliduNeobchodovanych(ZakladPrehleduStavu):
+    """Odstranění obchodů, které se nikdy nedostaly k nákupu."""
+
     async def test_odstrani_zrusene_i_propasnute(self):
         ids = await self.priprav_prehled()
         self.assertEqual(self.engine.flows[ids["zruseny"]].state, FlowState.CANCELLED)
@@ -2703,6 +2825,65 @@ class TestUkliduNeobchodovanych(ZakladTestu):
         await self.priprav_prehled()
         self.assertEqual(self.engine.remove_untraded(), 2)
         self.assertEqual(self.engine.remove_untraded(), 0)
+
+
+class TestUkliduSCekajicimi(ZakladPrehleduStavu):
+    """
+    Úklid, který kromě neobchodovaných odklidí i obchody čekající na nákup.
+
+    Dědí přípravu přehledu po úklidu neobchodovaných, aby obě varianty
+    pracovaly nad stejnou sadou stavů a rozdíl mezi nimi byl vidět.
+    """
+
+    async def test_odklidi_i_cekajici_a_zrusi_jejich_prikazy(self):
+        ids = await self.priprav_prehled()
+        cekajici = self.engine.flows[ids["cekajici"]]
+        prikaz = cekajici.entry_trade
+
+        zruseno, odstraneno = await self.engine.remove_untraded_and_pending()
+
+        # Čekající obchod se zrušil a jeho příkaz zmizel z trhu
+        self.assertEqual(zruseno, 1)
+        self.assertIn(prikaz, self.ib.cancelled)
+        self.assertNotIn(ids["cekajici"], self.engine.flows)
+
+        # Zrušený a propásnutý zmizely stejně jako při prostém úklidu
+        self.assertEqual(odstraneno, 3)
+        self.assertNotIn(ids["zruseny"], self.engine.flows)
+        self.assertNotIn(ids["propasnuty"], self.engine.flows)
+
+    async def test_pozice_uzavrene_i_chybove_zustavaji(self):
+        ids = await self.priprav_prehled()
+        await self.engine.remove_untraded_and_pending()
+
+        for klic in ("otevreny", "uzavreny", "chybovy"):
+            self.assertIn(ids[klic], self.engine.flows, klic)
+
+    async def test_obchod_blokovany_spreadem_se_take_odklidi(self):
+        # Blokace spreadem je stav před nákupem, takže do úklidu patří
+        flow = await self.zaloz_call(symbol="AAPL")
+        flow.set_state(FlowState.SPREAD_BLOCKED, "Spread nad limitem.")
+
+        zruseno, odstraneno = await self.engine.remove_untraded_and_pending()
+
+        self.assertEqual((zruseno, odstraneno), (1, 1))
+        self.assertEqual(self.engine.flows, {})
+
+    async def test_prave_vyplneny_obchod_uklid_neodklidi(self):
+        # Nákup vyplněný mezi průchody smyčky nesmí skončit jako uklizený
+        # obchod s pozicí bez zajištění
+        flow = await self.zaloz_call(symbol="AAPL", quantity=1)
+        self.ib.fill(flow.entry_trade, 1, 3.10)
+
+        zruseno, odstraneno = await self.engine.remove_untraded_and_pending()
+
+        self.assertEqual((zruseno, odstraneno), (0, 0))
+        self.assertIn(flow.id, self.engine.flows)
+        self.assertEqual(flow.fill_price, 3.10)
+
+    async def test_prazdny_uklid_nic_nezrusi(self):
+        zruseno, odstraneno = await self.engine.remove_untraded_and_pending()
+        self.assertEqual((zruseno, odstraneno), (0, 0))
 
 
 class TestPrepoctuPoOtevreni(ZakladTestu):
