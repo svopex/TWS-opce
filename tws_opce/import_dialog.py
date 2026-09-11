@@ -320,7 +320,7 @@ class ImportDialog:
                     "do trhu - tytéž dva kroky jako tlačítka Přepočítat "
                     "a Zadat vybrané pozice do trhu, včetně kontroly, zda "
                     "podklad od nastaveného času nepřekročil vstup (takový "
-                    "obchod skončí jako Vstup propásnut). Použitelné i pro pozice, "
+                    "řádek se označí Vstup propásnut a odškrtne). Použitelné i pro pozice, "
                     "které v trhu ještě vůbec nejsou. Režim ukončí opětovný "
                     "stisk, kterékoliv z obou tlačítek, zavření dialogu "
                     "i načtení jiného souboru. Zapnout jde jen dokud okamžik "
@@ -1218,8 +1218,8 @@ class ImportDialog:
         # Kontrola propásnutého vstupu podle minutových svíček
         # (import.entry_cross_check): podklad se sice může vrátit na správnou
         # stranu vstupu, takže živá cena nic neodhalí, přes úroveň ale už
-        # jednou prošel. Řádek zůstává zaškrtnutý i s čísly - zadání pak
-        # obchod založí rovnou jako propásnutý, aby byl vidět v přehledu.
+        # jednou prošel. Řádek dopadne stejně jako při vstupu překonaném
+        # podle živé ceny výše - dopočet se zahodí a řádek odškrtne.
         # Selhání dotazu přípravu nezneplatní, jen se připíše do stavu
         propasnuti: str | None = None
         varovani_svicek = ""
@@ -1232,10 +1232,9 @@ class ImportDialog:
             except Exception as exc:
                 varovani_svicek = f" Kontrola svíček se nezdařila: {exc}"
         if propasnuti is not None:
-            radek.stav(
-                f"Vstup propásnut - {propasnuti}. Zadání obchod ukončí jako propásnutý.",
-                "stav-import-chyba",
-            )
+            self._zahod_dopocet(radek)
+            radek.vybrano.set_value(False)
+            radek.stav(f"Vstup propásnut - {propasnuti}.", "stav-import-chyba")
             return
 
         # U PT odvozeného z prémie se uvede, z jaké ceny opce se počítalo
@@ -1771,7 +1770,7 @@ class ImportDialog:
 
         # Dialog zůstává otevřený jen kvůli chybám řádků - ty jsou vidět
         # pouze v jeho sloupci Stav a obchodník je má opravit. Obchod, který
-        # vznikl rovnou ukončený (propásnutý vstup podle svíček, rušicí
-        # okno), je v monitoringu i s důvodem, takže dialog nemá proč překážet
+        # vznikl rovnou ukončený (rušicí okno), je v monitoringu i s důvodem,
+        # takže dialog nemá proč překážet
         if not chyb:
             self.dialog.close()

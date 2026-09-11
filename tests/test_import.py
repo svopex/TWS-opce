@@ -772,8 +772,8 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
 class TestKontrolySvicekVDialogu(ZakladEnginu):
     """
     Přepočet řádku prochází minutové svíčky podkladu: překročil-li vstup,
-    řádek to ohlásí, zůstane ale zaškrtnutý i s čísly - zadání pak obchod
-    založí rovnou jako propásnutý, aby byl vidět v přehledu.
+    řádek dopadne stejně jako při vstupu překonaném podle živé ceny -
+    ohlásí to, zahodí dopočet a odškrtne se.
     """
 
     def setUp(self) -> None:
@@ -808,16 +808,16 @@ class TestKontrolySvicekVDialogu(ZakladEnginu):
         self.radek.stav_label = Popisek()
         self.radek.obnovit_button = Zaskrtavatko(True)
 
-    async def test_pruraz_oznaci_radek_a_necha_ho_zaskrtnuty(self):
+    async def test_pruraz_oznaci_radek_a_odskrtne_ho(self):
         self.ib.bars = [svicka(8, 12, 232.3, 231.0)]
         await self.dialog._priprav_radek(self.radek)
         self.assertIn("Vstup propásnut", self.radek.stav_label.text)
         self.assertIn("08:12", self.radek.stav_label.text)
-        # Řádek jde zadat - obchod pak skončí jako propásnutý v přehledu
-        self.assertTrue(self.radek.vybrano.value)
-        self.assertTrue(self.dialog._pripraveno(self.radek))
-        self.assertIsNotNone(self.radek.sl_input.value)
-        self.assertIsNotNone(self.radek.qty_input.value)
+        # Řádek do trhu nejde - odškrtnutý, bez dopočtu a bez platné přípravy
+        self.assertFalse(self.radek.vybrano.value)
+        self.assertFalse(self.dialog._pripraveno(self.radek))
+        self.assertIsNone(self.radek.sl_input.value)
+        self.assertIsNone(self.radek.qty_input.value)
 
     async def test_bez_prurazu_je_radek_pripraven(self):
         self.ib.bars = [svicka(8, 12, 231.5, 231.0)]

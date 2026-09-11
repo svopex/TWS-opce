@@ -286,8 +286,8 @@ class FlowRequest:
     intended_right: str | None = None
     # Od kdy se při zadání procházejí minutové svíčky podkladu, zda už
     # nepřekročil vstup (viz import.entry_cross_check). Dodává jen dialog
-    # načtení pozic ze souboru; překročil-li podklad vstup, obchod vznikne
-    # rovnou ve stavu MISSED, bez příkazu v trhu. None = nekontrolovat
+    # načtení pozic ze souboru; překročil-li podklad vstup, engine zadání
+    # odmítne jako propásnutý vstup. None = nekontrolovat
     entry_cross_since: datetime | None = None
 
 

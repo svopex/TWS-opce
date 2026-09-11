@@ -343,9 +343,9 @@ import:
   # pro dialog načtení pozic ze souboru - tlačítka Přepočítat, Zadat vybrané
   # pozice do trhu a Zadat po otevření trhu; formulář zadání obchodu ani
   # monitoring ji nepoužívají. Překročil-li podklad od času níže vstupní
-  # úroveň (u long high svíčky >= vstup, u short low <= vstup), řádek to
-  # ohlásí ve sloupci Stav a zadaný obchod skončí rovnou jako "Vstup
-  # propásnut" - bez příkazu v trhu, zato viditelný v přehledu i výsledcích.
+  # úroveň (u long high svíčky >= vstup, u short low <= vstup), řádek se
+  # ve sloupci Stav označí "Vstup propásnut" a odškrtne - stejně jako při
+  # vstupu překonaném podle živé ceny; do trhu ani do přehledu nejde.
   entry_cross_check: true
   # Od kdy (HH:MM v časové zóně burzy, trading.exchange_timezone) se svíčky
   # procházejí. Půlnoc pokrývá overnight seanci i pre-market až do okamžiku

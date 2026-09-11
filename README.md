@@ -927,11 +927,12 @@ minutové svíčky podkladu od času `import.entry_cross_check_from` (výchozí
 této chvíle a projde je: u long stačí, aby **high** některé svíčky dosáhlo
 vstupu, u short aby na něj kleslo **low** - rozhoduje knot, ne close, protože
 právě tak by zareagoval cenově podmíněný příkaz. Řádek, jehož vstup byl takto
-překročen, dostane ve sloupci *Stav* hlášku *Vstup propásnut - podklad
-překročil vstup 220.99 už v 08:12 čas burzy (svíčka high 221.35)*; zůstává
-zaškrtnutý i s dopočtem, takže se dá zadat - **zadání pak obchod založí
-rovnou ve stavu Vstup propásnut**, bez příkazu v trhu, zato viditelný
-v přehledu i ve výsledcích. Naplánované zadání se tak samo postará o to, aby
+překročen, dopadne stejně jako řádek s překonaným vstupem podle živé ceny:
+ve sloupci *Stav* dostane hlášku *Vstup propásnut - podklad překročil vstup
+220.99 už v 08:12 čas burzy (svíčka high 221.35)*, dopočet (*SL* a *Ks*) se
+zahodí a řádek se **odškrtne**, takže do trhu ani do monitoringu nejde.
+Kdyby se přesto zadal (ručním zaškrtnutím a vyplněním hodnot), engine zadání
+odmítne se stejným důvodem. Naplánované zadání se tak samo postará o to, aby
 se pozice s propásnutým vstupem po otevření neobchodovala, a přitom bylo
 vidět, která a proč. Kontrola se vypíná volbou `import.entry_cross_check`
 a platí **jen pro tento dialog**: formulář *Zadání obchodu* ani monitorovací
@@ -994,8 +995,8 @@ směru.
 Tlačítko **Zadat vybrané pozice do trhu** založí obchody postupně, každý stejným
 způsobem jako ruční zadání formulářem — včetně všech kontrol. Chyba jedné pozice
 ostatní nezastaví, zapíše se do jejího sloupce *Stav* a dialog kvůli ní zůstane
-otevřený; obchod, který vznikl rovnou ukončený (propásnutý vstup podle svíček,
-rušicí okno), dialog nezablokuje, protože je i s důvodem vidět v monitoringu. Po dobu zakládání je
+otevřený; obchod, který vznikl rovnou ukončený (rušicí okno), dialog
+nezablokuje, protože je i s důvodem vidět v monitoringu. Po dobu zakládání je
 tlačítko zakázané, takže druhý stisk nespustí souběžnou dávku a tytéž pozice
 neodejdou do trhu dvakrát; zadávat nelze ani během probíhajícího přepočtu. Bez
 spojení s TWS se pozice načtou a PT vyplní (je to čistý výpočet ze zadání) —

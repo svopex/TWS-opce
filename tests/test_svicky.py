@@ -80,30 +80,26 @@ class TestZadaniSeSvickami(ZakladEnginu):
         )
         return await self.engine.start_flow(FlowRequest(**{**hodnoty, **zmeny}))
 
-    async def test_pruraz_v_premarketu_ukonci_obchod_jako_propasnuty(self):
-        # V 8:12 čas burzy podklad vystoupal nad vstup a zase se vrátil
+    async def test_pruraz_v_premarketu_zadani_odmitne(self):
+        # V 8:12 čas burzy podklad vystoupal nad vstup a zase se vrátil -
+        # zadání se odmítne stejně jako při vstupu překonaném podle živé ceny
         self.ib.bars = [svicka(8, 11, 231.5, 230.0), svicka(8, 12, 232.3, 231.0), svicka(9, 40, 230.5, 229.8)]
-        flow = await self.zaloz()
-        self.assertEqual(flow.state, FlowState.MISSED)
-        self.assertIn("vstup propásnut", flow.message)
+        with self.assertRaises(ValueError) as ctx:
+            await self.zaloz()
         # Hláška nese čas svíčky v čase burzy a cenu, která vstup překročila
-        self.assertIn("08:12", flow.message)
-        self.assertIn("high 232.3", flow.message)
-        # Do trhu nešel žádný příkaz, obchod ale zůstal v přehledu
+        self.assertIn("propásnutý", str(ctx.exception))
+        self.assertIn("08:12", str(ctx.exception))
+        self.assertIn("high 232.3", str(ctx.exception))
+        # Do trhu nešel žádný příkaz a v přehledu žádný obchod nevznikl
         self.assertEqual(self.ib.placed, [])
-        self.assertIn(flow.id, self.engine.flows)
-        self.assertFalse(flow.state.is_active)
-        # Odběry ukončený obchod nedrží (uvolnění maže kontrakty)
-        self.assertIsNone(flow.underlying_contract)
-        self.assertIsNone(flow.option_contract)
+        self.assertEqual(self.engine.flows, {})
 
     async def test_short_pruraz_dolu(self):
         self.ib.greek_delta = -0.35
         self.ib.bars = [svicka(7, 30, 229.0, 227.5)]
-        flow = await self.zaloz(entry_price=228.0, profit_target=225.0)
-        self.assertEqual(flow.right, "P")
-        self.assertEqual(flow.state, FlowState.MISSED)
-        self.assertIn("low 227.5", flow.message)
+        with self.assertRaises(ValueError) as ctx:
+            await self.zaloz(entry_price=228.0, profit_target=225.0)
+        self.assertIn("low 227.5", str(ctx.exception))
 
     async def test_bez_prurazu_se_obchod_zada(self):
         self.ib.bars = [svicka(8, 12, 231.9, 230.0)]
@@ -135,18 +131,19 @@ class TestZadaniSeSvickami(ZakladEnginu):
         zpravy = " ".join(text for _, text in self.engine.events)
         self.assertIn("kontrola propásnutého vstupu podle svíček se nezdařila", zpravy)
 
-    async def test_propasnuty_nahrazuje_cekajici_obchod(self):
-        # Opakované zadání téhož řádku nahrazuje čekající obchod; když mezitím
-        # podklad vstup překročil, náhradou je obchod ukončený jako propásnutý
+    async def test_odmitnute_zadani_necha_cekajici_obchod(self):
+        # Opakované zadání téhož řádku nahrazuje čekající obchod až po všech
+        # kontrolách - odmítnuté zadání ho nechá v trhu beze změny
         puvodni = await self.zaloz()
         self.assertEqual(puvodni.state, FlowState.ARMED)
         self.ib.bars = [svicka(9, 40, 232.6, 231.0)]
         # Druhé zadání přichází později, než paměť svíček dovolí
         self.ib._bars_cache.clear()
-        novy = await self.zaloz()
-        self.assertEqual(novy.state, FlowState.MISSED)
-        self.assertNotIn(puvodni.id, self.engine.flows)
-        self.assertEqual(len(self.ib.cancelled), 1)
+        with self.assertRaises(ValueError):
+            await self.zaloz()
+        self.assertIn(puvodni.id, self.engine.flows)
+        self.assertEqual(puvodni.state, FlowState.ARMED)
+        self.assertEqual(self.ib.cancelled, [])
 
     def test_zacatek_kontroly_je_dnesni_cas_burzy(self):
         self.assertEqual(self.engine.entry_cross_start(), datetime(2026, 8, 19, 0, 0, tzinfo=BURZA))

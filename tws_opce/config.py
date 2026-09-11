@@ -185,9 +185,9 @@ class ImportConfig:
     # Kontrola propásnutého vstupu podle minutových svíček podkladu - jen
     # v dialogu načtení pozic ze souboru (Přepočítat, Zadat vybrané pozice,
     # Zadat po otevření trhu). Překročil-li podklad od času níže vstupní
-    # úroveň (stačí knot svíčky), řádek to ohlásí a zadaný obchod skončí
-    # rovnou jako "Vstup propásnut". Formulář zadání ani monitorovací
-    # smyčka tuto kontrolu nepoužívají
+    # úroveň (stačí knot svíčky), řádek se označí "Vstup propásnut"
+    # a odškrtne, stejně jako při překonaném vstupu podle živé ceny.
+    # Formulář zadání ani monitorovací smyčka tuto kontrolu nepoužívají
     entry_cross_check: bool = True
     # Od kdy (HH:MM v časové zóně burzy) se svíčky procházejí. Půlnoc
     # pokrývá overnight seanci i pre-market až do okamžiku zadání

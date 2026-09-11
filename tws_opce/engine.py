@@ -1357,11 +1357,10 @@ class FlowEngine:
 
             # Kontrola propásnutého vstupu podle minutových svíček - jen když
             # zadání přineslo okamžik, od kterého se procházejí (dialog načtení
-            # pozic ze souboru). Běží až po všech ostatních kontrolách, aby
-            # obchod ve stavu MISSED vznikl jen z jinak platného zadání.
+            # pozic ze souboru). Překročený vstup zadání odmítne stejně jako
+            # kontrola směru výše: obchod nevznikne a v přehledu se neobjeví.
             # Selhání dotazu do TWS zadání nezastaví - obchod dál hlídá živá
             # cena podkladu, jen se to zapíše do logu
-            propasnuti: str | None = None
             if request.entry_cross_since is not None:
                 try:
                     propasnuti = await self.entry_crossed(
@@ -1376,6 +1375,9 @@ class FlowEngine:
                         f"{symbol}: kontrola propásnutého vstupu podle svíček se "
                         f"nezdařila ({exc}) - obchod se zadává bez ní."
                     )
+                    propasnuti = None
+                if propasnuti is not None:
+                    raise ValueError(f"{propasnuti} - vstup je propásnutý a obchod nelze zadat.")
 
             # Čekající obchod stejného směru se nahrazuje až teď, kdy nové
             # zadání prošlo všemi kontrolami - kdyby dřív selhalo, původní
@@ -1455,17 +1457,8 @@ class FlowEngine:
                     f"závěrečné ceny; zkontrolujte dopočítané úrovně i množství."
                 )
 
-            # Podklad už vstup překročil - obchod končí rovnou jako propásnutý,
-            # bez příkazu v trhu. Zůstává v přehledu i ve výsledcích, aby
-            # bylo vidět, která pozice z dávky a proč se neobchodovala
-            if propasnuti is not None:
-                self._end_before_entry(
-                    flow,
-                    FlowState.MISSED,
-                    f"{propasnuti} - vstup propásnut, obchod ukončen bez zadání příkazu.",
-                )
             # Při příliš širokém spreadu se příkaz zatím nezadává
-            elif flow.option_spread_pct is not None and flow.option_spread_pct > max_spread:
+            if flow.option_spread_pct is not None and flow.option_spread_pct > max_spread:
                 flow.set_state(
                     FlowState.SPREAD_BLOCKED,
                     f"Spread {flow.option_spread_pct:.2f} % > limit {max_spread:g} %, "
