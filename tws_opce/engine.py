@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 from . import calc, store
 from .config import AppConfig
 from .ib_service import IBService, PositionInfo, order_ref, parse_order_ref, valid_price
-from .models import RIGHT_LABELS, Flow, FlowRequest, FlowState
+from .models import RIGHT_LABELS, EntryMissedError, Flow, FlowRequest, FlowState
 
 log = logging.getLogger(__name__)
 
@@ -1309,9 +1309,9 @@ class FlowEngine:
             elif zamer != preview.right:
                 if preview.current_price is not None:
                     smer = "nad" if zamer == "C" else "pod"
-                    raise ValueError(
+                    raise EntryMissedError(
                         f"Cena podkladu {preview.current_price:g} je již {smer} vstupem "
-                        f"{request.entry_price:g} - vstup je propásnutý a obchod nelze zadat."
+                        f"{request.entry_price:g}"
                     )
                 # Bez ceny podkladu vyšel typ opce z polohy zadaných úrovní.
                 # Odporuje-li směru ze zadání, jde o protichůdná čísla a tichý
@@ -1359,8 +1359,9 @@ class FlowEngine:
             # zadání přineslo okamžik, od kterého se procházejí (dialog načtení
             # pozic ze souboru). Překročený vstup zadání odmítne stejně jako
             # kontrola směru výše: obchod nevznikne a v přehledu se neobjeví.
-            # Selhání dotazu do TWS zadání nezastaví - obchod dál hlídá živá
-            # cena podkladu, jen se to zapíše do logu
+            # Jako jediná z kontrol se ptá TWS, proto se řadí až za ty levné.
+            # Selhání dotazu zadání nezastaví - obchod dál hlídá živá cena
+            # podkladu, jen se to zapíše do logu
             if request.entry_cross_since is not None:
                 try:
                     propasnuti = await self.entry_crossed(
@@ -1375,9 +1376,9 @@ class FlowEngine:
                         f"{symbol}: kontrola propásnutého vstupu podle svíček se "
                         f"nezdařila ({exc}) - obchod se zadává bez ní."
                     )
-                    propasnuti = None
-                if propasnuti is not None:
-                    raise ValueError(f"{propasnuti} - vstup je propásnutý a obchod nelze zadat.")
+                else:
+                    if propasnuti is not None:
+                        raise EntryMissedError(propasnuti)
 
             # Čekající obchod stejného směru se nahrazuje až teď, kdy nové
             # zadání prošlo všemi kontrolami - kdyby dřív selhalo, původní

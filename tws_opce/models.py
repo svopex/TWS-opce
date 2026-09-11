@@ -162,6 +162,19 @@ def level_text(
     return f"{cislo_text(cena)} ({castka})"
 
 
+class EntryMissedError(ValueError):
+    """
+    Zadání odmítnuté kvůli propásnutému vstupu - podklad už vstupní úroveň
+    překonal (podle živé ceny, nebo podle minutových svíček). Je to ValueError,
+    takže volající, kteří rozlišovat nepotřebují, ji obslouží jako každou jinou
+    chybu zadání; `reason` nese samotný důvod bez společného závěru věty.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"{reason} - vstup je propásnutý a obchod nelze zadat.")
+
+
 class FlowState(str, Enum):
     """Stavy životního cyklu jednoho obchodu."""
 

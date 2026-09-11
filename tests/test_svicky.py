@@ -18,7 +18,7 @@ from ib_async import BarData
 
 from tests.zaklad import BURZA, ZakladEnginu, svicka
 from tws_opce import calc
-from tws_opce.models import FlowRequest, FlowState
+from tws_opce.models import EntryMissedError, FlowRequest, FlowState
 
 
 class TestVypoctuPrurazu(unittest.TestCase):
@@ -80,16 +80,21 @@ class TestZadaniSeSvickami(ZakladEnginu):
         )
         return await self.engine.start_flow(FlowRequest(**{**hodnoty, **zmeny}))
 
+    async def zaloz_odmitnuto(self, **zmeny) -> str:
+        """Zadání, které má engine odmítnout jako propásnutý vstup; vrací hlášku."""
+        with self.assertRaises(EntryMissedError) as ctx:
+            await self.zaloz(**zmeny)
+        return str(ctx.exception)
+
     async def test_pruraz_v_premarketu_zadani_odmitne(self):
         # V 8:12 čas burzy podklad vystoupal nad vstup a zase se vrátil -
         # zadání se odmítne stejně jako při vstupu překonaném podle živé ceny
         self.ib.bars = [svicka(8, 11, 231.5, 230.0), svicka(8, 12, 232.3, 231.0), svicka(9, 40, 230.5, 229.8)]
-        with self.assertRaises(ValueError) as ctx:
-            await self.zaloz()
+        hlaska = await self.zaloz_odmitnuto()
         # Hláška nese čas svíčky v čase burzy a cenu, která vstup překročila
-        self.assertIn("propásnutý", str(ctx.exception))
-        self.assertIn("08:12", str(ctx.exception))
-        self.assertIn("high 232.3", str(ctx.exception))
+        self.assertIn("propásnutý", hlaska)
+        self.assertIn("08:12", hlaska)
+        self.assertIn("high 232.3", hlaska)
         # Do trhu nešel žádný příkaz a v přehledu žádný obchod nevznikl
         self.assertEqual(self.ib.placed, [])
         self.assertEqual(self.engine.flows, {})
@@ -97,9 +102,8 @@ class TestZadaniSeSvickami(ZakladEnginu):
     async def test_short_pruraz_dolu(self):
         self.ib.greek_delta = -0.35
         self.ib.bars = [svicka(7, 30, 229.0, 227.5)]
-        with self.assertRaises(ValueError) as ctx:
-            await self.zaloz(entry_price=228.0, profit_target=225.0)
-        self.assertIn("low 227.5", str(ctx.exception))
+        hlaska = await self.zaloz_odmitnuto(entry_price=228.0, profit_target=225.0)
+        self.assertIn("low 227.5", hlaska)
 
     async def test_bez_prurazu_se_obchod_zada(self):
         self.ib.bars = [svicka(8, 12, 231.9, 230.0)]
@@ -139,8 +143,7 @@ class TestZadaniSeSvickami(ZakladEnginu):
         self.ib.bars = [svicka(9, 40, 232.6, 231.0)]
         # Druhé zadání přichází později, než paměť svíček dovolí
         self.ib._bars_cache.clear()
-        with self.assertRaises(ValueError):
-            await self.zaloz()
+        await self.zaloz_odmitnuto()
         self.assertIn(puvodni.id, self.engine.flows)
         self.assertEqual(puvodni.state, FlowState.ARMED)
         self.assertEqual(self.ib.cancelled, [])

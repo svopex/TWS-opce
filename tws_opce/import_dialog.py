@@ -22,6 +22,7 @@ from .engine import FlowEngine, Preview
 from .ib_service import IBService
 from .importer import ImportedPosition
 from .models import (
+    EntryMissedError,
     MODE_PREMIUM,
     MODE_UNDERLYING,
     MODE_USD,
@@ -823,6 +824,17 @@ class ImportDialog:
         # by řádek zase označila za platný
         radek.rezim_hodnot = ""
 
+    def _zamitni_radek(self, radek: RadekPozice, text: str) -> None:
+        """
+        Řádek, který do trhu nesmí - propásnutý vstup podle živé ceny nebo
+        svíček, či rozporný směr: zahodí dopočet, odškrtne řádek a zapíše
+        chybový stav. Odškrtnutí je jediná pojistka, aby řádek neposlalo do
+        trhu ani znovuotevření dialogu; _zahod_dopocet sám zaškrtnutí nechává.
+        """
+        self._zahod_dopocet(radek)
+        radek.vybrano.set_value(False)
+        radek.stav(text, "stav-import-chyba")
+
     def _rezimy(self) -> tuple[bool, bool]:
         """
         Režim PT a SL podle volby dialogu: True = na podkladu.
@@ -1189,39 +1201,29 @@ class ImportDialog:
         # tak či tak se řádek odškrtne, aby se omylem nezaložil obchod na
         # opačnou stranu
         if preview.right != radek.pozice.right:
-            # Dopočet patří k opačnému kontraktu, než jaký by obchod koupil -
-            # zahodí se a řádek se odškrtne, aby ho ani znovuotevření dialogu
-            # nemohlo poslat do trhu
-            self._zahod_dopocet(radek)
-            radek.vybrano.set_value(False)
+            # Dopočet patří k opačnému kontraktu, než jaký by obchod koupil
             if preview.current_price is not None:
-                radek.stav(
+                self._zamitni_radek(
+                    radek,
                     f"Vstup propásnut - podklad je na {fmt(preview.current_price)}, "
                     f"z ceny vychází {preview.right_label} místo "
                     f"{radek.pozice.right_label}.",
-                    "stav-import-chyba",
                 )
             else:
-                radek.stav(
+                self._zamitni_radek(
+                    radek,
                     f"Cena podkladu není známa a ze zadaných úrovní vychází "
                     f"{preview.right_label} místo {radek.pozice.right_label} - "
                     f"zkontrolujte řádek v souboru.",
-                    "stav-import-chyba",
                 )
             return
-
-        # Čísla v řádku od téhle chvíle platí ve zvoleném režimu, takže se
-        # smí zadat do trhu. Nastavuje se výslovně: set_value obsluhu ruční
-        # změny nespustí, když se hodnota oproti minulé přípravě nezměnila
-        radek.rezim_hodnot = self.rezim.value
 
         # Kontrola propásnutého vstupu podle minutových svíček
         # (import.entry_cross_check): podklad se sice může vrátit na správnou
         # stranu vstupu, takže živá cena nic neodhalí, přes úroveň ale už
         # jednou prošel. Řádek dopadne stejně jako při vstupu překonaném
-        # podle živé ceny výše - dopočet se zahodí a řádek odškrtne.
-        # Selhání dotazu přípravu nezneplatní, jen se připíše do stavu
-        propasnuti: str | None = None
+        # podle živé ceny výše. Selhání dotazu přípravu nezneplatní, jen se
+        # připíše do stavu
         varovani_svicek = ""
         od_kdy = self.engine.entry_cross_start()
         if od_kdy is not None:
@@ -1231,11 +1233,15 @@ class ImportDialog:
                 )
             except Exception as exc:
                 varovani_svicek = f" Kontrola svíček se nezdařila: {exc}"
-        if propasnuti is not None:
-            self._zahod_dopocet(radek)
-            radek.vybrano.set_value(False)
-            radek.stav(f"Vstup propásnut - {propasnuti}.", "stav-import-chyba")
-            return
+            else:
+                if propasnuti is not None:
+                    self._zamitni_radek(radek, f"Vstup propásnut - {propasnuti}.")
+                    return
+
+        # Čísla v řádku od téhle chvíle platí ve zvoleném režimu, takže se
+        # smí zadat do trhu. Nastavuje se výslovně: set_value obsluhu ruční
+        # změny nespustí, když se hodnota oproti minulé přípravě nezměnila
+        radek.rezim_hodnot = self.rezim.value
 
         # U PT odvozeného z prémie se uvede, z jaké ceny opce se počítalo
         zaklad = (
@@ -1714,6 +1720,12 @@ class ImportDialog:
                 )
                 try:
                     flow = await self.engine.start_flow(request)
+                except EntryMissedError as exc:
+                    # Vstup překonaný mezi přípravou a zadáním dopadne stejně
+                    # jako při přípravě - řádek se odškrtne a dopočet zahodí
+                    self._zamitni_radek(radek, f"Vstup propásnut - {exc.reason}.")
+                    chyb += 1
+                    continue
                 except Exception as exc:
                     radek.stav(f"Chyba zadání: {exc}", "stav-import-chyba")
                     chyb += 1
@@ -1727,8 +1739,7 @@ class ImportDialog:
                 radek.vybrano.set_value(False)
 
                 # Obchod, který se do trhu nedostal, vzniká rovnou ukončený -
-                # odmítlo ho rušicí či uzavírací okno, nebo byl vstup už
-                # propásnutý. Do počtu založených ani v jednom případě nepatří
+                # odmítlo ho rušicí či uzavírací okno. Do počtu založených nepatří
                 if not flow.state.is_active:
                     odmitnuto += 1
                     self._zapis_stav_obchodu(radek)

@@ -28,6 +28,7 @@ from tws_opce.import_dialog import (
 from tws_opce.importer import ImportedPosition
 from tws_opce.models import (
     MODE_PREMIUM,
+    EntryMissedError,
     MODE_UNDERLYING,
     MODE_USD,
     Flow,
@@ -611,18 +612,33 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(zadani.sl_on_underlying)
 
     async def test_obchod_ukonceny_pri_zadani_dialog_nezablokuje(self):
-        # Obchod s propásnutým vstupem je i s důvodem v monitoringu,
+        # Obchod odmítnutý rušicím oknem je i s důvodem v monitoringu,
         # dialog proto po dávce zavře stejně jako po čistém zadání
         puvodni = self.engine.start_flow
 
         async def start_flow(request: FlowRequest) -> Flow:
             flow = await puvodni(request)
-            flow.set_state(FlowState.MISSED, "Vstup propásnut.")
+            flow.set_state(FlowState.CANCELLED, "Uvnitř rušicího okna.")
             return flow
 
         self.engine.start_flow = start_flow
         await self.zadej(self.radek())
         self.assertFalse(self.dialog.dialog.value)
+
+    async def test_propasnuty_vstup_pri_zadani_radek_odskrtne(self):
+        # Vstup překonaný mezi přípravou a zadáním: řádek dopadne stejně jako
+        # při přípravě - odškrtnutý, bez dopočtu, se stavem Vstup propásnut
+        async def start_flow(request: FlowRequest) -> Flow:
+            raise EntryMissedError("Podklad překročil vstup 266.4 už v 08:12 čas burzy")
+
+        self.engine.start_flow = start_flow
+        radek = self.radek()
+        await self.zadej(radek)
+        self.assertFalse(radek.vybrano.value)
+        self.assertIsNone(radek.sl_input.value)
+        self.assertTrue(radek.stav_label.text.startswith("Vstup propásnut - Podklad překročil"))
+        # Důvod je vidět jen ve sloupci Stav, dialog proto zůstává otevřený
+        self.assertTrue(self.dialog.dialog.value)
 
     async def test_chyba_radku_necha_dialog_otevreny(self):
         # Prázdné PT i SL je chyba řádku, kterou má obchodník v dialogu opravit
