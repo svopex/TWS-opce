@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime
-from typing import Any
 
 # Multiplikátor standardní akciové opce (1 kontrakt = 100 kusů podkladu)
 OPTION_MULTIPLIER = 100
@@ -359,27 +358,27 @@ def entry_still_valid(right: str, current_price: float, entry_price: float) -> b
     return current_price > entry_price
 
 
-def first_entry_cross(right: str, entry_price: float, bars: list) -> tuple[Any, float] | None:
+def entry_cross_side(right: str) -> str:
+    """Strana svíčky, která rozhoduje o průrazu vstupu: high u CALL, low u PUT."""
+    return "high" if right == "C" else "low"
+
+
+def first_entry_cross(right: str, entry_price: float, bars: list):
     """
-    Najde první svíčku, na které podklad překročil vstupní úroveň.
+    Najde první svíčku, na které podklad překročil vstupní úroveň, nebo None.
 
     U CALL (long) stačí, aby high svíčky dosáhlo vstupu, u PUT (short) aby
     na něj kleslo low - rozhoduje tedy knot, ne close, protože právě tak by
-    zareagoval cenově podmíněný nákupní příkaz v TWS. Svíčky jsou objekty
-    s poli date, high a low (BarData z ib_async), v časovém pořadí.
-
-    Vrací dvojici (svíčka, cena), kde cena je high, resp. low, které vstup
-    překročilo; None, když se vstupu žádná svíčka nedotkla. Svíčky bez
-    platné ceny (NaN, záporné) se přeskakují.
+    zareagoval cenově podmíněný nákupní příkaz v TWS. Průraz je přesně
+    negace entry_still_valid, takže obě kontroly sdílí jednu definici směru.
+    Svíčky jsou objekty s poli date, high a low (BarData z ib_async)
+    v časovém pořadí; svíčky bez platné ceny (NaN, záporné) se přeskakují.
     """
+    strana = entry_cross_side(right)
     for bar in bars:
-        cena = bar.high if right == "C" else bar.low
-        if cena is None or not math.isfinite(cena) or cena <= 0:
-            continue
-        if right == "C" and cena >= entry_price:
-            return bar, float(cena)
-        if right != "C" and cena <= entry_price:
-            return bar, float(cena)
+        cena = getattr(bar, strana)
+        if math.isfinite(cena) and cena > 0 and not entry_still_valid(right, cena, entry_price):
+            return bar
     return None
 
 

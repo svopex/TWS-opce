@@ -1223,12 +1223,14 @@ class ImportDialog:
         # Selhání dotazu přípravu nezneplatní, jen se připíše do stavu
         propasnuti: str | None = None
         varovani_svicek = ""
-        try:
-            propasnuti = await self.engine.entry_crossed(
-                preview.underlying, preview.right, radek.pozice.entry_price
-            )
-        except Exception as exc:
-            varovani_svicek = f" Kontrola svíček se nezdařila: {exc}"
+        od_kdy = self.engine.entry_cross_start()
+        if od_kdy is not None:
+            try:
+                propasnuti = await self.engine.entry_crossed(
+                    preview.underlying, preview.right, radek.pozice.entry_price, od_kdy
+                )
+            except Exception as exc:
+                varovani_svicek = f" Kontrola svíček se nezdařila: {exc}"
         if propasnuti is not None:
             radek.stav(
                 f"Vstup propásnut - {propasnuti}. Zadání obchod ukončí jako propásnutý.",
@@ -1643,6 +1645,9 @@ class ImportDialog:
         sl_spread = self._sl_spread()
         pomer = self._pomer()
         prepocet_sec = self._refresh_after_open_sec()
+        # Od kdy engine při zadání prochází svíčky podkladu, zda už
+        # nepřekročil vstup (import.entry_cross_check); None = nekontrolovat
+        svicky_od = self.engine.entry_cross_start()
         rezim_cile = self.rezim.value
         rezim_urovni = uroven_cile(rezim_cile)
 
@@ -1687,10 +1692,7 @@ class ImportDialog:
                     sl_to_pt_ratio=pomer,
                     # Přepočet po otevření burzy platí pro celou dávku
                     refresh_after_open_sec=prepocet_sec,
-                    # Kontrola propásnutého vstupu podle minutových svíček -
-                    # žádá si ji jen tento dialog, zda a od kdy se provede,
-                    # říká konfigurace (import.entry_cross_check)
-                    entry_cross_check=True,
+                    entry_cross_since=svicky_od,
                     # Jediná volba cíle určuje režim PT i SL a na příznaky
                     # zadání se rozbaluje jedním voláním, takže se úrovně
                     # nemohou rozejít. Procenta prémie se přenášejí jen
@@ -1753,27 +1755,23 @@ class ImportDialog:
         if self.on_created:
             self.on_created()
 
-        # Dialog zůstává otevřený jen kvůli chybám řádků - ty jsou vidět
-        # pouze v jeho sloupci Stav a obchodník je má opravit. Obchod, který
-        # vznikl rovnou ukončený (propásnutý vstup podle svíček, rušicí
-        # okno), je v monitoringu i s důvodem, takže dialog nemá proč překážet
+        duvody = []
         if chyb:
-            duvody = [f"{chyb} se nezdařilo"]
-            if odmitnuto:
-                duvody.append(f"{odmitnuto} nebylo zadáno do trhu")
+            duvody.append(f"{chyb} se nezdařilo")
+        if odmitnuto:
+            duvody.append(f"{odmitnuto} nebylo zadáno do trhu")
+        if duvody:
             ui.notify(
                 f"Založeno {zalozeno} obchodů, {' a '.join(duvody)} - "
                 f"podrobnosti jsou ve sloupci Stav.",
                 type="warning",
             )
-            return
-
-        if odmitnuto:
-            ui.notify(
-                f"Založeno {zalozeno} obchodů, {odmitnuto} nebylo zadáno do trhu - "
-                f"důvod je ve stavu obchodu v monitoringu.",
-                type="warning",
-            )
         else:
             ui.notify(f"Založeno {zalozeno} obchodů ze souboru.", type="positive")
-        self.dialog.close()
+
+        # Dialog zůstává otevřený jen kvůli chybám řádků - ty jsou vidět
+        # pouze v jeho sloupci Stav a obchodník je má opravit. Obchod, který
+        # vznikl rovnou ukončený (propásnutý vstup podle svíček, rušicí
+        # okno), je v monitoringu i s důvodem, takže dialog nemá proč překážet
+        if not chyb:
+            self.dialog.close()

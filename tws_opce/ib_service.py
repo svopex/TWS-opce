@@ -50,6 +50,10 @@ OCA_TYPE_REDUCE_WITH_BLOCK = 2
 RTT_TIMEOUT_SEC = 3.0
 
 
+# Jak dlouho se drží stažené minutové svíčky - viz IBService.minute_bars
+BARS_CACHE_SEC = 30.0
+
+
 def order_ref(flow_id: str, druh: str) -> str:
     """Sestaví značku příkazu, například 'TWSOPCE:AAPL-1:entry'."""
     return f"{ORDER_REF_PREFIX}:{flow_id}:{druh}"
@@ -111,6 +115,8 @@ class IBService:
         self._quotes_grace_done: set[int] = set()
         self._connect_lock = asyncio.Lock()
         self._chain_cache: dict[str, Any] = {}
+        # Stažené minutové svíčky podle (ticker, začátek): (čas stažení, svíčky)
+        self._bars_cache: dict[tuple[str, datetime], tuple[float, list[BarData]]] = {}
         # Ohlášení ztráty spojení. Nastavuje jej FlowEngine, aby si mohl zrušit
         # příznak spárování obchodů s příkazy v TWS ještě dřív, než výpadek
         # zpozoruje monitorovací smyčka.
@@ -412,10 +418,29 @@ class IBService:
         včetně obchodů mimo běžné obchodní hodiny - tedy overnight seance
         i pre-marketu. Slouží kontrole, zda podklad už překročil vstup.
 
-        Okamžik `since` musí mít časovou zónu. Délka dotazu se zadává
-        v sekundách, TWS ji pro minutové svíčky přijme nejvýš jeden den;
-        starší začátek se proto ořízne na 24 hodin. Svíčky před `since`
-        (TWS vrací celé minuty a dotaz se zaokrouhluje nahoru) se odfiltrují.
+        Okamžik `since` musí mít časovou zónu. Výsledek se pro dvojici
+        (ticker, začátek) krátce drží v paměti (BARS_CACHE_SEC): dávka
+        z dialogu se na tentýž podklad ptá několikrát za sebou a TWS shodné
+        historické dotazy do 15 s odmítá jako porušení pacingu. Prošlý
+        záznam se při dalším dotazu nahradí, paměť tak neroste.
+        """
+        klic = (contract.symbol, since)
+        ulozeno = self._bars_cache.get(klic)
+        if ulozeno is not None and time.monotonic() - ulozeno[0] < BARS_CACHE_SEC:
+            return ulozeno[1]
+        self._bars_cache.pop(klic, None)
+        bars = await self._request_minute_bars(contract, since)
+        self._bars_cache[klic] = (time.monotonic(), bars)
+        return bars
+
+    async def _request_minute_bars(self, contract: Contract, since: datetime) -> list[BarData]:
+        """
+        Vlastní dotaz do TWS na minutové svíčky od `since` do teď.
+
+        Délka dotazu se zadává v sekundách a TWS ji pro minutové svíčky
+        přijme nejvýš jeden den; starší začátek se proto ořízne na 24 hodin.
+        Svíčky před `since` (TWS vrací celé minuty a dotaz se zaokrouhluje
+        nahoru) se odfiltrují; časy svíček přicházejí s UTC zónou.
         """
         ted = datetime.now(since.tzinfo)
         sekund = int((ted - since).total_seconds())
@@ -431,19 +456,7 @@ class IBService:
             # 2 = časy svíček jako epocha, ib_async je vrací s UTC zónou
             formatDate=2,
         )
-        vysledek: list[BarData] = []
-        for bar in bars or []:
-            cas = bar.date
-            # Denní svíčky mají jen datum - u minutových nenastane, přesto
-            # se raději přeskočí, než aby se porovnávalo datum s časem
-            if not isinstance(cas, datetime):
-                continue
-            # Naivní čas by se nedal porovnat; bere se v zóně dotazu
-            if cas.tzinfo is None:
-                cas = cas.replace(tzinfo=since.tzinfo)
-            if cas >= since:
-                vysledek.append(bar)
-        return vysledek
+        return [bar for bar in bars or [] if bar.date >= since]
 
     def option_quotes(self, contract: Contract | None) -> tuple[float | None, float | None, float | None]:
         """Vrátí trojici (bid, ask, delta) opčního kontraktu z odebíraných dat."""

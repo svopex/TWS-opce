@@ -4,16 +4,13 @@ from __future__ import annotations
 
 import sys
 import unittest
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
-from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ib_async import BarData
-
 from tests.fake_ib import FakeIBService
+from tests.zaklad import ZakladEnginu, svicka
 from tws_opce import import_dialog, importer
 from tws_opce.config import AppConfig, validate_config
 from tws_opce.engine import FlowEngine
@@ -632,11 +629,15 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         await self.zadej(self.radek(pt=None, sl=None))
         self.assertTrue(self.dialog.dialog.value)
 
-    async def test_zadani_zada_kontrolu_svicek(self):
-        # Kontrolu propásnutého vstupu podle svíček žádá jen tento dialog;
-        # zda se provede, rozhodne engine podle konfigurace
+    async def test_zadani_nese_zacatek_kontroly_svicek(self):
+        # Okamžik, od kterého engine prochází svíčky, dodává jen tento dialog
+        # a bere ho z konfigurace; vypnutá kontrola nepošle nic
         await self.zadej(self.radek())
-        self.assertTrue(self.zadani[0].entry_cross_check)
+        self.assertEqual(self.zadani[0].entry_cross_since, self.engine.entry_cross_start())
+        self.assertIsNotNone(self.zadani[0].entry_cross_since)
+        self.dialog.cfg.import_.entry_cross_check = False
+        await self.zadej(self.radek())
+        self.assertIsNone(self.zadani[1].entry_cross_since)
 
     async def test_prepocet_po_otevreni_jde_do_zadani_z_konfigurace(self):
         # Bez vykreslených prvků platí konfigurace: zapnuto, 60 s
@@ -768,7 +769,7 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(radek.flow_id, "AMZN-1")
 
 
-class TestKontrolySvicekVDialogu(unittest.IsolatedAsyncioTestCase):
+class TestKontrolySvicekVDialogu(ZakladEnginu):
     """
     Přepočet řádku prochází minutové svíčky podkladu: překročil-li vstup,
     řádek to ohlásí, zůstane ale zaškrtnutý i s čísly - zadání pak obchod
@@ -776,19 +777,11 @@ class TestKontrolySvicekVDialogu(unittest.IsolatedAsyncioTestCase):
     """
 
     def setUp(self) -> None:
-        cfg = AppConfig()
-        cfg.state.enabled = False
-        cfg.account.size = 6000.0
-        cfg.trading.auto_close_enabled = False
-        cfg.trading.pending_cancel_enabled = False
-        self.ib = FakeIBService(cfg)
-        self.engine = FlowEngine(cfg, self.ib)
+        super().setUp()
         # Středa 19. 8. 2026, 9:45 čas burzy; podklad na 230, vstup 232 = long
-        self.engine._exchange_now = lambda: datetime(
-            2026, 8, 19, 9, 45, tzinfo=ZoneInfo("America/New_York")
-        )
+        self.podvrhni_cas_burzy(9, 45)
         self.ib.price_underlying = 230.0
-        self.dialog = ImportDialog(cfg, self.engine, self.ib, None)
+        self.dialog = ImportDialog(self.cfg, self.engine, self.ib, None)
 
         # Prvky dialogu, na které příprava sahá; rozhraní se nevykresluje
         self.dialog.rezim = Prepinac(REZIM_USD)
@@ -815,13 +808,8 @@ class TestKontrolySvicekVDialogu(unittest.IsolatedAsyncioTestCase):
         self.radek.stav_label = Popisek()
         self.radek.obnovit_button = Zaskrtavatko(True)
 
-    def svicka(self, hodina: int, minuta: int, high: float, low: float):
-        """Minutová svíčka z 19. 8. 2026 v čase burzy, jak ji vrací TWS (UTC)."""
-        cas = datetime(2026, 8, 19, hodina, minuta, tzinfo=ZoneInfo("America/New_York"))
-        return BarData(date=cas.astimezone(timezone.utc), open=low, high=high, low=low, close=high)
-
     async def test_pruraz_oznaci_radek_a_necha_ho_zaskrtnuty(self):
-        self.ib.bars = [self.svicka(8, 12, 232.3, 231.0)]
+        self.ib.bars = [svicka(8, 12, 232.3, 231.0)]
         await self.dialog._priprav_radek(self.radek)
         self.assertIn("Vstup propásnut", self.radek.stav_label.text)
         self.assertIn("08:12", self.radek.stav_label.text)
@@ -832,7 +820,7 @@ class TestKontrolySvicekVDialogu(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(self.radek.qty_input.value)
 
     async def test_bez_prurazu_je_radek_pripraven(self):
-        self.ib.bars = [self.svicka(8, 12, 231.5, 231.0)]
+        self.ib.bars = [svicka(8, 12, 231.5, 231.0)]
         await self.dialog._priprav_radek(self.radek)
         self.assertTrue(self.radek.stav_label.text.startswith("Připraveno"))
         self.assertNotIn("svíček", self.radek.stav_label.text)
@@ -844,13 +832,6 @@ class TestKontrolySvicekVDialogu(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.radek.stav_label.text.startswith("Připraveno"))
         self.assertIn("Kontrola svíček se nezdařila", self.radek.stav_label.text)
         self.assertTrue(self.dialog._pripraveno(self.radek))
-
-    async def test_vypnuta_kontrola_se_na_svicky_nepta(self):
-        self.dialog.cfg.import_.entry_cross_check = False
-        self.ib.bars = [self.svicka(8, 12, 232.3, 231.0)]
-        await self.dialog._priprav_radek(self.radek)
-        self.assertTrue(self.radek.stav_label.text.startswith("Připraveno"))
-        self.assertEqual(self.ib.bars_requests, 0)
 
 
 class TestMinimumProRunner(unittest.TestCase):

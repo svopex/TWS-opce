@@ -382,19 +382,20 @@ def validate_config(cfg: AppConfig) -> None:
             f"trading.exchange_timezone '{cfg.trading.exchange_timezone}' není platná časová zóna"
         )
 
-    # Časy otevření a zavření burzy i času zrušení čekajících obchodů
-    # musí mít tvar HH:MM
+    # Časy otevření a zavření burzy, času zrušení čekajících obchodů
+    # i začátku kontroly svíček musí mít tvar HH:MM
     for nazev, hodnota in (
-        ("exchange_open_time", cfg.trading.exchange_open_time),
-        ("exchange_close_time", cfg.trading.exchange_close_time),
-        ("pending_cancel_time", cfg.trading.pending_cancel_time),
+        ("trading.exchange_open_time", cfg.trading.exchange_open_time),
+        ("trading.exchange_close_time", cfg.trading.exchange_close_time),
+        ("trading.pending_cancel_time", cfg.trading.pending_cancel_time),
+        ("import.entry_cross_check_from", cfg.import_.entry_cross_check_from),
     ):
         try:
             hodina, minuta = (int(cast) for cast in hodnota.split(":"))
             if not (0 <= hodina <= 23 and 0 <= minuta <= 59):
                 raise ValueError
         except (ValueError, AttributeError):
-            problems.append(f"trading.{nazev} '{hodnota}' musí mít tvar HH:MM")
+            problems.append(f"{nazev} '{hodnota}' musí mít tvar HH:MM")
     if cfg.trading.exit_order_type not in EXIT_ORDER_TYPES:
         problems.append(
             f"trading.exit_order_type musí být jedna z {EXIT_ORDER_TYPES}, "
@@ -431,16 +432,6 @@ def validate_config(cfg: AppConfig) -> None:
     # Nula je platná (přepočet hned po otevření), záporná prodleva nedává smysl
     if cfg.import_.refresh_after_open_sec < 0:
         problems.append("import.refresh_after_open_sec nesmí být záporné")
-    # Začátek kontroly svíček musí mít tvar HH:MM stejně jako časy burzy
-    try:
-        hodina, minuta = (int(cast) for cast in cfg.import_.entry_cross_check_from.split(":"))
-        if not (0 <= hodina <= 23 and 0 <= minuta <= 59):
-            raise ValueError
-    except (ValueError, AttributeError):
-        problems.append(
-            f"import.entry_cross_check_from '{cfg.import_.entry_cross_check_from}' "
-            f"musí mít tvar HH:MM"
-        )
     if cfg.expiration.mode not in EXPIRATION_MODES:
         problems.append(
             f"expiration.mode musí být jedna z {EXPIRATION_MODES}, nalezeno '{cfg.expiration.mode}'"

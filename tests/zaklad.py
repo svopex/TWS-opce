@@ -10,15 +10,30 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from ib_async import BarData
+
 from tests.fake_ib import FakeIBService
 from tws_opce.config import AppConfig
 from tws_opce.engine import FlowEngine
+
+# Časová zóna burzy, se kterou testy podvrhují čas
+BURZA = ZoneInfo("America/New_York")
+
+
+def svicka(hodina: int, minuta: int, high: float, low: float, den: int = 19) -> BarData:
+    """
+    Minutová svíčka podkladu ze srpna 2026 (výchozí den 19. 8.) v čase burzy.
+    TWS ji posílá s časem v UTC (formatDate=2), proto se převádí - engine si
+    ji má pro hlášku přepočítat zpět na čas burzy.
+    """
+    cas = datetime(2026, 8, den, hodina, minuta, tzinfo=BURZA).astimezone(timezone.utc)
+    return BarData(date=cas, open=low, high=high, low=low, close=high)
 
 
 def vychozi_config() -> AppConfig:

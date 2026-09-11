@@ -120,8 +120,8 @@ class FakeIBService(IBService):
             strikes=self._strikes(),
         )
 
-    async def minute_bars(self, contract: Contract, since: datetime) -> list[BarData]:
-        """Svíčky nastavené testem; od zadaného okamžiku, jako ostrá služba."""
+    async def _request_minute_bars(self, contract: Contract, since: datetime) -> list[BarData]:
+        """Svíčky nastavené testem místo dotazu do TWS; filtr od `since` jako naostro."""
         self.bars_requests += 1
         if self.bars_error is not None:
             raise self.bars_error

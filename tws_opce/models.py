@@ -284,12 +284,11 @@ class FlowRequest:
     # poloha ceny podkladu: short zadaný pod aktuální cenou by se založil
     # jako CALL. None znamená "neuvedeno" - směr určí engine sám
     intended_right: str | None = None
-    # Kontrola propásnutého vstupu podle minutových svíček podkladu při
-    # zadání. Žádá si ji jen dialog načtení pozic ze souboru; zda a od kdy
-    # se svíčky procházejí, určuje konfigurace (import.entry_cross_check).
-    # Překročil-li podklad vstup, obchod vznikne rovnou ve stavu MISSED,
-    # bez příkazu v trhu. Formulář zadání ji nezapíná
-    entry_cross_check: bool = False
+    # Od kdy se při zadání procházejí minutové svíčky podkladu, zda už
+    # nepřekročil vstup (viz import.entry_cross_check). Dodává jen dialog
+    # načtení pozic ze souboru; překročil-li podklad vstup, obchod vznikne
+    # rovnou ve stavu MISSED, bez příkazu v trhu. None = nekontrolovat
+    entry_cross_since: datetime | None = None
 
 
 @dataclass
