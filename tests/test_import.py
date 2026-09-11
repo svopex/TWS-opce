@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from ib_async import BarData
 
 from tests.fake_ib import FakeIBService
 from tws_opce import import_dialog, importer
@@ -609,6 +613,31 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(zadani.pt_on_underlying)
         self.assertFalse(zadani.sl_on_underlying)
 
+    async def test_obchod_ukonceny_pri_zadani_dialog_nezablokuje(self):
+        # Obchod s propásnutým vstupem je i s důvodem v monitoringu,
+        # dialog proto po dávce zavře stejně jako po čistém zadání
+        puvodni = self.engine.start_flow
+
+        async def start_flow(request: FlowRequest) -> Flow:
+            flow = await puvodni(request)
+            flow.set_state(FlowState.MISSED, "Vstup propásnut.")
+            return flow
+
+        self.engine.start_flow = start_flow
+        await self.zadej(self.radek())
+        self.assertFalse(self.dialog.dialog.value)
+
+    async def test_chyba_radku_necha_dialog_otevreny(self):
+        # Prázdné PT i SL je chyba řádku, kterou má obchodník v dialogu opravit
+        await self.zadej(self.radek(pt=None, sl=None))
+        self.assertTrue(self.dialog.dialog.value)
+
+    async def test_zadani_zada_kontrolu_svicek(self):
+        # Kontrolu propásnutého vstupu podle svíček žádá jen tento dialog;
+        # zda se provede, rozhodne engine podle konfigurace
+        await self.zadej(self.radek())
+        self.assertTrue(self.zadani[0].entry_cross_check)
+
     async def test_prepocet_po_otevreni_jde_do_zadani_z_konfigurace(self):
         # Bez vykreslených prvků platí konfigurace: zapnuto, 60 s
         await self.zadej(self.radek())
@@ -737,6 +766,91 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         await self.zadej(radek)
         self.assertFalse(radek.vybrano.value)
         self.assertEqual(radek.flow_id, "AMZN-1")
+
+
+class TestKontrolySvicekVDialogu(unittest.IsolatedAsyncioTestCase):
+    """
+    Přepočet řádku prochází minutové svíčky podkladu: překročil-li vstup,
+    řádek to ohlásí, zůstane ale zaškrtnutý i s čísly - zadání pak obchod
+    založí rovnou jako propásnutý, aby byl vidět v přehledu.
+    """
+
+    def setUp(self) -> None:
+        cfg = AppConfig()
+        cfg.state.enabled = False
+        cfg.account.size = 6000.0
+        cfg.trading.auto_close_enabled = False
+        cfg.trading.pending_cancel_enabled = False
+        self.ib = FakeIBService(cfg)
+        self.engine = FlowEngine(cfg, self.ib)
+        # Středa 19. 8. 2026, 9:45 čas burzy; podklad na 230, vstup 232 = long
+        self.engine._exchange_now = lambda: datetime(
+            2026, 8, 19, 9, 45, tzinfo=ZoneInfo("America/New_York")
+        )
+        self.ib.price_underlying = 230.0
+        self.dialog = ImportDialog(cfg, self.engine, self.ib, None)
+
+        # Prvky dialogu, na které příprava sahá; rozhraní se nevykresluje
+        self.dialog.rezim = Prepinac(REZIM_USD)
+        # Slovník polí cíle se sestavuje naráz, proto musí existovat všechna
+        self.dialog.pct_input = Pole(None)
+        self.dialog.usd_input = Pole(30.0)
+        self.dialog.premium_input = Pole(None)
+        self.dialog.spread_input = Pole(5.0)
+        self.dialog.rrr_input = Pole(1.0)
+        self.dialog.sl_spread_compensated = Zaskrtavatko(False)
+        self.dialog.loading_label = Popisek()
+
+        self.radek = RadekPozice(
+            pozice=ImportedPosition(
+                key="AMZN Long+", symbol="AMZN", entry_price=232.0, target_price=235.0
+            )
+        )
+        self.radek.vybrano = Zaskrtavatko(True)
+        self.radek.kontrakt_label = Popisek()
+        self.radek.pt_input = Pole(None)
+        self.radek.sl_input = Pole(None)
+        self.radek.qty_input = Pole(None)
+        self.radek.runner_select = Pole(RUNNER_VYPNUTO)
+        self.radek.stav_label = Popisek()
+        self.radek.obnovit_button = Zaskrtavatko(True)
+
+    def svicka(self, hodina: int, minuta: int, high: float, low: float):
+        """Minutová svíčka z 19. 8. 2026 v čase burzy, jak ji vrací TWS (UTC)."""
+        cas = datetime(2026, 8, 19, hodina, minuta, tzinfo=ZoneInfo("America/New_York"))
+        return BarData(date=cas.astimezone(timezone.utc), open=low, high=high, low=low, close=high)
+
+    async def test_pruraz_oznaci_radek_a_necha_ho_zaskrtnuty(self):
+        self.ib.bars = [self.svicka(8, 12, 232.3, 231.0)]
+        await self.dialog._priprav_radek(self.radek)
+        self.assertIn("Vstup propásnut", self.radek.stav_label.text)
+        self.assertIn("08:12", self.radek.stav_label.text)
+        # Řádek jde zadat - obchod pak skončí jako propásnutý v přehledu
+        self.assertTrue(self.radek.vybrano.value)
+        self.assertTrue(self.dialog._pripraveno(self.radek))
+        self.assertIsNotNone(self.radek.sl_input.value)
+        self.assertIsNotNone(self.radek.qty_input.value)
+
+    async def test_bez_prurazu_je_radek_pripraven(self):
+        self.ib.bars = [self.svicka(8, 12, 231.5, 231.0)]
+        await self.dialog._priprav_radek(self.radek)
+        self.assertTrue(self.radek.stav_label.text.startswith("Připraveno"))
+        self.assertNotIn("svíček", self.radek.stav_label.text)
+
+    async def test_chyba_dotazu_je_jen_vyhradou(self):
+        # Bez historických dat příprava platí dál, jen to stojí ve stavu
+        self.ib.bars_error = RuntimeError("HMDS query returned no data")
+        await self.dialog._priprav_radek(self.radek)
+        self.assertTrue(self.radek.stav_label.text.startswith("Připraveno"))
+        self.assertIn("Kontrola svíček se nezdařila", self.radek.stav_label.text)
+        self.assertTrue(self.dialog._pripraveno(self.radek))
+
+    async def test_vypnuta_kontrola_se_na_svicky_nepta(self):
+        self.dialog.cfg.import_.entry_cross_check = False
+        self.ib.bars = [self.svicka(8, 12, 232.3, 231.0)]
+        await self.dialog._priprav_radek(self.radek)
+        self.assertTrue(self.radek.stav_label.text.startswith("Připraveno"))
+        self.assertEqual(self.ib.bars_requests, 0)
 
 
 class TestMinimumProRunner(unittest.TestCase):
@@ -963,6 +1077,17 @@ class TestKonfiguraceImportu(unittest.TestCase):
     def test_nulovy_nasobek_runneru_projde(self):
         # Nula je platná volba "runner nepoužít"
         self.cfg.import_.runner_multiple = 0
+        validate_config(self.cfg)
+
+    def test_vadny_cas_kontroly_svicek_neprojde(self):
+        for hodnota in ("9:75", "půlnoc", "24:00"):
+            self.cfg.import_.entry_cross_check_from = hodnota
+            with self.assertRaises(ValueError) as chyba:
+                validate_config(self.cfg)
+            self.assertIn("import.entry_cross_check_from", str(chyba.exception))
+
+    def test_platny_cas_kontroly_svicek_projde(self):
+        self.cfg.import_.entry_cross_check_from = "4:00"
         validate_config(self.cfg)
 
     def test_zaporne_pt_neprojde(self):

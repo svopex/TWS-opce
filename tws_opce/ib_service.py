@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from ib_async import (
     IB,
+    BarData,
     Contract,
     ContractDetails,
     Fill,
@@ -404,6 +405,45 @@ class IBService:
             if price is not None:
                 return price
         return None
+
+    async def minute_bars(self, contract: Contract, since: datetime) -> list[BarData]:
+        """
+        Minutové svíčky (TRADES) kontraktu od zadaného okamžiku do teď,
+        včetně obchodů mimo běžné obchodní hodiny - tedy overnight seance
+        i pre-marketu. Slouží kontrole, zda podklad už překročil vstup.
+
+        Okamžik `since` musí mít časovou zónu. Délka dotazu se zadává
+        v sekundách, TWS ji pro minutové svíčky přijme nejvýš jeden den;
+        starší začátek se proto ořízne na 24 hodin. Svíčky před `since`
+        (TWS vrací celé minuty a dotaz se zaokrouhluje nahoru) se odfiltrují.
+        """
+        ted = datetime.now(since.tzinfo)
+        sekund = int((ted - since).total_seconds())
+        # Aspoň jedna minuta, nejvýš den - jinak TWS dotaz odmítne
+        sekund = max(60, min(sekund + 60, 86400))
+        bars = await self.ib.reqHistoricalDataAsync(
+            contract,
+            endDateTime="",
+            durationStr=f"{sekund} S",
+            barSizeSetting="1 min",
+            whatToShow="TRADES",
+            useRTH=False,
+            # 2 = časy svíček jako epocha, ib_async je vrací s UTC zónou
+            formatDate=2,
+        )
+        vysledek: list[BarData] = []
+        for bar in bars or []:
+            cas = bar.date
+            # Denní svíčky mají jen datum - u minutových nenastane, přesto
+            # se raději přeskočí, než aby se porovnávalo datum s časem
+            if not isinstance(cas, datetime):
+                continue
+            # Naivní čas by se nedal porovnat; bere se v zóně dotazu
+            if cas.tzinfo is None:
+                cas = cas.replace(tzinfo=since.tzinfo)
+            if cas >= since:
+                vysledek.append(bar)
+        return vysledek
 
     def option_quotes(self, contract: Contract | None) -> tuple[float | None, float | None, float | None]:
         """Vrátí trojici (bid, ask, delta) opčního kontraktu z odebíraných dat."""

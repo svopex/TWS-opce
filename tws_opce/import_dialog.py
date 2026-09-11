@@ -318,7 +318,9 @@ class ImportDialog:
                     "prodlevy vpravo nahoře se samo provede přepočet všech "
                     "nezadaných řádků a hned po něm zadání vybraných pozic "
                     "do trhu - tytéž dva kroky jako tlačítka Přepočítat "
-                    "a Zadat vybrané pozice do trhu. Použitelné i pro pozice, "
+                    "a Zadat vybrané pozice do trhu, včetně kontroly, zda "
+                    "podklad od nastaveného času nepřekročil vstup (takový "
+                    "obchod skončí jako Vstup propásnut). Použitelné i pro pozice, "
                     "které v trhu ještě vůbec nejsou. Režim ukončí opětovný "
                     "stisk, kterékoliv z obou tlačítek, zavření dialogu "
                     "i načtení jiného souboru. Zapnout jde jen dokud okamžik "
@@ -1213,13 +1215,36 @@ class ImportDialog:
         # změny nespustí, když se hodnota oproti minulé přípravě nezměnila
         radek.rezim_hodnot = self.rezim.value
 
+        # Kontrola propásnutého vstupu podle minutových svíček
+        # (import.entry_cross_check): podklad se sice může vrátit na správnou
+        # stranu vstupu, takže živá cena nic neodhalí, přes úroveň ale už
+        # jednou prošel. Řádek zůstává zaškrtnutý i s čísly - zadání pak
+        # obchod založí rovnou jako propásnutý, aby byl vidět v přehledu.
+        # Selhání dotazu přípravu nezneplatní, jen se připíše do stavu
+        propasnuti: str | None = None
+        varovani_svicek = ""
+        try:
+            propasnuti = await self.engine.entry_crossed(
+                preview.underlying, preview.right, radek.pozice.entry_price
+            )
+        except Exception as exc:
+            varovani_svicek = f" Kontrola svíček se nezdařila: {exc}"
+        if propasnuti is not None:
+            radek.stav(
+                f"Vstup propásnut - {propasnuti}. Zadání obchod ukončí jako propásnutý.",
+                "stav-import-chyba",
+            )
+            return
+
         # U PT odvozeného z prémie se uvede, z jaké ceny opce se počítalo
         zaklad = (
             f" · prémie ≈ {fmt(radek.premie * 100)} USD" if radek.premie else ""
         )
-        if preview.warnings:
+        if preview.warnings or varovani_svicek:
             radek.stav(
-                f"Připraveno{zaklad} s výhradami: " + " ".join(preview.warnings),
+                f"Připraveno{zaklad} s výhradami: "
+                + " ".join(preview.warnings)
+                + varovani_svicek,
                 "stav-import-varovani",
             )
         else:
@@ -1662,6 +1687,10 @@ class ImportDialog:
                     sl_to_pt_ratio=pomer,
                     # Přepočet po otevření burzy platí pro celou dávku
                     refresh_after_open_sec=prepocet_sec,
+                    # Kontrola propásnutého vstupu podle minutových svíček -
+                    # žádá si ji jen tento dialog, zda a od kdy se provede,
+                    # říká konfigurace (import.entry_cross_check)
+                    entry_cross_check=True,
                     # Jediná volba cíle určuje režim PT i SL a na příznaky
                     # zadání se rozbaluje jedním voláním, takže se úrovně
                     # nemohou rozejít. Procenta prémie se přenášejí jen
@@ -1724,12 +1753,14 @@ class ImportDialog:
         if self.on_created:
             self.on_created()
 
-        duvody = []
+        # Dialog zůstává otevřený jen kvůli chybám řádků - ty jsou vidět
+        # pouze v jeho sloupci Stav a obchodník je má opravit. Obchod, který
+        # vznikl rovnou ukončený (propásnutý vstup podle svíček, rušicí
+        # okno), je v monitoringu i s důvodem, takže dialog nemá proč překážet
         if chyb:
-            duvody.append(f"{chyb} se nezdařilo")
-        if odmitnuto:
-            duvody.append(f"{odmitnuto} nebylo zadáno do trhu")
-        if duvody:
+            duvody = [f"{chyb} se nezdařilo"]
+            if odmitnuto:
+                duvody.append(f"{odmitnuto} nebylo zadáno do trhu")
             ui.notify(
                 f"Založeno {zalozeno} obchodů, {' a '.join(duvody)} - "
                 f"podrobnosti jsou ve sloupci Stav.",
@@ -1737,5 +1768,12 @@ class ImportDialog:
             )
             return
 
-        ui.notify(f"Založeno {zalozeno} obchodů ze souboru.", type="positive")
+        if odmitnuto:
+            ui.notify(
+                f"Založeno {zalozeno} obchodů, {odmitnuto} nebylo zadáno do trhu - "
+                f"důvod je ve stavu obchodu v monitoringu.",
+                type="warning",
+            )
+        else:
+            ui.notify(f"Založeno {zalozeno} obchodů ze souboru.", type="positive")
         self.dialog.close()

@@ -339,6 +339,19 @@ import:
   # jsou kotace opcí nejširší; dokud je spread nad limitem, přepočet počká.
   refresh_after_open_sec: 30
 
+  # Kontrola propásnutého vstupu podle minutových svíček podkladu. Platí jen
+  # pro dialog načtení pozic ze souboru - tlačítka Přepočítat, Zadat vybrané
+  # pozice do trhu a Zadat po otevření trhu; formulář zadání obchodu ani
+  # monitoring ji nepoužívají. Překročil-li podklad od času níže vstupní
+  # úroveň (u long high svíčky >= vstup, u short low <= vstup), řádek to
+  # ohlásí ve sloupci Stav a zadaný obchod skončí rovnou jako "Vstup
+  # propásnut" - bez příkazu v trhu, zato viditelný v přehledu i výsledcích.
+  entry_cross_check: true
+  # Od kdy (HH:MM v časové zóně burzy, trading.exchange_timezone) se svíčky
+  # procházejí. Půlnoc pokrývá overnight seanci i pre-market až do okamžiku
+  # zadání; 09:30 by hlídalo jen dobu od otevření burzy.
+  entry_cross_check_from: "00:00"
+
 
 # -----------------------------------------------------------------------------
 # VÝBĚR EXPIRACE OPCE

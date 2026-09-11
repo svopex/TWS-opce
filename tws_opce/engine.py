@@ -46,6 +46,12 @@ MAX_STRIKE_ATTEMPTS = 8
 MARKET_SELL_RETRY_SEC = 30.0
 MARKET_SELL_MAX_ATTEMPTS = 5
 
+# Jak dlouho se drží stažené minutové svíčky podkladu pro kontrolu
+# propásnutého vstupu. Dávka z dialogu se na tentýž ticker ptá několikrát
+# za sebou (příprava i zadání, long i short řádek) a TWS shodné historické
+# dotazy do 15 s odmítá jako porušení pacingu
+ENTRY_CROSS_BARS_CACHE_SEC = 30.0
+
 
 @dataclass
 class _ReferenceOption:
@@ -144,6 +150,8 @@ class FlowEngine:
         self._preview: Preview | None = None
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        # Stažené minutové svíčky podle tickeru: (začátek, čas stažení, svíčky)
+        self._bars_cache: dict[str, tuple[datetime, float, list]] = {}
         # Obnova a monitorovací smyčka nesmí běžet současně - obnova čeká
         # na odpovědi z TWS a smyčka by mezitím pracovala s neplatnými příkazy
         self._restore_lock = asyncio.Lock()
@@ -1355,6 +1363,25 @@ class FlowEngine:
                 else self.cfg.trading.max_spread_pct
             )
 
+            # Kontrola propásnutého vstupu podle minutových svíček - jen na
+            # přání zadavatele (dialog načtení pozic ze souboru) a podle
+            # konfigurace. Běží až po všech ostatních kontrolách, aby obchod
+            # ve stavu MISSED vznikl jen z jinak platného zadání. Selhání
+            # dotazu do TWS zadání nezastaví - obchod dál hlídá živá cena
+            # podkladu, jen se to zapíše do logu
+            propasnuti: str | None = None
+            if request.entry_cross_check:
+                try:
+                    propasnuti = await self.entry_crossed(
+                        preview.underlying, preview.right, request.entry_price
+                    )
+                except Exception as exc:
+                    log.warning("Kontrola svíček %s selhala: %s", symbol, exc)
+                    self.log_event(
+                        f"{symbol}: kontrola propásnutého vstupu podle svíček se "
+                        f"nezdařila ({exc}) - obchod se zadává bez ní."
+                    )
+
             # Čekající obchod stejného směru se nahrazuje až teď, kdy nové
             # zadání prošlo všemi kontrolami - kdyby dřív selhalo, původní
             # obchod by byl zrušený a žádný nový by nevznikl
@@ -1432,6 +1459,19 @@ class FlowEngine:
                     f"{flow.id}: POZOR - opce nemá aktuální kotace, model počítal ze "
                     f"závěrečné ceny; zkontrolujte dopočítané úrovně i množství."
                 )
+
+            # Podklad už vstup překročil - obchod končí rovnou jako propásnutý,
+            # bez příkazu v trhu. Zůstává v přehledu i ve výsledcích, aby
+            # bylo vidět, která pozice z dávky a proč se neobchodovala
+            if propasnuti is not None:
+                flow.set_state(
+                    FlowState.MISSED,
+                    f"{propasnuti} - vstup propásnut, obchod ukončen bez zadání příkazu.",
+                )
+                self._release(flow)
+                self.log_event(f"{flow.id}: {flow.message}")
+                self._notify()
+                return flow
 
             # Při příliš širokém spreadu se příkaz zatím nezadává
             if flow.option_spread_pct is not None and flow.option_spread_pct > max_spread:
@@ -3969,6 +4009,70 @@ class FlowEngine:
         flow.touch(f"{flow.message} Přepočteno po otevření burzy.".strip())
         self._compute_expected_pnl(flow)
         return True
+
+    def entry_cross_start(self) -> datetime | None:
+        """
+        Okamžik, od kterého kontrola propásnutého vstupu prochází minutové
+        svíčky - dnešní čas import.entry_cross_check_from v zóně burzy.
+
+        None, když je kontrola v konfiguraci vypnutá, nebo když nastavený
+        čas dnes teprve přijde - není pak co procházet.
+        """
+        imp = self.cfg.import_
+        if not imp.entry_cross_check:
+            return None
+        ted = self._exchange_now()
+        zacatek = self._exchange_time(ted, imp.entry_cross_check_from)
+        if zacatek >= ted:
+            return None
+        return zacatek
+
+    async def _entry_cross_bars(self, contract: Any, zacatek: datetime) -> list:
+        """
+        Minutové svíčky podkladu od zadaného začátku, s krátkou pamětí podle
+        tickeru (ENTRY_CROSS_BARS_CACHE_SEC). Paměť se zahodí, změní-li se
+        začátek - třeba po půlnoci burzy nebo po úpravě konfigurace.
+        """
+        klic = str(getattr(contract, "symbol", "") or contract)
+        ulozeno = self._bars_cache.get(klic)
+        if ulozeno is not None:
+            od, stazeno, bars = ulozeno
+            if od == zacatek and time.monotonic() - stazeno < ENTRY_CROSS_BARS_CACHE_SEC:
+                return bars
+        bars = await self.ib.minute_bars(contract, zacatek)
+        self._bars_cache[klic] = (zacatek, time.monotonic(), bars)
+        return bars
+
+    async def entry_crossed(self, contract: Any, right: str, entry_price: float) -> str | None:
+        """
+        Kontrola propásnutého vstupu podle minutových svíček podkladu.
+
+        Projde svíčky od okamžiku entry_cross_start() do teď a vrátí popis
+        první, na které podklad vstupní úroveň překročil (u CALL high >=
+        vstup, u PUT low <= vstup) - například
+        „Podklad překročil vstup 220.99 už v 08:12 čas burzy (svíčka high
+        221.35)“. None znamená, že se vstupu žádná svíčka nedotkla, nebo
+        že je kontrola vypnutá.
+
+        Používá ji jen dialog načtení pozic ze souboru; monitorovací smyčka
+        ani formulář zadání obchodu se na ni neptají. Chyby dotazu do TWS
+        se nechávají volajícímu - ten rozhodne, zda bez kontroly pokračovat.
+        """
+        zacatek = self.entry_cross_start()
+        if zacatek is None:
+            return None
+        bars = await self._entry_cross_bars(contract, zacatek)
+        nalezeno = calc.first_entry_cross(right, entry_price, bars)
+        if nalezeno is None:
+            return None
+        bar, cena = nalezeno
+        # Čas svíčky přichází z TWS v UTC, obchodníkovi se hodí čas burzy
+        cas = bar.date.astimezone(zacatek.tzinfo) if bar.date.tzinfo else bar.date
+        strana = "high" if right == "C" else "low"
+        return (
+            f"Podklad překročil vstup {entry_price:g} už v {cas:%H:%M} čas burzy "
+            f"(svíčka {strana} {cena:g})"
+        )
 
     def _entry_missed(self, flow: Flow) -> bool:
         """

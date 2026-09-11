@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 from ib_async import (
+    BarData,
     CommissionReport,
     Contract,
     ContractDetails,
@@ -64,6 +65,11 @@ class FakeIBService(IBService):
         # Počet odběratelů tržních dat podle conId - testy tak odhalí odběr,
         # který se po chybě nebo zrušení přípravy neuvolnil
         self.subscribed: dict[int, int] = {}
+        # Minutové svíčky podkladu vracené místo historických dat z TWS,
+        # počet dotazů na ně a případná chyba, kterou má dotaz vyhodit
+        self.bars: list[BarData] = []
+        self.bars_requests: int = 0
+        self.bars_error: Exception | None = None
         self._next_order_id = 1
 
     # --- spojení ---
@@ -113,6 +119,13 @@ class FakeIBService(IBService):
             # s libovolnou cenovou hladinou dostaly smysluplný kontrakt
             strikes=self._strikes(),
         )
+
+    async def minute_bars(self, contract: Contract, since: datetime) -> list[BarData]:
+        """Svíčky nastavené testem; od zadaného okamžiku, jako ostrá služba."""
+        self.bars_requests += 1
+        if self.bars_error is not None:
+            raise self.bars_error
+        return [bar for bar in self.bars if bar.date >= since]
 
     def _strikes(self) -> list[float]:
         """Nabídka strike cen po 2,5 bodu kolem aktuální ceny podkladu."""

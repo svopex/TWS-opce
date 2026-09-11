@@ -182,6 +182,16 @@ class ImportConfig:
     # Prodleva od otevření burzy v sekundách - v prvních okamžicích jsou
     # kotace opcí nejširší, přepočet proto chvíli počká
     refresh_after_open_sec: float = 60.0
+    # Kontrola propásnutého vstupu podle minutových svíček podkladu - jen
+    # v dialogu načtení pozic ze souboru (Přepočítat, Zadat vybrané pozice,
+    # Zadat po otevření trhu). Překročil-li podklad od času níže vstupní
+    # úroveň (stačí knot svíčky), řádek to ohlásí a zadaný obchod skončí
+    # rovnou jako "Vstup propásnut". Formulář zadání ani monitorovací
+    # smyčka tuto kontrolu nepoužívají
+    entry_cross_check: bool = True
+    # Od kdy (HH:MM v časové zóně burzy) se svíčky procházejí. Půlnoc
+    # pokrývá overnight seanci i pre-market až do okamžiku zadání
+    entry_cross_check_from: str = "00:00"
 
 
 @dataclass
@@ -421,6 +431,16 @@ def validate_config(cfg: AppConfig) -> None:
     # Nula je platná (přepočet hned po otevření), záporná prodleva nedává smysl
     if cfg.import_.refresh_after_open_sec < 0:
         problems.append("import.refresh_after_open_sec nesmí být záporné")
+    # Začátek kontroly svíček musí mít tvar HH:MM stejně jako časy burzy
+    try:
+        hodina, minuta = (int(cast) for cast in cfg.import_.entry_cross_check_from.split(":"))
+        if not (0 <= hodina <= 23 and 0 <= minuta <= 59):
+            raise ValueError
+    except (ValueError, AttributeError):
+        problems.append(
+            f"import.entry_cross_check_from '{cfg.import_.entry_cross_check_from}' "
+            f"musí mít tvar HH:MM"
+        )
     if cfg.expiration.mode not in EXPIRATION_MODES:
         problems.append(
             f"expiration.mode musí být jedna z {EXPIRATION_MODES}, nalezeno '{cfg.expiration.mode}'"
