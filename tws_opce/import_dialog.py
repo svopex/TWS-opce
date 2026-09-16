@@ -1654,11 +1654,8 @@ class ImportDialog:
         max_spread = self._max_spread()
         sl_spread = self._sl_spread()
         pomer = self._pomer()
-        # Přepočet po otevření burzy patří obchodům zadaným před otevřením.
-        # Dávku naplánovaného zadání plán přepočítal těsně před zadáním,
-        # už z kotací po otevření a uplynulé prodlevě - druhý přepočet
-        # v enginu by proběhl hned po založení a přepsal by čísla z dialogu
-        # včetně množství, podle kterého se řádku vybíral runner
+        # Naplánované zadání dávku přepočítalo až po otevření a prodlevě;
+        # druhý přepočet v enginu by přepsal čísla dialogu i výběr runneru
         prepocet_sec = None if self.plan_bezi else self._refresh_after_open_sec()
         # Od kdy engine při zadání prochází svíčky podkladu, zda už
         # nepřekročil vstup (import.entry_cross_check); None = nekontrolovat
@@ -1706,7 +1703,6 @@ class ImportDialog:
                     sl_spread_compensated=sl_spread,
                     sl_to_pt_ratio=pomer,
                     # Přepočet po otevření burzy platí pro celou dávku
-                    # (u naplánovaného zadání se nepoužije - viz výše)
                     refresh_after_open_sec=prepocet_sec,
                     entry_cross_since=svicky_od,
                     # Jediná volba cíle určuje režim PT i SL a na příznaky

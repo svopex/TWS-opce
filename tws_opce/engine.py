@@ -649,19 +649,12 @@ class FlowEngine:
         preview.profit_target = profit_target
         bid, ask = preview.option_bid, preview.option_ask
 
-        # Odhad kompenzace SL: spread vybrané opce v USD na kontrakt.
-        # Skutečně se připočte až spread zaplacený při nákupu. Stropuje se
-        # limitem spreadu - příkaz se nad ním do trhu nedostane a nevyplněný
-        # se z něj odstraní, takže širší spread obchod nezaplatí a množství
-        # by podle něj vyšlo zbytečně malé. Vypnuté zrušení příkazu při
-        # překročení limitu strop ruší: takový příkaz zůstává v trhu
-        # i po rozšíření spreadu a vyplnit se může za jakýkoliv
+        # Odhad kompenzace SL: spread vybrané opce v USD na kontrakt, omezený
+        # limitem (viz _spread_cap). Skutečně se připočte až spread zaplacený
+        # při nákupu; nestropovaný by množství zbytečně zmenšil
         if preview.sl_spread_compensated:
             preview.sl_spread_usd = calc.capped_spread_usd(
-                bid,
-                ask,
-                limit_spreadu if self.cfg.trading.cancel_on_spread_breach else None,
-                preview.expected_fill_price,
+                bid, ask, self._spread_cap(limit_spreadu), preview.expected_fill_price
             )
 
         # SL buď zadaný uživatelem, nebo dopočtený podle poměru z konfigurace;
@@ -1075,12 +1068,8 @@ class FlowEngine:
         Slouží ke stropování ztráty zadané na opci zaplacenou prémií: SL může
         být větší než celá prémie, stop pak stojí na nejnižší možné ceně
         a obchod nemůže ztratit víc. Nakupuje se u ASKu, proto se
-        k modelovému středu přičítá půl spreadu.
-
-        Spread se stropuje limitem spreadu (limit_spreadu, Max. spread v %)
-        stejně jako kompenzace SL - nad limitem se nenakupuje, takže širší
-        spread nákupní cenu nezvedne. Strop platí jen při zapnutém
-        trading.cancel_on_spread_breach. Bez použitelného modelu vrací None.
+        k modelovému středu přičítá půl spreadu, nejvýš do limitu (viz
+        _spread_cap). Bez použitelného modelu vrací None.
         """
         if not preview.option_price or preview.current_price is None:
             return None
@@ -1096,17 +1085,23 @@ class FlowEngine:
         if cena is None:
             return None
         if preview.option_bid and preview.option_ask:
-            # Limit se měří proti středu trhu v okamžiku nákupu, tedy proti
-            # modelové ceně při vstupu. Strop vychází v USD na kontrakt
-            # (1 % spreadu = cena opce v USD), na cenu opce se převádí zpět
+            # Limit se měří proti modelovému středu při vstupu; strop vychází
+            # v USD na kontrakt, na cenu opce se převádí zpět
             spread = calc.capped_spread_usd(
-                preview.option_bid,
-                preview.option_ask,
-                limit_spreadu if self.cfg.trading.cancel_on_spread_breach else None,
-                cena,
+                preview.option_bid, preview.option_ask, self._spread_cap(limit_spreadu), cena
             )
             cena += spread / calc.OPTION_MULTIPLIER / 2.0
         return cena
+
+    def _spread_cap(self, limit_spreadu: float) -> float | None:
+        """
+        Limit spreadu v %, kterým se stropuje spread v odhadech nákupu, nebo
+        None bez stropu. Nad limitem se nenakupuje - příkaz se do trhu nezadá
+        a nevyplněný se z něj stáhne - takže širší spread obchod nezaplatí.
+        Vypnuté trading.cancel_on_spread_breach strop ruší: příkaz pak v trhu
+        po rozšíření spreadu zůstává a vyplnit se může za jakýkoliv.
+        """
+        return limit_spreadu if self.cfg.trading.cancel_on_spread_breach else None
 
     def _entry_delta(self, preview: Preview, entry_price: float) -> float | None:
         """
@@ -3807,35 +3802,54 @@ class FlowEngine:
             return True
 
         # Po otevření burzy se čekající obchod jednou přepočítá podle živých
-        # kotací. Obsluha spreadu běží hned poté, aby se příkaz blokovaný
-        # spreadem vracel do trhu už s přepočteným množstvím
+        # kotací. Příkaz nad limitem spreadu se stahuje ještě před přepočtem,
+        # aby se neupravoval těsně před zrušením; zbytek obsluhy spreadu běží
+        # až po něm, aby se příkaz vracel do trhu už s přepočteným množstvím
+        stazeno = self._withdraw_on_spread_breach(flow)
         prepocteno = self._refresh_after_open(flow)
-        return self._handle_spread(flow) or prepocteno
+        return self._handle_spread(flow) or prepocteno or stazeno
+
+    def _withdraw_on_spread_breach(self, flow: Flow) -> bool:
+        """
+        Stáhne z trhu nevyplněný nákupní příkaz, jehož spread překročil limit
+        (jen při zapnutém trading.cancel_on_spread_breach). Vrací True, pokud
+        se příkaz stáhl.
+        """
+        spread = flow.option_spread_pct
+        if (
+            not self.cfg.trading.cancel_on_spread_breach
+            or flow.state != FlowState.ARMED
+            or spread is None
+            or spread <= flow.max_spread_pct
+        ):
+            return False
+
+        self.ib.cancel(flow.entry_trade)
+        flow.entry_trade = None
+        flow.entry_order_id = None
+        flow.blocked_since = datetime.now()
+        flow.set_state(
+            FlowState.SPREAD_BLOCKED,
+            f"Spread {spread:.2f} % > limit {flow.max_spread_pct:g} %, "
+            f"příkaz odstraněn z trhu.",
+        )
+        self.log_event(f"{flow.id}: {flow.message}")
+        return True
 
     def _handle_spread(self, flow: Flow) -> bool:
         """
-        Hlídání spreadu u obchodu před nákupem: příkaz nad limitem se z trhu
-        odstraňuje a po návratu spreadu pod limit zase zadává, čekání na
-        kotace končí zadáním příkazu a nevyplněnému příkazu se průběžně
-        upravuje limitní cena. Vrací True při změně stavu obchodu.
+        Hlídání spreadu u obchodu před nákupem: po návratu spreadu pod limit
+        se stažený příkaz zase zadává, čekání na kotace končí zadáním příkazu
+        a nevyplněnému příkazu se průběžně upravuje limitní cena. Stažení
+        příkazu nad limitem obstarává _withdraw_on_spread_breach. Vrací True
+        při změně stavu obchodu.
         """
         spread = flow.option_spread_pct
         trading = self.cfg.trading
 
-        # Spread nad limitem - nevyplněný příkaz se odstraňuje z trhu
+        # Spread nad limitem bez rušení příkazu - příkaz zůstává v trhu
+        # a limitní cena se mu neupravuje
         if flow.state == FlowState.ARMED and spread is not None and spread > flow.max_spread_pct:
-            if trading.cancel_on_spread_breach:
-                self.ib.cancel(flow.entry_trade)
-                flow.entry_trade = None
-                flow.entry_order_id = None
-                flow.blocked_since = datetime.now()
-                flow.set_state(
-                    FlowState.SPREAD_BLOCKED,
-                    f"Spread {spread:.2f} % > limit {flow.max_spread_pct:g} %, "
-                    f"příkaz odstraněn z trhu.",
-                )
-                self.log_event(f"{flow.id}: {flow.message}")
-                return True
             return False
 
         # Spread zpět v limitu - příkaz se vrací do trhu
@@ -3899,8 +3913,9 @@ class FlowEngine:
         a příkaz čekající v trhu se upraví na místě (stejné orderId), takže
         se neruší a nezávodí s vyplněním.
 
-        Spread nad limitem přepočet nezdržuje - kompenzace SL se počítá
-        s limitem spreadu (Max. spread), stejně jako při přípravě zadání.
+        Spread nad limitem přepočet nezdržuje - spread se stropuje limitem
+        (Max. spread), stejně jako při přípravě zadání; příkaz nad limitem
+        už předtím stáhla _withdraw_on_spread_breach, takže se neupravuje.
         Dokud chybí kotace, TWS příkaz právě mění, nebo není známa velikost
         účtu, přepočet počká na další průchod smyčkou. Runner zapnutý před
         nákupem se přepočítá na nové úrovně. Vrací True, pokud se obchod změnil.
@@ -3933,14 +3948,10 @@ class FlowEngine:
             if trade.orderStatus.status not in MODIFIABLE_ORDER_STATES:
                 return False
 
-        # Použitelné kotace: cena podkladu a živý BID i ASK - bez nich nejde
-        # určit spread a kompenzace SL by vyšla nulová. Na spread v limitu se
-        # nečeká: přepočet má proběhnout v nastavenou chvíli a širší spread
-        # se v _derive_levels stropuje limitem, stejně jako v dialogu
+        # Bez ceny podkladu nebo BID i ASK opce (spread z téhož průchodu
+        # smyčkou) přepočet nemá z čeho vyjít
         cena_podkladu = self.ib.underlying_price(flow.underlying_contract)
-        bid, ask, _ = self.ib.option_quotes(flow.option_contract)
-        spread = calc.spread_pct(bid, ask)
-        if cena_podkladu is None or spread is None:
+        if cena_podkladu is None or flow.option_spread_pct is None:
             return False
 
         preview = self._preview_from_flow(flow, cena_podkladu)
@@ -3997,16 +4008,8 @@ class FlowEngine:
 
         # Příkaz v trhu se upraví na místě - odeslání se stejným orderId je
         # modifikace, příkaz se neruší a nevzniká mezera, ve které by vstup
-        # utekl. Limit se srovná s aktuální kotací při téže úpravě.
-        # Při spreadu nad limitem se příkaz neupravuje: obsluha spreadu ho
-        # v témže průchodu stáhne z trhu a po návratu spreadu do limitu se
-        # zadá znovu, už s přepočteným množstvím
-        stahne_se = (
-            flow.state == FlowState.ARMED
-            and spread > flow.max_spread_pct
-            and self.cfg.trading.cancel_on_spread_breach
-        )
-        if trade is not None and flow.quantity != puvodni_ks and not stahne_se:
+        # utekl. Limit se srovná s aktuální kotací při téže úpravě
+        if trade is not None and flow.quantity != puvodni_ks:
             order = trade.order
             order.totalQuantity = flow.quantity
             limit = self._entry_limit(flow)

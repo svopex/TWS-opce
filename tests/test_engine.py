@@ -239,17 +239,19 @@ class TestLongShortSoucasne(ZakladTestu):
 
 class TestStropuSpreaduVMnozstvi(ZakladTestu):
     """
-    Množství se počítá se spreadem omezeným limitem. Nad limitem se
-    nenakupuje (nevyplněný příkaz se z trhu odstraní), takže širší spread
-    obchod nezaplatí a nemá pozici zbytečně zmenšovat.
+    Množství i odhad nákupní ceny se počítají se spreadem omezeným limitem.
+    Nad limitem se nenakupuje (nevyplněný příkaz se z trhu odstraní), takže
+    širší spread obchod nezaplatí a nemá pozici zbytečně zmenšovat.
     """
 
-    async def priprav(self, limit: float | None = None):
-        """Náhled s SL 10 USD/ks na opci a širokým spreadem 2,60 / 3,40."""
+    async def priprav(
+        self, limit: float | None = None, bid: float = 2.60, ask: float = 3.40
+    ):
+        """Náhled s SL 10 USD/ks na opci, výchozí je široký spread 2,60 / 3,40."""
         # Větší účet, ať je na rozdílu v množství co poznat
         self.cfg.account.size = 50_000.0
         self.ib.price_underlying = 230.0
-        self.ib.price_bid, self.ib.price_ask = 2.60, 3.40
+        self.ib.price_bid, self.ib.price_ask = bid, ask
         return await self.engine.prepare(
             "AAPL", 232.0, 10.0, 10.0, False, False, True, None, limit
         )
@@ -281,14 +283,13 @@ class TestStropuSpreaduVMnozstvi(ZakladTestu):
         self.assertAlmostEqual(preview.sl_spread_usd, min(80.0, strop))
 
     async def test_uzky_spread_zustava_cely(self):
-        self.cfg.account.size = 50_000.0
-        self.ib.price_underlying = 230.0
-        self.ib.price_bid, self.ib.price_ask = 3.00, 3.10
-        preview = await self.engine.prepare(
-            "AAPL", 232.0, 10.0, 10.0, False, False, True
-        )
+        se_stropem = await self.priprav(bid=3.00, ask=3.10)
+        self.assertAlmostEqual(se_stropem.sl_spread_usd, 10.0)
 
-        self.assertAlmostEqual(preview.sl_spread_usd, 10.0)
+        # Spread v limitu se do odhadu nákupní ceny započte celou polovinou
+        self.cfg.trading.cancel_on_spread_breach = False
+        bez_stropu = await self.priprav(bid=3.00, ask=3.10)
+        self.assertAlmostEqual(se_stropem.expected_fill_price, bez_stropu.expected_fill_price)
 
     async def test_odhad_nakupni_ceny_pricita_spread_nejvys_do_limitu(self):
         # Nad limitem se nenakupuje, takže k modelové ceně se přičte nejvýš
@@ -302,17 +303,6 @@ class TestStropuSpreaduVMnozstvi(ZakladTestu):
         strop = round(self.cfg.trading.max_spread_pct * modelova, 2) / 100
         self.assertAlmostEqual(se_stropem.expected_fill_price, modelova + strop / 2)
         self.assertLess(se_stropem.expected_fill_price, bez_stropu.expected_fill_price)
-
-    async def test_uzky_spread_v_odhadu_nakupni_ceny_zustava_cely(self):
-        # Spread v limitu se do odhadu nákupní ceny započte celou polovinou
-        self.cfg.account.size = 50_000.0
-        self.ib.price_underlying = 230.0
-        self.ib.price_bid, self.ib.price_ask = 3.00, 3.10
-        se_stropem = await self.engine.prepare("AAPL", 232.0, 10.0, 10.0, False, False, True)
-        self.cfg.trading.cancel_on_spread_breach = False
-        bez_stropu = await self.engine.prepare("AAPL", 232.0, 10.0, 10.0, False, False, True)
-
-        self.assertAlmostEqual(se_stropem.expected_fill_price, bez_stropu.expected_fill_price)
 
 
 class TestVyberuStrike(ZakladTestu):
@@ -3167,7 +3157,7 @@ class TestPrepoctuPoOtevreni(ZakladTestu):
         nahled = await self.ocekavane()
         self.assertAlmostEqual(flow.premium_base, nahled.expected_fill_price)
         strop = round(flow.max_spread_pct * flow.premium_base, 2)
-        self.assertLess(strop, 50.0)
+        self.assertLess(strop, calc.spread_usd(3.00, 3.50))
         self.assertEqual(
             flow.quantity,
             calc.suggest_quantity_for_loss(500.0, flow.stop_loss + strop, 1, 100),
@@ -3182,7 +3172,6 @@ class TestPrepoctuPoOtevreni(ZakladTestu):
         # Spread se stáhl - příkaz se vrací do trhu s přepočteným množstvím
         # a přepočet se neopakuje
         prepoctene_ks = flow.quantity
-        self.ib.price_bid = 3.00
         self.ib.price_ask = 3.05
         flow.blocked_since = datetime.now() - timedelta(seconds=60)
         self.burza(120)

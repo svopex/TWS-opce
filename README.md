@@ -914,24 +914,20 @@ kroky jako při přípravě. Příkaz čekající v trhu se upraví na místě (
 orderId), neruší se, takže nevzniká mezera, ve které by vstup utekl.
 Přepočítává se jen obchod, který ještě čeká na vstup; nakoupený se nemění.
 Přepočet proběhne hned po uplynutí prodlevy i při spreadu nad limitem:
-kompenzace SL se pak počítá s limitem spreadu (*Max. spread*), stejně jako při
-přípravě řádku v dialogu. Příkaz se v takovém případě neupravuje, protože
-ho obsluha spreadu vzápětí stáhne z trhu; po návratu spreadu do limitu se
-zadá už s přepočteným množstvím. Dokud chybí kotace (BID i ASK) nebo TWS
-příkaz zrovna mění, přepočet počká na další průchod smyčkou. Runner zapnutý před nákupem se
-přepočítá na nové úrovně (a vypne, když už na něj množství nestačí).
-Výsledek je v provozním logu a ve sloupci *Stav* dialogu („přepočteno po
-otevření"). Výchozí stav přepínače a prodlevy dává `import.refresh_after_open`
-a `import.refresh_after_open_sec` (v šabloně zapnuto, 60 s); prodleva má smysl,
+spread se pak počítá s limitem (*Max. spread*), stejně jako při přípravě
+řádku v dialogu. Příkaz nad limitem se z trhu stáhne ještě před přepočtem
+a po návratu spreadu do limitu se zadá už s přepočteným množstvím. Dokud
+chybí kotace (BID i ASK) nebo TWS příkaz zrovna mění, přepočet počká na další
+průchod smyčkou. Runner zapnutý před nákupem se přepočítá na nové úrovně
+(a vypne, když už na něj množství nestačí). Výsledek je v provozním logu
+a ve sloupci *Stav* dialogu („přepočteno po otevření"). Výchozí stav
+přepínače a prodlevy dává `import.refresh_after_open`
+a `import.refresh_after_open_sec` (v šabloně zapnuto, 15 s); prodleva má smysl,
 protože v prvních okamžicích po otevření jsou kotace opcí nejširší.
 
-Tlačítko **Zadat po otevření trhu** přepínač nepoužije. Naplánované zadání
-přepočítá řádky až po otevření burzy a uplynutí téže prodlevy a hned je zadá,
-čísla jsou tedy už z živých kotací. Obchodům proto přepočet po otevření
-nepředá — jinak by engine hned po založení obchod přepočítal znovu z o chvíli
-novějších kotací a v přehledu by se množství (a s ním i nárok na runner, který
-dialog přiděluje podle množství v řádku) rozešlo s tím, co ukazuje dialog.
-Proběhne tak jediný přepočet.
+Tlačítko **Zadat po otevření trhu** přepínač nepoužije: řádky přepočítá až
+po otevření a uplynutí prodlevy a hned je zadá, takže proběhne jediný
+přepočet a přehled ukáže stejná čísla i runner jako dialog.
 
 **Kontrola propásnutého vstupu podle minutových svíček.** Živá cena podkladu
 odhalí jen vstup, za kterým cena právě *je*; když podklad v overnight seanci
