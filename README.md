@@ -217,7 +217,12 @@ projít.
    vyjde odpovídajícím dílem větší množství. Základem procenta je
    **odhadovaná nákupní cena** — limit se měří proti kotaci v okamžiku
    nákupu, ne proti dnešní; v přehledu, kde obchod odhad nákupní ceny
-   nedrží, slouží střed trhu. Strop platí jen při zapnutém
+   nedrží, slouží střed trhu. Stejný strop platí i pro samotný **odhad
+   nákupní ceny**: k modelové ceně opce při vstupu se přičítá půl spreadu
+   (nakupuje se u ASKu), ale nejvýš půl spreadu odpovídajícího limitu
+   (základem je modelová cena). Široký spread, typicky těsně po otevření
+   burzy, tak nezvedne odhad prémie a s ním ani PT a SL zadané v procentech
+   prémie. Strop platí jen při zapnutém
    `trading.cancel_on_spread_breach`; bez něj příkaz v trhu po rozšíření
    spreadu zůstává, může se vyplnit za jakýkoliv, a počítá se proto
    s celým aktuálním spreadem. Zárukou to ani tak není: kontrola běží
@@ -908,13 +913,25 @@ opce, PT v USD i na podkladu zůstává, SL a množství se dopočítají stejn�
 kroky jako při přípravě. Příkaz čekající v trhu se upraví na místě (stejné
 orderId), neruší se, takže nevzniká mezera, ve které by vstup utekl.
 Přepočítává se jen obchod, který ještě čeká na vstup; nakoupený se nemění.
-Dokud je spread nad limitem, chybí kotace nebo TWS příkaz zrovna mění,
-přepočet počká na další průchod smyčkou. Runner zapnutý před nákupem se
+Přepočet proběhne hned po uplynutí prodlevy i při spreadu nad limitem:
+kompenzace SL se pak počítá s limitem spreadu (*Max. spread*), stejně jako při
+přípravě řádku v dialogu. Příkaz se v takovém případě neupravuje, protože
+ho obsluha spreadu vzápětí stáhne z trhu; po návratu spreadu do limitu se
+zadá už s přepočteným množstvím. Dokud chybí kotace (BID i ASK) nebo TWS
+příkaz zrovna mění, přepočet počká na další průchod smyčkou. Runner zapnutý před nákupem se
 přepočítá na nové úrovně (a vypne, když už na něj množství nestačí).
 Výsledek je v provozním logu a ve sloupci *Stav* dialogu („přepočteno po
 otevření"). Výchozí stav přepínače a prodlevy dává `import.refresh_after_open`
 a `import.refresh_after_open_sec` (v šabloně zapnuto, 60 s); prodleva má smysl,
 protože v prvních okamžicích po otevření jsou kotace opcí nejširší.
+
+Tlačítko **Zadat po otevření trhu** přepínač nepoužije. Naplánované zadání
+přepočítá řádky až po otevření burzy a uplynutí téže prodlevy a hned je zadá,
+čísla jsou tedy už z živých kotací. Obchodům proto přepočet po otevření
+nepředá — jinak by engine hned po založení obchod přepočítal znovu z o chvíli
+novějších kotací a v přehledu by se množství (a s ním i nárok na runner, který
+dialog přiděluje podle množství v řádku) rozešlo s tím, co ukazuje dialog.
+Proběhne tak jediný přepočet.
 
 **Kontrola propásnutého vstupu podle minutových svíček.** Živá cena podkladu
 odhalí jen vstup, za kterým cena právě *je*; když podklad v overnight seanci

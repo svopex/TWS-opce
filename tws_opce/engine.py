@@ -554,7 +554,7 @@ class FlowEngine:
             # Kotace, delta a odhad nákupní ceny; z nich pak SL a množství.
             # Stejné dva kroky používá i přepočet čekajícího obchodu po
             # otevření burzy, proto jsou vyčleněné do samostatných metod
-            used_delta = self._load_option_market(preview, entry_price)
+            used_delta = self._load_option_market(preview, entry_price, limit_spreadu)
             self._derive_levels(
                 preview, entry_price, profit_target, stop_loss, used_delta, limit_spreadu
             )
@@ -571,11 +571,14 @@ class FlowEngine:
                 self.ib.unsubscribe(preview.underlying)
                 self.ib.unsubscribe(preview.option)
 
-    def _load_option_market(self, preview: Preview, entry_price: float) -> float:
+    def _load_option_market(
+        self, preview: Preview, entry_price: float, limit_spreadu: float
+    ) -> float:
         """
         Načte do náhledu tržní data vybrané opce (kotace, cena pro model,
         spread, delta) a odhad nákupní ceny při vstupu; vrací deltu, se
-        kterou se dál počítá množství.
+        kterou se dál počítá množství. limit_spreadu (Max. spread v %)
+        stropuje spread započtený do odhadu nákupní ceny.
 
         Sdílí ji příprava zadání i přepočet čekajícího obchodu po otevření
         burzy, aby obě cesty došly ke stejným číslům. Kontrakt opce musí být
@@ -620,7 +623,9 @@ class FlowEngine:
             preview.warnings.append(varovani_delta)
 
         # Odhad nákupní ceny opce - čistý výpočet z už načtených kotací
-        preview.expected_fill_price = self._expected_fill_price(preview, entry_price)
+        preview.expected_fill_price = self._expected_fill_price(
+            preview, entry_price, limit_spreadu
+        )
 
         return used_delta
 
@@ -1061,15 +1066,21 @@ class FlowEngine:
         )
         return round(uroven, 2)
 
-    def _expected_fill_price(self, preview: Preview, entry_price: float) -> float | None:
+    def _expected_fill_price(
+        self, preview: Preview, entry_price: float, limit_spreadu: float
+    ) -> float | None:
         """
         Odhad nákupní ceny opce ve chvíli, kdy podklad dosáhne vstupní úrovně.
 
         Slouží ke stropování ztráty zadané na opci zaplacenou prémií: SL může
         být větší než celá prémie, stop pak stojí na nejnižší možné ceně
         a obchod nemůže ztratit víc. Nakupuje se u ASKu, proto se
-        k modelovému středu přičítá půl spreadu. Bez použitelného modelu
-        vrací None.
+        k modelovému středu přičítá půl spreadu.
+
+        Spread se stropuje limitem spreadu (limit_spreadu, Max. spread v %)
+        stejně jako kompenzace SL - nad limitem se nenakupuje, takže širší
+        spread nákupní cenu nezvedne. Strop platí jen při zapnutém
+        trading.cancel_on_spread_breach. Bez použitelného modelu vrací None.
         """
         if not preview.option_price or preview.current_price is None:
             return None
@@ -1085,7 +1096,16 @@ class FlowEngine:
         if cena is None:
             return None
         if preview.option_bid and preview.option_ask:
-            cena += (preview.option_ask - preview.option_bid) / 2.0
+            # Limit se měří proti středu trhu v okamžiku nákupu, tedy proti
+            # modelové ceně při vstupu. Strop vychází v USD na kontrakt
+            # (1 % spreadu = cena opce v USD), na cenu opce se převádí zpět
+            spread = calc.capped_spread_usd(
+                preview.option_bid,
+                preview.option_ask,
+                limit_spreadu if self.cfg.trading.cancel_on_spread_breach else None,
+                cena,
+            )
+            cena += spread / calc.OPTION_MULTIPLIER / 2.0
         return cena
 
     def _entry_delta(self, preview: Preview, entry_price: float) -> float | None:
@@ -3879,10 +3899,11 @@ class FlowEngine:
         a příkaz čekající v trhu se upraví na místě (stejné orderId), takže
         se neruší a nezávodí s vyplněním.
 
-        Dokud nejsou kotace použitelné (chybí, nebo je spread nad limitem),
-        TWS příkaz právě mění, nebo není známa velikost účtu, přepočet počká
-        na další průchod smyčkou. Runner zapnutý před nákupem se přepočítá na
-        nové úrovně. Vrací True, pokud se obchod změnil.
+        Spread nad limitem přepočet nezdržuje - kompenzace SL se počítá
+        s limitem spreadu (Max. spread), stejně jako při přípravě zadání.
+        Dokud chybí kotace, TWS příkaz právě mění, nebo není známa velikost
+        účtu, přepočet počká na další průchod smyčkou. Runner zapnutý před
+        nákupem se přepočítá na nové úrovně. Vrací True, pokud se obchod změnil.
         """
         if flow.refresh_after_open_sec is None or flow.refresh_after_open_done:
             return False
@@ -3912,17 +3933,18 @@ class FlowEngine:
             if trade.orderStatus.status not in MODIFIABLE_ORDER_STATES:
                 return False
 
-        # Použitelné kotace: cena podkladu, živý BID i ASK a spread v limitu.
-        # Ze širokého spreadu by odhad prémie vyšel stejně špatně jako před
-        # otevřením, a příkaz nad limitem v trhu stejně není
+        # Použitelné kotace: cena podkladu a živý BID i ASK - bez nich nejde
+        # určit spread a kompenzace SL by vyšla nulová. Na spread v limitu se
+        # nečeká: přepočet má proběhnout v nastavenou chvíli a širší spread
+        # se v _derive_levels stropuje limitem, stejně jako v dialogu
         cena_podkladu = self.ib.underlying_price(flow.underlying_contract)
         bid, ask, _ = self.ib.option_quotes(flow.option_contract)
         spread = calc.spread_pct(bid, ask)
-        if cena_podkladu is None or spread is None or spread > flow.max_spread_pct:
+        if cena_podkladu is None or spread is None:
             return False
 
         preview = self._preview_from_flow(flow, cena_podkladu)
-        used_delta = self._load_option_market(preview, flow.entry_price)
+        used_delta = self._load_option_market(preview, flow.entry_price, flow.max_spread_pct)
 
         # PT v procentech prémie se odvíjí od ceny opce: totéž procento se
         # přepočítá z nové odhadované nákupní ceny (stejný základ jako
@@ -3975,8 +3997,16 @@ class FlowEngine:
 
         # Příkaz v trhu se upraví na místě - odeslání se stejným orderId je
         # modifikace, příkaz se neruší a nevzniká mezera, ve které by vstup
-        # utekl. Limit se srovná s aktuální kotací při téže úpravě
-        if trade is not None and flow.quantity != puvodni_ks:
+        # utekl. Limit se srovná s aktuální kotací při téže úpravě.
+        # Při spreadu nad limitem se příkaz neupravuje: obsluha spreadu ho
+        # v témže průchodu stáhne z trhu a po návratu spreadu do limitu se
+        # zadá znovu, už s přepočteným množstvím
+        stahne_se = (
+            flow.state == FlowState.ARMED
+            and spread > flow.max_spread_pct
+            and self.cfg.trading.cancel_on_spread_breach
+        )
+        if trade is not None and flow.quantity != puvodni_ks and not stahne_se:
             order = trade.order
             order.totalQuantity = flow.quantity
             limit = self._entry_limit(flow)

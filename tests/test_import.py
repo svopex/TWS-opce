@@ -671,6 +671,21 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         await self.zadej(self.radek())
         self.assertIsNone(self.zadani[1].refresh_after_open_sec)
 
+    async def test_naplanovane_zadani_prepocet_po_otevreni_nepreda(self):
+        # Plán dávku přepočítal až po otevření a prodlevě, těsně před zadáním.
+        # Druhý přepočet v enginu by proběhl hned a změnil množství i runner
+        # oproti dialogu, proto ho obchody nedostanou ani se zaškrtnutou volbou
+        self.dialog.refresh_checkbox = Zaskrtavatko(True)
+        self.dialog.refresh_sec_input = Pole(15)
+        self.dialog.plan_bezi = True
+        await self.zadej(self.radek())
+        self.assertIsNone(self.zadani[0].refresh_after_open_sec)
+
+        # Ruční zadání téže dávky volbu dál respektuje
+        self.dialog.plan_bezi = False
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani[1].refresh_after_open_sec, 15.0)
+
     async def test_prazdne_pole_prodlevy_bere_konfiguraci(self):
         self.dialog.refresh_checkbox = Zaskrtavatko(True)
         self.dialog.refresh_sec_input = Pole(None)

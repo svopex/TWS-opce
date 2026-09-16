@@ -333,10 +333,12 @@ import:
   # po gapu neplatí. Se zapnutou volbou engine každý čekající obchod z dávky
   # jednou přepočítá podle živých kotací a čekající příkaz upraví na místě
   # (neruší ho). Obchod, který už nakoupil, se nemění. Volba jen předvyplní
-  # přepínač v dialogu.
+  # přepínač v dialogu. Tlačítko Zadat po otevření trhu ji nepoužije - dávku
+  # přepočítá samo až po otevření a prodlevě, druhý přepočet není potřeba.
   refresh_after_open: true
   # Kolik sekund po otevření burzy se přepočet provede. V prvních okamžicích
-  # jsou kotace opcí nejširší; dokud je spread nad limitem, přepočet počká.
+  # jsou kotace opcí nejširší. Spread nad limitem přepočet nezdrží - kompenzace
+  # SL se počítá s limitem spreadu (max_spread_pct), stejně jako v dialogu.
   refresh_after_open_sec: 15
 
   # Kontrola propásnutého vstupu podle minutových svíček podkladu. Platí jen

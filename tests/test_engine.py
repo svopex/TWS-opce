@@ -290,6 +290,30 @@ class TestStropuSpreaduVMnozstvi(ZakladTestu):
 
         self.assertAlmostEqual(preview.sl_spread_usd, 10.0)
 
+    async def test_odhad_nakupni_ceny_pricita_spread_nejvys_do_limitu(self):
+        # Nad limitem se nenakupuje, takže k modelové ceně se přičte nejvýš
+        # půl spreadu odpovídajícího limitu, ne polovina celé kotace
+        se_stropem = await self.priprav()
+        self.cfg.trading.cancel_on_spread_breach = False
+        bez_stropu = await self.priprav()
+
+        # Bez stropu je v odhadu celá polovina spreadu 2,60 / 3,40
+        modelova = bez_stropu.expected_fill_price - 0.40
+        strop = round(self.cfg.trading.max_spread_pct * modelova, 2) / 100
+        self.assertAlmostEqual(se_stropem.expected_fill_price, modelova + strop / 2)
+        self.assertLess(se_stropem.expected_fill_price, bez_stropu.expected_fill_price)
+
+    async def test_uzky_spread_v_odhadu_nakupni_ceny_zustava_cely(self):
+        # Spread v limitu se do odhadu nákupní ceny započte celou polovinou
+        self.cfg.account.size = 50_000.0
+        self.ib.price_underlying = 230.0
+        self.ib.price_bid, self.ib.price_ask = 3.00, 3.10
+        se_stropem = await self.engine.prepare("AAPL", 232.0, 10.0, 10.0, False, False, True)
+        self.cfg.trading.cancel_on_spread_breach = False
+        bez_stropu = await self.engine.prepare("AAPL", 232.0, 10.0, 10.0, False, False, True)
+
+        self.assertAlmostEqual(se_stropem.expected_fill_price, bez_stropu.expected_fill_price)
+
 
 class TestVyberuStrike(ZakladTestu):
     """Výběr strike, když nejbližší cena z řetězce není v TWS obchodovatelná."""
@@ -3126,31 +3150,47 @@ class TestPrepoctuPoOtevreni(ZakladTestu):
         await self.engine._tick()
         self.assertEqual(flow.quantity, prepoctene_ks)
 
-    async def test_pri_spreadu_nad_limitem_prepocet_pocka(self):
-        flow = await self.zaloz_call(refresh_after_open_sec=60)
+    async def test_pri_spreadu_nad_limitem_prepocita_hned_s_max_spreadem(self):
+        flow = await self.zaloz_v_premii(sl_spread_compensated=True)
         puvodni_ks = flow.quantity
 
-        # Široký spread po otevření: příkaz jde z trhu, přepočet čeká
+        # Široký spread po otevření přepočet nezdrží - kompenzace SL se
+        # počítá s limitem spreadu (Max. spread), stejně jako v dialogu
         self.ib.price_bid = 3.00
         self.ib.price_ask = 3.50
         self.burza(61)
         await self.engine._tick()
-        self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
-        self.assertFalse(flow.refresh_after_open_done)
-        self.assertEqual(flow.quantity, puvodni_ks)
 
-        # Spread se stáhl - přepočet proběhne a příkaz se vrací do trhu už
-        # s novým množstvím
-        self.zmen_kotace()
+        self.assertTrue(flow.refresh_after_open_done)
+        # Prémie vychází ze stejného odhadu nákupní ceny jako čerstvá příprava,
+        # tedy i se spreadem ustřiženým na limit
         nahled = await self.ocekavane()
+        self.assertAlmostEqual(flow.premium_base, nahled.expected_fill_price)
+        strop = round(flow.max_spread_pct * flow.premium_base, 2)
+        self.assertLess(strop, 50.0)
+        self.assertEqual(
+            flow.quantity,
+            calc.suggest_quantity_for_loss(500.0, flow.stop_loss + strop, 1, 100),
+        )
+        self.assertNotEqual(flow.quantity, puvodni_ks)
+        # Příkaz jde z trhu neupravený - modifikace těsně před stažením
+        # by jen závodila se zrušením
+        self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
+        self.assertEqual(len(self.ib.placed), 1)
+        self.assertEqual(self.ib.placed[0].order.totalQuantity, puvodni_ks)
+
+        # Spread se stáhl - příkaz se vrací do trhu s přepočteným množstvím
+        # a přepočet se neopakuje
+        prepoctene_ks = flow.quantity
+        self.ib.price_bid = 3.00
+        self.ib.price_ask = 3.05
         flow.blocked_since = datetime.now() - timedelta(seconds=60)
         self.burza(120)
         await self.engine._tick()
 
-        self.assertTrue(flow.refresh_after_open_done)
         self.assertEqual(flow.state, FlowState.ARMED)
-        self.assertEqual(flow.quantity, nahled.quantity)
-        self.assertEqual(self.ib.placed[-1].order.totalQuantity, nahled.quantity)
+        self.assertEqual(flow.quantity, prepoctene_ks)
+        self.assertEqual(self.ib.placed[-1].order.totalQuantity, prepoctene_ks)
 
     async def test_pt_v_procentech_premie_se_prepocita_z_nove_ceny(self):
         flow = await self.zaloz_v_premii()

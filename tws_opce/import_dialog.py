@@ -322,7 +322,10 @@ class ImportDialog:
                     "a Zadat vybrané pozice do trhu, včetně kontroly, zda "
                     "podklad od nastaveného času nepřekročil vstup (takový "
                     "řádek se označí Vstup propásnut a odškrtne). Použitelné i pro pozice, "
-                    "které v trhu ještě vůbec nejsou. Režim ukončí opětovný "
+                    "které v trhu ještě vůbec nejsou. Proběhne jediný přepočet: "
+                    "zadané obchody už nedostanou Po otevření trhu přepočítat, "
+                    "takže v přehledu mají stejná čísla i runner jako v dialogu. "
+                    "Režim ukončí opětovný "
                     "stisk, kterékoliv z obou tlačítek, zavření dialogu "
                     "i načtení jiného souboru. Zapnout jde jen dokud okamžik "
                     "přepočtu teprve nastane."
@@ -400,8 +403,10 @@ class ImportDialog:
                         "přepočítají podle živých kotací - PT v procentech prémie, SL "
                         "i množství vyjdou ze skutečné ceny opce místo odhadu ze "
                         "závěrečné ceny. Čekající příkaz v trhu se upraví na místě, "
-                        "neruší se. Obchod, který už nakoupil, se nemění. Dokud je "
-                        "spread nad limitem, přepočet počká."
+                        "neruší se. Obchod, který už nakoupil, se nemění. Spread nad "
+                        "limitem přepočet nezdrží - počítá se s Max. spread. Zadat po otevření trhu "
+                        "volbu nepoužije - dávku přepočítá samo až po otevření, "
+                        "takže druhý přepočet není potřeba."
                     )
                 )
                 self.refresh_sec_input = (
@@ -1649,7 +1654,12 @@ class ImportDialog:
         max_spread = self._max_spread()
         sl_spread = self._sl_spread()
         pomer = self._pomer()
-        prepocet_sec = self._refresh_after_open_sec()
+        # Přepočet po otevření burzy patří obchodům zadaným před otevřením.
+        # Dávku naplánovaného zadání plán přepočítal těsně před zadáním,
+        # už z kotací po otevření a uplynulé prodlevě - druhý přepočet
+        # v enginu by proběhl hned po založení a přepsal by čísla z dialogu
+        # včetně množství, podle kterého se řádku vybíral runner
+        prepocet_sec = None if self.plan_bezi else self._refresh_after_open_sec()
         # Od kdy engine při zadání prochází svíčky podkladu, zda už
         # nepřekročil vstup (import.entry_cross_check); None = nekontrolovat
         svicky_od = self.engine.entry_cross_start()
@@ -1696,6 +1706,7 @@ class ImportDialog:
                     sl_spread_compensated=sl_spread,
                     sl_to_pt_ratio=pomer,
                     # Přepočet po otevření burzy platí pro celou dávku
+                    # (u naplánovaného zadání se nepoužije - viz výše)
                     refresh_after_open_sec=prepocet_sec,
                     entry_cross_since=svicky_od,
                     # Jediná volba cíle určuje režim PT i SL a na příznaky
