@@ -700,6 +700,90 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         await self.zadej(self.radek())
         self.assertEqual(self.zadani[2].refresh_after_open_sec, 60.0)
 
+    async def test_zadani_nese_volbu_runneru_s_minimem(self):
+        # Řádek s volbou, jakou by mu dialog přidělil sám, nese globální
+        # nastavení - runner zapíná engine při založení i po přepočtu
+        self.dialog.runner_value = "2"
+        self.dialog.runner_min_input = Pole(3)
+        radek = self.radek()
+        radek.runner_select = Pole("2")
+        await self.zadej(radek)
+        self.assertEqual(self.zadani[0].runner_multiple, 2.0)
+        self.assertEqual(self.zadani[0].runner_min_quantity, 3)
+
+    async def test_mala_pozice_nese_volbu_pro_pripad_ze_doroste(self):
+        # Řádek na "Bez" jen kvůli malému množství si volbu odnáší také -
+        # runner dostane, až na něj přepočtem doroste
+        self.dialog.runner_value = "2"
+        self.dialog.runner_min_input = Pole(3)
+        radek = self.radek()
+        radek.qty_input = Pole(2)
+        radek.runner_select = Pole(RUNNER_VYPNUTO)
+        await self.zadej(radek)
+        self.assertEqual(self.zadani[0].runner_multiple, 2.0)
+        self.assertEqual(self.zadani[0].runner_min_quantity, 3)
+
+    async def test_rucne_prepnuty_runner_plati_bez_minima(self):
+        self.dialog.runner_value = "2"
+        self.dialog.runner_min_input = Pole(3)
+        # Ručně zvolený jiný násobek platí bez ohledu na množství
+        rucni = self.radek()
+        rucni.runner_select = Pole("3")
+        # Ručně vypnutý runner u dost velké pozice zůstane vypnutý
+        vypnuty = self.radek()
+        vypnuty.runner_select = Pole(RUNNER_VYPNUTO)
+        await self.zadej(rucni, vypnuty)
+        self.assertEqual(self.zadani[0].runner_multiple, 3.0)
+        self.assertIsNone(self.zadani[0].runner_min_quantity)
+        self.assertEqual(self.zadani[1].runner_multiple, 0.0)
+        self.assertIsNone(self.zadani[1].runner_min_quantity)
+
+    async def test_nezapnuty_runner_se_pripise_do_stavu(self):
+        # Náhrada enginu runner nezapíná - u chtěného runneru to řádek hlásí,
+        # u vypnutého ne
+        self.dialog.runner_value = "2"
+        self.dialog.runner_min_input = Pole(3)
+        chteny = self.radek()
+        chteny.runner_select = Pole("2")
+        bez = self.radek()
+        bez.runner_select = Pole(RUNNER_VYPNUTO)
+        await self.zadej(chteny, bez)
+        self.assertIn("runner nezapnut", chteny.poznamka)
+        self.assertIn("runner nezapnut", chteny.stav_label.text)
+        self.assertEqual(bez.poznamka, "")
+
+    async def test_prubezny_prepocet_jde_do_zadani_z_konfigurace(self):
+        # Bez vykreslených prvků platí konfigurace: zapnuto, 30 s
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani[0].refresh_interval_sec, 30.0)
+        self.dialog.cfg.import_.refresh_interval = False
+        await self.zadej(self.radek())
+        self.assertIsNone(self.zadani[1].refresh_interval_sec)
+
+    async def test_prubezny_prepocet_podle_prepinace_a_pole(self):
+        self.dialog.interval_checkbox = Zaskrtavatko(True)
+        self.dialog.interval_sec_input = Pole(45)
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani[0].refresh_interval_sec, 45.0)
+
+        # Odstup pod sekundu spadne na konfiguraci, vypnutý přepínač znamená
+        # nepřepočítávat bez ohledu na pole
+        self.dialog.interval_sec_input.set_value(0)
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani[1].refresh_interval_sec, 30.0)
+        self.dialog.interval_checkbox.set_value(False)
+        await self.zadej(self.radek())
+        self.assertIsNone(self.zadani[2].refresh_interval_sec)
+
+    async def test_naplanovane_zadani_prubezny_prepocet_predava(self):
+        # Na rozdíl od přepočtu po otevření: průběžný běží až po odstupu
+        # od založení, čísla dialogu tedy hned nepřepíše
+        self.dialog.interval_checkbox = Zaskrtavatko(True)
+        self.dialog.interval_sec_input = Pole(45)
+        self.dialog.plan_bezi = True
+        await self.zadej(self.radek())
+        self.assertEqual(self.zadani[0].refresh_interval_sec, 45.0)
+
     async def test_usd_na_opci_nechava_obe_urovne_v_usd(self):
         self.dialog.rezim.set_value(REZIM_USD)
         await self.zadej(self.radek(premie=None))
@@ -1130,6 +1214,16 @@ class TestKonfiguraceImportu(unittest.TestCase):
 
     def test_nulova_prodleva_prepoctu_projde(self):
         self.cfg.import_.refresh_after_open_sec = 0
+        validate_config(self.cfg)
+
+
+    def test_kratky_odstup_prubezneho_prepoctu_neprojde(self):
+        # Přepočet pod sekundu by běžel při každém průchodu smyčkou
+        self.cfg.import_.refresh_interval_sec = 0.5
+        with self.assertRaises(ValueError) as chyba:
+            validate_config(self.cfg)
+        self.assertIn("import.refresh_interval_sec", str(chyba.exception))
+        self.cfg.import_.refresh_interval_sec = 1
         validate_config(self.cfg)
 
 

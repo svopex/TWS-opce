@@ -16,6 +16,45 @@ RIGHT_LABELS = {"C": "CALL", "P": "PUT"}
 # pod řádkem obchodu v přehledu i při hromadném zadání ze souboru
 PT_MULTIPLES = (1.0, 1.5, 2.0, 2.5, 3.0)
 
+# Hodnota volby runneru, která znamená "runner nezapínat". Volby sdílí
+# formulář zadání i dialog načtení pozic ze souboru
+RUNNER_VYPNUTO = "0"
+
+
+def runner_volby(kratke: bool = False) -> dict[str, str]:
+    """
+    Nabídka nastavení runneru: vypnuto a násobky původní vzdálenosti cíle.
+    Krátká varianta je pro combobox v řádku tabulky, kde není místo na
+    celou větu.
+    """
+    vypnuto = "Bez" if kratke else "Nepoužít runner"
+    return {RUNNER_VYPNUTO: vypnuto} | {
+        f"{n:g}": f"{n:g}×".replace(".", ",") for n in PT_MULTIPLES
+    }
+
+
+def runner_klic(nasobek: float | None) -> str:
+    """
+    Klíč tlačítka runneru pro daný násobek z konfigurace nebo z obchodu.
+    Nula, None i násobek, který rozhraní nenabízí, znamená runner nepoužít -
+    opačná cesta než runner_nasobek, která z klíče dělá číslo.
+    """
+    if not nasobek:
+        return RUNNER_VYPNUTO
+    klic = f"{nasobek:g}"
+    return klic if klic in runner_volby() else RUNNER_VYPNUTO
+
+
+def runner_nasobek(hodnota: Any) -> float | None:
+    """Násobek cíle runneru z hodnoty volby; None znamená runner nezapínat."""
+    text = str(hodnota or RUNNER_VYPNUTO)
+    if text == RUNNER_VYPNUTO:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
 
 def cislo_text(hodnota: float, desetin: int = 2) -> str:
     """Číslo pro zobrazení - tisíce oddělené mezerou, desetinná čárka jako tečka."""
@@ -290,6 +329,18 @@ class FlowRequest:
     # obchodu přepočítají PT, SL a množství podle živých kotací. None znamená
     # nepřepočítávat - viz Flow.refresh_after_open_sec
     refresh_after_open_sec: float | None = None
+    # Průběžný přepočet čekajícího obchodu: každých tolik sekund za otevřené
+    # burzy se množství (a s ním PT v % prémie i SL) dopočítá znovu z živých
+    # kotací a runner se srovná s volbou níže. None = nepřepočítávat -
+    # viz Flow.refresh_interval_sec
+    refresh_interval_sec: float | None = None
+    # Automatický runner: násobek původní vzdálenosti PT, na kterém má runner
+    # cíl. 0 znamená runner nepoužít, None "neuvedeno" - obchod si pak
+    # převezme runner z nahrazovaného čekajícího obchodu, jako dřív
+    runner_multiple: float | None = None
+    # Nejmenší množství (včetně), od kterého obchod runner dostane; menší
+    # pozice běží bez něj. None = bez omezení - viz Flow.auto_runner_min_quantity
+    runner_min_quantity: int | None = None
     # Zamýšlený směr obchodu ('C' = long, 'P' = short), zná-li jej zadavatel
     # nezávisle na úrovních - hromadný import jej čte ze souboru (cíl pod
     # vstupem = short). Jsou-li PT i SL zadané na opci, z čísel se směr
@@ -343,6 +394,11 @@ class Flow:
     # trading.cancel_on_spread_breach strop ruší: takový příkaz zůstává
     # v trhu i po rozšíření spreadu a vyplnit se může za jakýkoliv
     sl_spread_capped: bool = True
+    # Odhad nákupní ceny opce (USD za kus) v okamžiku vstupu, se kterým
+    # počítalo množství - ze zadání, případně z přepočtu po otevření burzy.
+    # Je základem stropu odhadu spreadu v přehledu, aby Ztráta na SL vycházela
+    # ze stejného stropu jako doporučené množství. None = odhad není znám
+    expected_fill_price: float | None = None
 
     # Jednotka, ve které obchodník úroveň na opci zadal: True = procento
     # zaplacené prémie. Obchod i engine počítají výhradně s USD na kontrakt,
@@ -362,6 +418,25 @@ class Flow:
     # Hotový přepočet si obchod poznamená, aby proběhl jen jednou
     refresh_after_open_sec: float | None = None
     refresh_after_open_done: bool = False
+
+    # Průběžný přepočet čekajícího obchodu za otevřené burzy: každých tolik
+    # sekund se PT (v % prémie), SL a množství dopočítají znovu z živých
+    # kotací stejně jako po otevření, čekající příkaz se upraví na místě
+    # a runner se srovná s automatickou volbou níže. None = nepřepočítávat.
+    # Čeká-li obchod ještě na přepočet po otevření, průběžný běží až po něm.
+    # Čas posledního přepočtu měří odstup; před prvním se počítá od založení
+    refresh_interval_sec: float | None = None
+    last_refresh_at: datetime | None = None
+
+    # Automatická volba runneru ze zadání: násobek původní vzdálenosti PT,
+    # na kterém má runner cíl (0 = runner nepoužít, None = neuvedeno -
+    # obchod ze starší verze nebo bez volby), a nejmenší množství, od kterého
+    # (včetně) runner náleží. Podle nich se runner nastaví při založení
+    # a znovu po každém přepočtu množství: pozice, která na runner dorostla,
+    # ho dostane, pozice pod minimem o něj přijde. Ruční zapnutí či zrušení
+    # runneru před nákupem volbu přepisuje, aby ji přepočet nevracel zpět
+    auto_runner_multiple: float | None = None
+    auto_runner_min_quantity: int | None = None
 
     # Prvotní úroveň zadání: 'sl' znamená, že obchodník zadal SL a PT se
     # dopočítalo, 'pt' naopak. Z uložených úrovní to poznat nejde (obě se
@@ -533,17 +608,23 @@ class Flow:
         Odhad se stropuje limitem spreadu, stejně jako při dopočtu množství -
         nad limitem se nenakupuje, takže širší spread obchod nezaplatí a bez
         stropu by přehled ukazoval riziko, které nemůže nastat. Základem
-        procenta je střed trhu; odhad nákupní ceny obchod na rozdíl od
-        náhledu nedrží.
+        procenta je stejně jako v náhledu odhad nákupní ceny při vstupu:
+        opce daleko od vstupu je dnes levná a strop ze středu dnešní kotace
+        by vyšel mnohem menší, než s jakým počítalo množství.
         """
         if not self.sl_spread_compensated or self.sl_on_underlying:
             return 0.0
         if self.sl_spread_usd or self.fill_price is not None or self.stop_loss <= 0:
             return 0.0
+        # Obchod uložený starší verzí odhad nákupní ceny nemá - u zadání
+        # v procentech prémie mu nejblíž odpovídá prémie, ze které procenta
+        # vyšla; bez obou poslouží střed dnešní kotace
+        zaklad = self.expected_fill_price or self.premium_base
         return calc.capped_spread_usd(
             self.option_bid,
             self.option_ask,
             self.max_spread_pct if self.sl_spread_capped else None,
+            zaklad,
         )
 
     def sl_with_pending(self, hodnota: float) -> float:

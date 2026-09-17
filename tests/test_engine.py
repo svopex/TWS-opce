@@ -3156,6 +3156,8 @@ class TestPrepoctuPoOtevreni(ZakladTestu):
         # tedy i se spreadem ustřiženým na limit
         nahled = await self.ocekavane()
         self.assertAlmostEqual(flow.premium_base, nahled.expected_fill_price)
+        # Přehled stropuje odhad spreadu z nového odhadu nákupní ceny
+        self.assertAlmostEqual(flow.expected_fill_price, nahled.expected_fill_price)
         strop = round(flow.max_spread_pct * flow.premium_base, 2)
         self.assertLess(strop, calc.spread_usd(3.00, 3.50))
         self.assertEqual(
@@ -3329,6 +3331,289 @@ class TestPrepoctuPoOtevreni(ZakladTestu):
         # Obchod bez volby ji nemá ani po obnově
         bez = await self.zaloz_call(symbol="MSFT")
         self.assertIsNone(store.dict_to_flow(store.flow_to_dict(bez)).refresh_after_open_sec)
+
+
+class TestAutomatickehoRunneru(ZakladTestu):
+    """
+    Runner podle volby zadání: engine ho zapne při založení obchodu, má-li
+    obchod alespoň minimum kontraktů, a volbu si obchod nese s sebou pro
+    přepočty. Ruční zásah do runneru před nákupem volbu přepisuje.
+    """
+
+    async def test_runner_podle_zadani_se_zapne_pri_zalozeni(self):
+        flow = await self.zaloz_call(quantity=4, runner_multiple=2.0, runner_min_quantity=3)
+
+        # Vstup 232, PT 235: dvojnásobek vzdálenosti dává cíl runneru 238
+        self.assertTrue(flow.runner_active)
+        self.assertEqual(flow.runner_quantity, 1)
+        self.assertAlmostEqual(flow.runner_profit_target, 238.0)
+        self.assertAlmostEqual(flow.runner_stop_loss, flow.stop_loss)
+        # Volba zůstává u obchodu pro přepočty množství
+        self.assertAlmostEqual(flow.auto_runner_multiple, 2.0)
+        self.assertEqual(flow.auto_runner_min_quantity, 3)
+
+    async def test_pod_minimem_se_runner_nezapne(self):
+        flow = await self.zaloz_call(quantity=2, runner_multiple=2.0, runner_min_quantity=3)
+
+        self.assertFalse(flow.runner_active)
+        # Volba ale zůstává - runner přijde, až na něj množství doroste
+        self.assertAlmostEqual(flow.auto_runner_multiple, 2.0)
+        self.assertTrue(
+            any("runner nezapnut" in zprava and "pod minimem 3 ks" in zprava
+                for _, zprava in self.engine.events)
+        )
+
+    async def test_pozice_presne_na_minimu_runner_dostane(self):
+        flow = await self.zaloz_call(quantity=3, runner_multiple=1.5, runner_min_quantity=3)
+        self.assertTrue(flow.runner_active)
+
+    async def test_nula_znamena_bez_runneru_i_pri_nahrazeni(self):
+        # Výslovné "Nepoužít runner" má přednost před runnerem nahrazovaného
+        # čekajícího obchodu; bez volby (None) se runner dál přebírá
+        prvni = await self.zaloz_call(quantity=3)
+        await self.engine.set_runner(prvni.id, 2.0)
+
+        druhe = await self.zaloz_call(quantity=3, runner_multiple=0.0)
+
+        self.assertFalse(druhe.runner_active)
+        self.assertEqual(druhe.auto_runner_multiple, 0.0)
+
+    async def test_rucni_runner_pred_nakupem_prepise_volbu(self):
+        flow = await self.zaloz_call(quantity=4, runner_multiple=0.0, runner_min_quantity=3)
+        self.assertFalse(flow.runner_active)
+
+        # Ručně zapnutý runner platí bez ohledu na minimum ze zadání
+        await self.engine.set_runner(flow.id, 1.5)
+        self.assertAlmostEqual(flow.auto_runner_multiple, 1.5)
+        self.assertIsNone(flow.auto_runner_min_quantity)
+
+        # Ručně zrušený runner nemá přepočet zapínat znovu
+        await self.engine.cancel_runner(flow.id)
+        self.assertEqual(flow.auto_runner_multiple, 0.0)
+
+    async def test_volba_prezije_ulozeni_stavu(self):
+        flow = await self.zaloz_call(
+            quantity=4, runner_multiple=2.0, runner_min_quantity=3, refresh_interval_sec=30.0
+        )
+        flow.last_refresh_at = datetime(2026, 9, 17, 15, 45, 10)
+
+        obnovene = store.dict_to_flow(store.flow_to_dict(flow))
+
+        self.assertAlmostEqual(obnovene.auto_runner_multiple, 2.0)
+        self.assertEqual(obnovene.auto_runner_min_quantity, 3)
+        self.assertAlmostEqual(obnovene.refresh_interval_sec, 30.0)
+        self.assertEqual(obnovene.last_refresh_at, flow.last_refresh_at)
+
+        # Nula (runner nepoužít) se nesmí ztratit jako prázdná hodnota
+        bez = await self.zaloz_call(quantity=2, runner_multiple=0.0)
+        self.assertEqual(store.dict_to_flow(store.flow_to_dict(bez)).auto_runner_multiple, 0.0)
+
+
+class TestPrubeznehoPrepoctu(ZakladTestu):
+    """
+    Průběžný přepočet čekajícího obchodu za otevřené burzy: každých tolik
+    sekund se množství dopočítá znovu z živých kotací, příkaz v trhu se
+    upraví na místě a runner se srovná s volbou ze zadání.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Účet 50 000 USD, riziko 1 % = 500 USD na obchod
+        self.cfg.account.size = 50000.0
+
+    def burza(self, sekund_po_otevreni: float) -> None:
+        """Podvrhne čas burzy na daný počet sekund od otevření (středa 19. 8. 2026)."""
+        otevreni = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("America/New_York"))
+        self.engine._exchange_now = lambda: otevreni + timedelta(seconds=sekund_po_otevreni)
+
+    def odstup(self, flow, sekund: float) -> None:
+        """Posune poslední přepočet obchodu o daný počet sekund do minulosti."""
+        flow.last_refresh_at = datetime.now() - timedelta(seconds=sekund)
+
+    def zlevni(self) -> None:
+        """Opce zlevnila - stejná procenta prémie jsou menší ztráta a víc kontraktů."""
+        self.ib.price_bid, self.ib.price_ask = 1.50, 1.55
+
+    def zdrazi(self) -> None:
+        """Opce zdražila - z rizika vyjde méně kontraktů."""
+        self.ib.price_bid, self.ib.price_ask = 4.00, 4.10
+
+    async def zaloz(self, **zmeny):
+        """
+        Obchod v procentech prémie čekající na vstup: PT 150 USD/ks je 50 %
+        z prémie 3,00, SL 1:1, zadané 2 ks. Průběžný přepočet po 30 s,
+        runner 2× od tří kontraktů.
+        """
+        self.ib.price_underlying = 230.0
+        pozadavek = FlowRequest(
+            symbol="AAPL",
+            entry_price=232.0,
+            profit_target=150.0,
+            quantity=2,
+            pt_on_underlying=False,
+            sl_on_underlying=False,
+            pt_in_premium=True,
+            sl_in_premium=True,
+            premium_base=3.0,
+            sl_to_pt_ratio=1.0,
+            refresh_interval_sec=30.0,
+            runner_multiple=2.0,
+            runner_min_quantity=3,
+        )
+        for klic, hodnota in zmeny.items():
+            setattr(pozadavek, klic, hodnota)
+        return await self.engine.start_flow(pozadavek)
+
+    def zaznamy(self, text: str) -> int:
+        """Počet zápisů v provozním logu obsahujících daný text."""
+        return sum(1 for _, zprava in self.engine.events if text in zprava)
+
+    async def test_prepocet_probehne_az_po_odstupu(self):
+        flow = await self.zaloz()
+        self.burza(600)
+        self.zlevni()
+
+        # Hned po založení se nepřepočítává - odstup se měří od založení
+        await self.engine._tick()
+        self.assertEqual(flow.quantity, 2)
+
+        self.odstup(flow, 31)
+        await self.engine._tick()
+
+        self.assertGreater(flow.quantity, 2)
+        self.assertEqual(
+            flow.quantity, calc.suggest_quantity_for_loss(500.0, flow.stop_loss, 1, 100)
+        )
+        # Příkaz v trhu se upravil na místě - stejný příkaz, nové množství
+        self.assertEqual(len(self.ib.placed), 1)
+        self.assertEqual(self.ib.placed[0].order.totalQuantity, flow.quantity)
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertLess((datetime.now() - flow.last_refresh_at).total_seconds(), 5)
+        self.assertEqual(self.zaznamy("průběžně přepočteno"), 1)
+
+    async def test_runner_se_zapne_az_mnozstvi_doroste_a_vypne_kdyz_klesne(self):
+        flow = await self.zaloz()
+        # Dva kontrakty jsou pod minimem tří - runner zatím ne
+        self.assertFalse(flow.runner_active)
+        self.burza(600)
+
+        self.zlevni()
+        self.odstup(flow, 31)
+        await self.engine._tick()
+
+        self.assertGreaterEqual(flow.quantity, 3)
+        self.assertTrue(flow.runner_active)
+        self.assertEqual(flow.runner_quantity, 1)
+        self.assertAlmostEqual(flow.runner_profit_target, flow.scaled_target(2.0))
+        self.assertAlmostEqual(flow.runner_stop_loss, flow.stop_loss)
+        self.assertEqual(self.zaznamy("runner 1 ks zapnut po přepočtu"), 1)
+
+        # Opce zdražila natolik, že z rizika vyjde jediný kontrakt
+        self.zdrazi()
+        self.odstup(flow, 31)
+        await self.engine._tick()
+
+        self.assertLess(flow.quantity, 3)
+        self.assertFalse(flow.runner_active)
+        self.assertEqual(self.zaznamy("runner po přepočtu vypnut"), 1)
+
+    async def test_mimo_burzu_ani_pred_odstupem_se_neprepocitava(self):
+        flow = await self.zaloz()
+        self.zlevni()
+
+        # Před otevřením burzy nejsou živé kotace
+        self.burza(-600)
+        self.odstup(flow, 31)
+        await self.engine._tick()
+        self.assertEqual(flow.quantity, 2)
+
+        # Za otevřené burzy, ale odstup ještě neuplynul
+        self.burza(600)
+        self.odstup(flow, 10)
+        await self.engine._tick()
+        self.assertEqual(flow.quantity, 2)
+
+        # Bez volby se nepřepočítává vůbec
+        bez = await self.zaloz(refresh_interval_sec=None)
+        self.odstup(bez, 31)
+        await self.engine._tick()
+        self.assertEqual(bez.quantity, 2)
+
+    async def test_ceka_na_prepocet_po_otevreni(self):
+        flow = await self.zaloz(refresh_after_open_sec=60)
+        self.zlevni()
+
+        # Prodleva po otevření ještě běží - průběžný přepočet ji respektuje
+        self.burza(30)
+        self.odstup(flow, 31)
+        await self.engine._tick()
+        self.assertEqual(flow.quantity, 2)
+        self.assertFalse(flow.refresh_after_open_done)
+
+        # Přepočet po otevření proběhne jako první a nastaví odstup
+        self.burza(61)
+        await self.engine._tick()
+        self.assertTrue(flow.refresh_after_open_done)
+        prepoctene_ks = flow.quantity
+        self.assertGreater(prepoctene_ks, 2)
+        self.assertLess((datetime.now() - flow.last_refresh_at).total_seconds(), 5)
+
+        # Další změna kotací se projeví až po dalším odstupu
+        self.zdrazi()
+        self.burza(70)
+        await self.engine._tick()
+        self.assertEqual(flow.quantity, prepoctene_ks)
+        self.odstup(flow, 31)
+        await self.engine._tick()
+        self.assertLess(flow.quantity, prepoctene_ks)
+
+    async def test_beze_zmeny_mnozstvi_se_do_logu_nepise(self):
+        flow = await self.zaloz()
+        self.burza(600)
+        self.zlevni()
+        self.odstup(flow, 31)
+        await self.engine._tick()
+        self.assertEqual(self.zaznamy("průběžně přepočteno"), 1)
+
+        # Druhý přepočet se stejnými kotacemi množství nemění - log mlčí
+        self.odstup(flow, 31)
+        await self.engine._tick()
+        self.assertEqual(self.zaznamy("průběžně přepočteno"), 1)
+
+    async def test_rucne_zapnuty_runner_prepocet_nevypne(self):
+        flow = await self.zaloz(runner_multiple=0.0, quantity=4)
+        await self.engine.set_runner(flow.id, 1.5)
+        self.burza(600)
+        self.zlevni()
+
+        self.odstup(flow, 31)
+        await self.engine._tick()
+
+        # Runner zůstává na ručně zvoleném násobku, jen s cílem na nových úrovních
+        self.assertTrue(flow.runner_active)
+        self.assertAlmostEqual(flow.runner_profit_target, flow.scaled_target(1.5))
+
+        # Ručně zrušený runner přepočet znovu nezapne
+        await self.engine.cancel_runner(flow.id)
+        self.odstup(flow, 31)
+        await self.engine._tick()
+        self.assertFalse(flow.runner_active)
+
+    async def test_odlozeny_pokus_se_neopakuje_kazdym_pruchodem(self):
+        # Bez kotací opce přepočet nemá z čeho vyjít; pokus se přesto počítá
+        # do odstupu, ať se nezkouší při každém průchodu smyčkou
+        flow = await self.zaloz()
+        self.burza(600)
+        self.ib.price_bid, self.ib.price_ask = None, None
+        self.odstup(flow, 31)
+        await self.engine._tick()
+        self.assertEqual(flow.quantity, 2)
+        self.assertLess((datetime.now() - flow.last_refresh_at).total_seconds(), 5)
+
+        # Kotace se vrátily, odstup ale běží znovu
+        self.zlevni()
+        await self.engine._tick()
+        self.assertEqual(flow.quantity, 2)
 
 
 if __name__ == "__main__":

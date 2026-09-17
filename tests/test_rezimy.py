@@ -1657,11 +1657,80 @@ class TestStropuSpreaduVOdhadu(ZakladRezimu):
 
     async def test_odhad_nepresahne_limit_spreadu(self):
         flow = await self.zaloz_siroky_spread()
+        # Pevný odhad nákupní ceny, ať čísla nezávisí na modelu opce
+        flow.expected_fill_price = 3.00
+        await self.engine._tick()
 
-        # Strop je 5 % ze středu trhu (3,00), tedy 15 USD/ks místo plných 80
+        # Strop je 5 % z odhadu nákupní ceny (3,00), tedy 15 USD/ks místo plných 80
         self.assertAlmostEqual(flow.pending_sl_spread, 15.0)
         self.assertEqual(flow.level_text("sl"), "≈ -25.00 USD")
         self.assertAlmostEqual(flow.expected_loss, -50.0)
+
+    async def test_obchod_si_nese_odhad_nakupni_ceny_z_pripravy(self):
+        flow = await self.zaloz(
+            False, False, 10.0, 10.0, quantity=2, sl_spread_compensated=True
+        )
+
+        # Vstup 232 leží nad podkladem 230, CALL tam bude dražší než dnes -
+        # obchod drží tentýž odhad, se kterým příprava počítala množství
+        nahled = await self.engine.prepare(
+            "AAPL", 232.0, 10.0, 10.0, False, False, True
+        )
+        self.assertAlmostEqual(flow.expected_fill_price, nahled.expected_fill_price)
+        self.assertGreater(flow.expected_fill_price, 3.10)
+
+    async def test_strop_vychazi_z_odhadu_nakupni_ceny_ne_ze_stredu_trhu(self):
+        # Opce je dnes levná (střed 3,00), při vstupu se ale čeká nákup za 6,00:
+        # strop 5 % z 6,00 je 30 USD/ks, ze středu trhu by vyšlo jen 15
+        flow = await self.zaloz_siroky_spread()
+        flow.expected_fill_price = 6.00
+        await self.engine._tick()
+
+        self.assertAlmostEqual(flow.pending_sl_spread, 30.0)
+        self.assertAlmostEqual(flow.expected_loss, -80.0)
+
+    async def test_ztrata_v_prehledu_odpovida_vypoctu_mnozstvi(self):
+        # Široký spread už při zadání: přehled musí počítat ztrátu na kontrakt
+        # stejně jako příprava, ze které vyšlo množství
+        self.ib.price_bid, self.ib.price_ask = 2.60, 3.40
+        flow = await self.zaloz(False, False, 10.0, 10.0, sl_spread_compensated=True)
+        await self.engine._tick()
+
+        nahled = await self.engine.prepare(
+            "AAPL", 232.0, 10.0, 10.0, False, False, True
+        )
+        self.assertAlmostEqual(flow.pending_sl_spread, nahled.sl_spread_usd)
+        self.assertEqual(flow.quantity, nahled.quantity)
+        self.assertAlmostEqual(
+            flow.expected_loss,
+            -(nahled.stop_loss + nahled.sl_spread_usd) * nahled.quantity,
+        )
+
+    async def test_bez_odhadu_nakupni_ceny_poslouzi_premie_zadani(self):
+        # Obchod uložený starší verzí odhad nemá - základem je prémie,
+        # ze které vyšla procenta: 5 % ze 4,00 = 20 USD/ks
+        flow = await self.zaloz_siroky_spread(premium_base=4.00)
+        flow.expected_fill_price = None
+        await self.engine._tick()
+
+        self.assertAlmostEqual(flow.pending_sl_spread, 20.0)
+
+    async def test_bez_odhadu_i_premie_poslouzi_stred_trhu(self):
+        flow = await self.zaloz_siroky_spread()
+        flow.expected_fill_price = None
+        await self.engine._tick()
+
+        # Strop je 5 % ze středu trhu (3,00), tedy 15 USD/ks
+        self.assertAlmostEqual(flow.pending_sl_spread, 15.0)
+
+    async def test_odhad_nakupni_ceny_prezije_ulozeni_stavu(self):
+        flow = await self.zaloz(
+            False, False, 10.0, 10.0, quantity=2, sl_spread_compensated=True
+        )
+
+        obnovene = store.dict_to_flow(store.flow_to_dict(flow))
+
+        self.assertAlmostEqual(obnovene.expected_fill_price, flow.expected_fill_price)
 
     async def test_bez_rusení_pri_prekroceni_limitu_se_nestropuje(self):
         # Příkaz zůstává v trhu i po rozšíření spreadu, takže se obchod
@@ -1673,7 +1742,7 @@ class TestStropuSpreaduVOdhadu(ZakladRezimu):
         self.assertAlmostEqual(flow.expected_loss, -180.0)
 
     async def test_spread_pod_limitem_se_nekrati(self):
-        # Kotace 3,00 / 3,10: spread 10 USD/ks je pod stropem 15,25 USD
+        # Kotace 3,00 / 3,10: spread 10 USD/ks je pod stropem 5 % z odhadu nákupní ceny
         flow = await self.zaloz(
             False, False, 10.0, 10.0, quantity=2, sl_spread_compensated=True
         )

@@ -699,6 +699,48 @@ body.body--dark .log-radek {
   width: 120px;
 }
 
+/* Bloky přepočtu jdou za sebou - druhý (průběžný) už linku nad sebou
+   nepotřebuje, patří k témuž tématu jako první */
+.prepinace .blok-prepoctu + .blok-prepoctu {
+  border-top: none;
+  padding-top: 0;
+}
+
+/* Blok runneru ve formuláři: popisek, řada tlačítek s násobky a pole
+   s minimem množství vpravo - stejná skladba jako v dialogu načtení pozic,
+   jen užší, aby se vešla do sloupce formuláře */
+.prepinace .blok-runner {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.prepinace .blok-runner .popisek-runner {
+  color: #475569;
+  font-size: 0.82rem;
+  font-weight: 600;
+  margin-right: 2px;
+}
+
+body.body--dark .prepinace .blok-runner .popisek-runner {
+  color: #cbd5e1;
+}
+
+/* Násobky mají jednotnou šířku, aby řada nepřeskakovala podle délky
+   popisku; "Nepoužít runner" se roztáhne podle textu */
+.prepinace .blok-runner .tlacitko-runner {
+  flex: 0 0 auto;
+  font-size: 0.74rem;
+  min-width: 40px;
+  padding: 2px 8px;
+}
+
+/* Pole s minimem množství stojí u pravého okraje jako pole s prodlevou */
+.prepinace .blok-runner .pole-runner-min {
+  margin-left: auto;
+  width: 120px;
+}
+
 /* --- Bubliny s nápovědou --- */
 /* Ukotvení nad prvkem řeší props v ui.py, zde jen tvar: raději užší a vyšší
    bublina než jeden dlouhý pruh přes půl obrazovky. Delší text se zalomí */

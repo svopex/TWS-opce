@@ -162,11 +162,13 @@ class ImportConfig:
     pt_usd: float | None = None
     pt_premium_pct: float | None = None
     # Výchozí volba runneru jako násobek původní vzdálenosti PT od vstupu.
-    # Povolené jsou násobky nabízené tlačítky, 0 znamená runner nepoužít
+    # Povolené jsou násobky nabízené tlačítky, 0 znamená runner nepoužít.
+    # Předvyplňuje tlačítka Runner v dialogu i ve formuláři zadání obchodu
     runner_multiple: float = 1.5
-    # Nejmenší velikost pozice, které hromadné zadání runner nastaví (včetně).
-    # Pozice s menším počtem kontraktů dostanou ve sloupci Runner volbu
-    # "Bez"; ručně ji tam lze přesto přepnout
+    # Nejmenší velikost pozice, které se runner nastaví (včetně). Pozice
+    # s menším počtem kontraktů runner nedostane (v dialogu má ve sloupci
+    # Runner volbu "Bez"; ručně ji tam lze přesto přepnout). Předvyplňuje
+    # pole "Runner od [ks]" v dialogu i ve formuláři zadání obchodu
     runner_min_quantity: int = 3
     # Volby sdílené s formulářem zadání; null = převzít hodnotu z trading
     max_spread_pct: float | None = None
@@ -182,6 +184,13 @@ class ImportConfig:
     # Prodleva od otevření burzy v sekundách - v prvních okamžicích jsou
     # kotace opcí nejširší, přepočet proto chvíli počká
     refresh_after_open_sec: float = 60.0
+    # Průběžný přepočet čekajících obchodů za otevřené burzy: každých
+    # refresh_interval_sec sekund se množství (a s ním PT v % prémie i SL)
+    # dopočítá znovu z živých kotací, čekající příkaz se upraví na místě
+    # a runner se srovná s volbou runneru a minimem pro něj. Volba předvyplní
+    # přepínač v dialogu načtení pozic i ve formuláři zadání obchodu
+    refresh_interval: bool = True
+    refresh_interval_sec: float = 30.0
     # Kontrola propásnutého vstupu podle minutových svíček podkladu - jen
     # v dialogu načtení pozic ze souboru (Přepočítat, Zadat vybrané pozice,
     # Zadat po otevření trhu). Překročil-li podklad od času níže vstupní
@@ -432,6 +441,10 @@ def validate_config(cfg: AppConfig) -> None:
     # Nula je platná (přepočet hned po otevření), záporná prodleva nedává smysl
     if cfg.import_.refresh_after_open_sec < 0:
         problems.append("import.refresh_after_open_sec nesmí být záporné")
+    # Průběžný přepočet kratší než sekunda by běžel při každém průchodu
+    # smyčkou a upravoval příkaz v trhu naprázdno
+    if cfg.import_.refresh_interval_sec < 1:
+        problems.append("import.refresh_interval_sec musí být alespoň 1 s")
     if cfg.expiration.mode not in EXPIRATION_MODES:
         problems.append(
             f"expiration.mode musí být jedna z {EXPIRATION_MODES}, nalezeno '{cfg.expiration.mode}'"

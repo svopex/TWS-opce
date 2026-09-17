@@ -41,12 +41,20 @@ SAVED_FIELDS = (
     "sl_spread_compensated",
     "sl_spread_usd",
     "sl_spread_capped",
+    # Základ stropu odhadu spreadu - po restartu musí přehled počítat
+    # ztrátu na SL ze stejného odhadu nákupní ceny jako před ním
+    "expected_fill_price",
     "pt_in_premium",
     "sl_in_premium",
     "premium_base",
     # Přepočet po otevření burzy - po restartu se musí vědět, zda ještě čeká
     "refresh_after_open_sec",
     "refresh_after_open_done",
+    # Průběžný přepočet a automatický runner - po restartu musí čekající
+    # obchod dál přepočítávat a runner rozdávat podle téže volby
+    "refresh_interval_sec",
+    "auto_runner_multiple",
+    "auto_runner_min_quantity",
     "primary_level",
     "sl_to_pt_ratio",
     "expiration",
@@ -87,7 +95,7 @@ SAVED_FIELDS = (
 )
 
 # Pole s časovým údajem se ukládají v textovém tvaru ISO
-TIME_FIELDS = ("created_at", "updated_at", "fill_time", "blocked_since")
+TIME_FIELDS = ("created_at", "updated_at", "fill_time", "blocked_since", "last_refresh_at")
 
 
 def flow_to_dict(flow: Flow) -> dict[str, Any]:

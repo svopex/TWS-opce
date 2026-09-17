@@ -216,8 +216,17 @@ projít.
    jen s 6 % ceny opce, tedy asi 18 USD/ks; z menší ztráty na kontrakt
    vyjde odpovídajícím dílem větší množství. Základem procenta je
    **odhadovaná nákupní cena** — limit se měří proti kotaci v okamžiku
-   nákupu, ne proti dnešní; v přehledu, kde obchod odhad nákupní ceny
-   nedrží, slouží střed trhu. Stejný strop platí i pro samotný **odhad
+   nákupu, ne proti dnešní. Obchod si odhad ze zadání (a z přepočtu
+   po otevření burzy) pamatuje, takže přehled stropuje ze stejného základu
+   jako doporučené množství. U opce daleko od vstupu na tom záleží: dnes
+   stojí třeba 0,78, při vstupu 2,96, a strop 7 % pak dělá 20,73 USD/ks,
+   ne 5,49. Obchodu uloženému starší verzí, který odhad nemá, slouží prémie,
+   ze které vyšla procenta, bez ní střed dnešní kotace. Samotný spread
+   ovšem přehled bere z aktuální kotace, kdežto množství ze spreadu
+   v okamžiku výpočtu. Zúžil-li se spread od té doby — typicky u zadání
+   těsně po otevření burzy — ukazuje *Ztráta na SL* méně než riziko
+   na obchod; množství se tím nemění, přepočítá se jen při zadání a při
+   přepočtu po otevření. Stejný strop platí i pro samotný **odhad
    nákupní ceny**: k modelové ceně opce při vstupu se přičítá půl spreadu
    (nakupuje se u ASKu), ale nejvýš půl spreadu odpovídajícího limitu
    (základem je modelová cena). Široký spread, typicky těsně po otevření
@@ -261,6 +270,49 @@ projít.
    aby zadání nezmizelo celé. K odeslání proto stačí vstupní cena a kterákoliv
    z úrovní. Na dopočtu PT strike nezávisí — vybírá se od vstupní ceny.
 
+   **Po otevření trhu přepočítat.** Blok pod přepínači režimů je tatáž
+   volba, jakou má dialog načtení pozic ze souboru (viz
+   [Načtení pozic ze souboru](#načtení-pozic-ze-souboru)): obchod zadaný
+   před otevřením burzy se po uplynutí prodlevy v poli *Prodleva [s]* jednou
+   přepočítá podle živých kotací. Ve formuláři je výchozí stav vypnuto —
+   slouží hlavně k ručnímu zadání během seance, kde by se přepočet spustil
+   hned; při načtení obchodu, který na přepočet ještě čeká, se volba zapne.
+
+   **Přepočítávat každých [s].** Průběžný přepočet čekajícího obchodu za
+   otevřené burzy. Se zaškrtnutou volbou (výchozí stav `import.refresh_interval`,
+   odstup `import.refresh_interval_sec`, standardně 30 s) engine obchodu, který
+   ještě čeká na vstup, v tomto odstupu dopočítá **množství** znovu z živých
+   kotací — a s ním PT zadané procentem prémie i SL, stejnými kroky jako při
+   přípravě zadání — a čekající příkaz v trhu upraví na místě (stejné orderId,
+   neruší se). Zároveň srovná **runner** s volbou v následujícím bloku:
+   pozice, která na runner dorostla, ho dostane, pozice pod minimem o něj
+   přijde. Množství se tedy hýbe **jen** tímto přepočtem a přepočtem po
+   otevření; samotná změna kotací ho nemění. Čeká-li obchod ještě na přepočet
+   po otevření, průběžný běží až po něm — prodleva po otevření chrání před
+   nejširšími kotacemi. Mimo obchodní hodiny se nepřepočítává (bez živých
+   kotací není z čeho), nakoupený obchod se nemění. Do provozního logu jde
+   přepočet jen tehdy, když změnil množství nebo runner; posun PT a SL
+   v procentech prémie s každou kotací by log zaplavil, sloupce přehledu
+   ho ukazují průběžně. Odstup se měří od posledního přepočtu, před prvním
+   od založení obchodu; i pokus, který přepočet odložil (chybí kotace, TWS
+   příkaz zrovna mění), se do odstupu počítá.
+
+   **Runner.** Řada tlačítek *Nepoužít runner* / *1×* … *3×* s polem
+   **Runner od [ks]** — tatáž volba jako nad tabulkou dialogu načtení pozic
+   (výchozí `import.runner_multiple` a `import.runner_min_quantity`).
+   Zvolený násobek zapne u založeného obchodu runner (`trading.runner_quantity`
+   kusů) s cílem na tomto násobku původní vzdálenosti PT od vstupu — přesně
+   jako tlačítka runneru v řádku přehledu — ale jen má-li obchod **alespoň**
+   tolik kontraktů, kolik stojí v poli *Runner od*. Menší obchod běží bez
+   runneru a dostane ho, až na něj přepočtem doroste; naopak obchod, jehož
+   množství přepočtem klesne pod minimum (nebo na runner nestačí), o runner
+   přijde. Volbu i minimum si obchod nese s sebou, takže platí i po zavření
+   stránky a po restartu. Ruční zásah tlačítky runneru v přehledu má
+   přednost: runner zapnutý ručně před nákupem platí bez ohledu na minimum
+   a *Zrušit runner* ho vypne natrvalo — přepočet ho podle původní volby
+   znovu nezapne. *Nepoužít runner* platí i při nahrazení čekajícího obchodu
+   téhož směru: runner z nahrazeného obchodu se nepřebírá.
+
    TWS model greeks u opcí neposílá spolehlivě — závisí to na účtu
    a předplatném dat. Chybí-li delta, aplikace ji dopočítá z tržní ceny opce
    (implikovaná volatilita a z ní delta podle Black-Scholes) a ve formuláři
@@ -286,8 +338,9 @@ projít.
    v přehledu obchodů, jen se obchod nehledá podle tickeru, ale vezme se ten
    kliknutý. Vrací se **celé zadání**: ticker, vstup, obě úrovně, množství,
    limit spreadu, oba přepínače režimu PT a SL (včetně jednotky *% prémie*),
-   kompenzace spreadu, volba prvotní úrovně *Zadává se SL / PT* i pole
-   *RRR (PT:SL)*. Prvotní úroveň a poměr se z uložených čísel dopočítat nedají
+   kompenzace spreadu, volba prvotní úrovně *Zadává se SL / PT*, pole
+   *RRR (PT:SL)*, volba runneru s minimem i přepínač průběžného přepočtu
+   s odstupem. Prvotní úroveň a poměr se z uložených čísel dopočítat nedají
    — obě úrovně se ukládají stejně a poměr by po posunu cíle násobkem vyšel
    jinak —, proto si je obchod pamatuje ze zadání. Obchody z verzí, které je
    ještě neukládaly, obě volby nechávají tak, jak právě jsou.
@@ -896,11 +949,18 @@ ručně. Hodnota v poli platí jen pro otevřený dialog, do konfigurace se neza
 
 Zvolený násobek zapne u založeného obchodu runner (počet kusů podle
 `trading.runner_quantity`) s cílem na tomto násobku původní vzdálenosti PT od
-vstupu — přesně jako tlačítka runneru v řádku přehledu. Zapíná se až na hotovém
-obchodu, takže před nákupem si obchod volbu jen zapamatuje a zajišťovací příkazy
-se po nákupu založí rovnou rozdělené. Pozice s příliš malým množstvím runner
-nedostane (vyžaduje víc kontraktů, než je jeho velikost); obchod se přesto
-založí a důvod se objeví ve sloupci *Stav*.
+vstupu — přesně jako tlačítka runneru v řádku přehledu. Zapíná ho engine při
+založení, takže před nákupem si obchod volbu jen zapamatuje a zajišťovací
+příkazy se po nákupu založí rovnou rozdělené. **Volbu i minimum si obchod
+odnáší s sebou** a po každém přepočtu množství (po otevření burzy i průběžném)
+se runner srovná znovu: pozice, která na něj dorostla, ho dostane, pozice pod
+minimem o něj přijde. Proto si i řádek stojící na *Bez* jen kvůli malému
+množství odnáší výchozí volbu — až na runner přepočtem doroste, dostane ho.
+Řádek, jehož volbu obchodník v comboboxu přepnul ručně (jiný násobek, nebo
+*Bez* u dost velké pozice), si naopak nese svou volbu **bez minima**: platí
+bez ohledu na množství. Pozice s příliš malým množstvím runner při založení
+nedostane; obchod se přesto založí a důvod se objeví ve sloupci *Stav*
+i v provozním logu.
 
 **Po otevření trhu přepočítat** řeší zadání připravené před otevřením burzy.
 Mimo obchodní hodiny TWS u opcí neposílá BID ani ASK, takže PT v procentech
@@ -928,6 +988,17 @@ protože v prvních okamžicích po otevření jsou kotace opcí nejširší.
 Tlačítko **Zadat po otevření trhu** přepínač nepoužije: řádky přepočítá až
 po otevření a uplynutí prodlevy a hned je zadá, takže proběhne jediný
 přepočet a přehled ukáže stejná čísla i runner jako dialog.
+
+**Přepočítávat každých [s]** zapíná průběžný přepočet čekajících obchodů
+za otevřené burzy — tatáž volba, jakou má formulář zadání (podrobně
+v jeho popisu výše). Každý obchod z dávky, který ještě čeká na vstup, si
+v zadaném odstupu (výchozí `import.refresh_interval_sec`, 30 s) dopočítá
+množství znovu z živých kotací, upraví čekající příkaz na místě a srovná
+runner s volbou a minimem z dialogu. Na rozdíl od přepočtu po otevření ho
+dostanou i obchody zadané tlačítkem *Zadat po otevření trhu*: první přepočet
+proběhne až po odstupu od založení, čísla dialogu tedy hned nepřepíše.
+Čeká-li obchod ještě na přepočet po otevření, průběžný běží až po něm.
+Sloupec *Stav* u takového obchodu uvádí „přepočet každých 30 s".
 
 **Kontrola propásnutého vstupu podle minutových svíček.** Živá cena podkladu
 odhalí jen vstup, za kterým cena právě *je*; když podklad v overnight seanci
@@ -963,13 +1034,15 @@ takže se po otevření nemusí nic přepínat:
 |---|---|
 | `pt_mode` | režim cíle — `pct` (% dráhy k cíli), `usd` (USD/ks), `premium` (% prémie) |
 | `pt_pct`, `pt_usd`, `pt_premium_pct` | obsah tří polí PT; každý režim má vlastní, `null` nechá pole prázdné |
-| `runner_multiple` | výchozí volba runneru (`0` = nepoužít, jinak nabízený násobek) |
-| `runner_min_quantity` | obsah pole *Runner od [ks]* |
+| `runner_multiple` | výchozí volba runneru (`0` = nepoužít, jinak nabízený násobek); platí i pro formulář zadání |
+| `runner_min_quantity` | obsah pole *Runner od [ks]*; platí i pro formulář zadání |
 | `refresh_after_open`, `refresh_after_open_sec` | přepínač *Po otevření trhu přepočítat* a pole *Prodleva [s]* |
+| `refresh_interval`, `refresh_interval_sec` | přepínač *Přepočítávat každých* a pole *Odstup [s]*; platí i pro formulář zadání |
 | `entry_cross_check`, `entry_cross_check_from` | kontrola propásnutého vstupu podle minutových svíček a čas (HH:MM, zóna burzy), od kterého se svíčky procházejí |
 | `max_spread_pct`, `rrr`, `sl_spread_compensated` | totéž co v běžném formuláři; `null` = převzít ze sekce `trading` |
 
-Poslední tři volby má i formulář jednotlivého zadání. Prázdná hodnota (`null`)
+Volby `max_spread_pct`, `rrr` a `sl_spread_compensated` má i formulář
+jednotlivého zadání. Prázdná hodnota (`null`)
 znamená „chovej se jako formulář", vyplněná dovolí, aby se hromadné zadání od
 jednotlivého lišilo — třeba přísnějším spreadem nebo jiným RRR. Do konfigurace
 se nic z toho nezapisuje zpět; změny v otevřeném dialogu platí jen do jeho

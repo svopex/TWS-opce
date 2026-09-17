@@ -310,12 +310,15 @@ import:
 
   # Výchozí volba runneru - násobek původní vzdálenosti PT od vstupu.
   # Povolené jsou násobky nabízené tlačítky (1, 1.5, 2, 2.5, 3),
-  # 0 znamená runner nepoužít.
+  # 0 znamená runner nepoužít. Předvyplňuje tlačítka Runner v dialogu
+  # i ve formuláři Zadání obchodu.
   runner_multiple: 2.5
 
   # Nejmenší velikost pozice, které se runner nastaví (včetně). Vyplní se do
-  # pole vedle tlačítek Runner a řádky s menším počtem kontraktů dostanou
-  # volbu "Bez"; ručně ji tam lze přesto přepnout.
+  # pole "Runner od [ks]" vedle tlačítek Runner (v dialogu i ve formuláři);
+  # pozice s menším počtem kontraktů runner nedostane - v dialogu má volbu
+  # "Bez", ručně ji tam lze přesto přepnout. Obchod si volbu i minimum nese
+  # s sebou: po každém přepočtu množství se runner srovná znovu.
   runner_min_quantity: 3
 
   # Následující tři volby má i běžný formulář zadání. Prázdná hodnota (null)
@@ -340,6 +343,17 @@ import:
   # jsou kotace opcí nejširší. Spread nad limitem přepočet nezdrží - kompenzace
   # SL se počítá s limitem spreadu (max_spread_pct), stejně jako v dialogu.
   refresh_after_open_sec: 15
+
+  # Průběžný přepočet čekajících obchodů za otevřené burzy. Každých
+  # refresh_interval_sec sekund se obchodu, který ještě čeká na vstup,
+  # dopočítá množství (a s ním PT v % prémie i SL) znovu z živých kotací,
+  # čekající příkaz se upraví na místě a runner se srovná s volbou runneru
+  # a minimem "Runner od [ks]": pozice, která na runner dorostla, ho dostane,
+  # pozice pod minimem o něj přijde. Čeká-li obchod ještě na přepočet po
+  # otevření, průběžný přepočet běží až po něm. Volba předvyplní přepínač
+  # "Přepočítávat každých" v dialogu načtení pozic i ve formuláři zadání.
+  refresh_interval: true
+  refresh_interval_sec: 30
 
   # Kontrola propásnutého vstupu podle minutových svíček podkladu. Platí jen
   # pro dialog načtení pozic ze souboru - tlačítka Přepočítat, Zadat vybrané
