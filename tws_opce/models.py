@@ -45,15 +45,43 @@ def runner_klic(nasobek: float | None) -> str:
     return klic if klic in runner_volby() else RUNNER_VYPNUTO
 
 
-def runner_nasobek(hodnota: Any) -> float | None:
-    """Násobek cíle runneru z hodnoty volby; None znamená runner nezapínat."""
-    text = str(hodnota or RUNNER_VYPNUTO)
-    if text == RUNNER_VYPNUTO:
+def runner_nasobek(hodnota: Any) -> float:
+    """
+    Násobek cíle runneru z hodnoty volby. Nula znamená runner nepoužít -
+    tutéž hodnotu nese Flow.auto_runner_multiple, takže se mezi rozhraním
+    a obchodem nic nepřevádí. Neplatná hodnota se bere jako vypnuto.
+    """
+    try:
+        return float(hodnota or RUNNER_VYPNUTO)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def cislo_z_pole(hodnota: Any) -> float | None:
+    """Hodnota číselného pole jako float; prázdné nebo nečíselné pole vrací None."""
+    if hodnota in (None, ""):
         return None
     try:
-        return float(text)
-    except ValueError:
+        return float(hodnota)
+    except (TypeError, ValueError):
         return None
+
+
+def sekundy_prepoctu(
+    zapnuto: bool, hodnota: Any, minimum: float, zaloha: float
+) -> float | None:
+    """
+    Sekundy z dvojice přepínač + číselné pole (přepočet po otevření,
+    průběžný přepočet): vypnutý přepínač vrací None, prázdné pole nebo
+    hodnota pod minimem spadne na zálohu z konfigurace, ať se přepočet
+    neřídí náhodným číslem.
+    """
+    if not zapnuto:
+        return None
+    cislo = cislo_z_pole(hodnota)
+    if cislo is None or cislo < minimum:
+        return float(zaloha)
+    return cislo
 
 
 def cislo_text(hodnota: float, desetin: int = 2) -> str:
@@ -428,15 +456,19 @@ class Flow:
     refresh_interval_sec: float | None = None
     last_refresh_at: datetime | None = None
 
-    # Automatická volba runneru ze zadání: násobek původní vzdálenosti PT,
-    # na kterém má runner cíl (0 = runner nepoužít, None = neuvedeno -
-    # obchod ze starší verze nebo bez volby), a nejmenší množství, od kterého
-    # (včetně) runner náleží. Podle nich se runner nastaví při založení
-    # a znovu po každém přepočtu množství: pozice, která na runner dorostla,
-    # ho dostane, pozice pod minimem o něj přijde. Ruční zapnutí či zrušení
-    # runneru před nákupem volbu přepisuje, aby ji přepočet nevracel zpět
+    # Automatická volba runneru: násobek původní vzdálenosti PT, na kterém má
+    # runner cíl (0 = runner nepoužít, None = neuvedeno - runner se nechává,
+    # jak je), a nejmenší množství, od kterého (včetně) runner náleží (None =
+    # bez minima). Podle nich se runner nastaví při založení a znovu po každém
+    # přepočtu množství. Ruční zapnutí či zrušení runneru před nákupem volbu
+    # přepisuje, aby ji přepočet nevracel zpět; obchod uložený starší verzí
+    # ji dostane při načtení ze zapnutého runneru
     auto_runner_multiple: float | None = None
     auto_runner_min_quantity: int | None = None
+    # Proč chtěný runner zapnutý není (málo kontraktů) - živý údaj pro
+    # rozhraní, který engine přepisuje při každém srovnání runneru. None,
+    # když runner běží nebo není chtěný. Neukládá se, dopočítá se znovu
+    runner_skip_reason: str | None = None
 
     # Prvotní úroveň zadání: 'sl' znamená, že obchodník zadal SL a PT se
     # dopočítalo, 'pt' naopak. Z uložených úrovní to poznat nejde (obě se
@@ -880,6 +912,21 @@ class Flow:
     def runner_active(self) -> bool:
         """True, pokud má obchod aktivní runner s vlastním cílem."""
         return self.runner_profit_target is not None and self.runner_quantity > 0
+
+    def set_runner_levels(self, cil: float, kusy: int) -> None:
+        """
+        Zapne runner před nákupem, nebo mu přepočítá úrovně: cíl, počet kusů
+        a SL začínající na SL obchodu - stejně jako při ručním zapnutí.
+        """
+        self.runner_profit_target = cil
+        self.runner_quantity = kusy
+        self.runner_stop_loss = self.stop_loss
+
+    def clear_runner(self) -> None:
+        """Vypne runner - obchod dál drží jeden PT a SL pro celou pozici."""
+        self.runner_profit_target = None
+        self.runner_quantity = 0
+        self.runner_stop_loss = None
 
     @property
     def runner_sl(self) -> float:

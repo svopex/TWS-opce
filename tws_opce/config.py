@@ -145,12 +145,13 @@ class TradingConfig:
 @dataclass
 class ImportConfig:
     """
-    Výchozí nastavení dialogu "Načtení pozic ze souboru".
+    Výchozí volby zadání obchodu - dialogu "Načtení pozic ze souboru"
+    a u runneru a přepočtů i formuláře zadání.
 
-    Hodnoty formulář jen předvyplní - před zadáním do trhu je lze přepsat.
-    U voleb, které má i běžný formulář zadání, znamená prázdná hodnota
-    (null) "převzít nastavení ze sekce trading"; vyplněná hodnota naopak
-    dovolí, aby se hromadné zadání od jednotlivého lišilo.
+    Hodnoty rozhraní jen předvyplní - před zadáním do trhu je lze přepsat.
+    U voleb, které má sekce trading, znamená prázdná hodnota (null)
+    "převzít nastavení ze sekce trading"; vyplněná hodnota naopak dovolí,
+    aby se hromadné zadání od jednotlivého lišilo.
     """
 
     # Režim zadání cíle: pct = procento dráhy k cíli na podkladu,

@@ -543,6 +543,9 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         self.dialog.spread_input = Pole(5.0)
         self.dialog.rrr_input = Pole(2.0)
         self.dialog.sl_spread_compensated = Zaskrtavatko(False)
+        # Globální volba runneru: 2× od tří kontraktů
+        self.dialog.runner_value = "2"
+        self.dialog.runner_min_input = Pole(3)
         self.dialog.loading_label = Popisek()
         self.dialog.souhrn_label = Popisek()
         self.dialog.zadat_button = Zaskrtavatko(True)
@@ -701,10 +704,8 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.zadani[2].refresh_after_open_sec, 60.0)
 
     async def test_zadani_nese_volbu_runneru_s_minimem(self):
-        # Řádek s volbou, jakou by mu dialog přidělil sám, nese globální
-        # nastavení - runner zapíná engine při založení i po přepočtu
-        self.dialog.runner_value = "2"
-        self.dialog.runner_min_input = Pole(3)
+        # Řádek s volbou přidělenou dialogem nese globální nastavení - runner
+        # zapíná engine při založení i po přepočtu
         radek = self.radek()
         radek.runner_select = Pole("2")
         await self.zadej(radek)
@@ -714,43 +715,65 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
     async def test_mala_pozice_nese_volbu_pro_pripad_ze_doroste(self):
         # Řádek na "Bez" jen kvůli malému množství si volbu odnáší také -
         # runner dostane, až na něj přepočtem doroste
-        self.dialog.runner_value = "2"
-        self.dialog.runner_min_input = Pole(3)
         radek = self.radek()
         radek.qty_input = Pole(2)
-        radek.runner_select = Pole(RUNNER_VYPNUTO)
         await self.zadej(radek)
         self.assertEqual(self.zadani[0].runner_multiple, 2.0)
         self.assertEqual(self.zadani[0].runner_min_quantity, 3)
 
     async def test_rucne_prepnuty_runner_plati_bez_minima(self):
-        self.dialog.runner_value = "2"
-        self.dialog.runner_min_input = Pole(3)
         # Ručně zvolený jiný násobek platí bez ohledu na množství
         rucni = self.radek()
         rucni.runner_select = Pole("3")
+        rucni.runner_rucne = True
         # Ručně vypnutý runner u dost velké pozice zůstane vypnutý
         vypnuty = self.radek()
-        vypnuty.runner_select = Pole(RUNNER_VYPNUTO)
+        vypnuty.runner_rucne = True
         await self.zadej(rucni, vypnuty)
         self.assertEqual(self.zadani[0].runner_multiple, 3.0)
         self.assertIsNone(self.zadani[0].runner_min_quantity)
         self.assertEqual(self.zadani[1].runner_multiple, 0.0)
         self.assertIsNone(self.zadani[1].runner_min_quantity)
 
-    async def test_nezapnuty_runner_se_pripise_do_stavu(self):
-        # Náhrada enginu runner nezapíná - u chtěného runneru to řádek hlásí,
-        # u vypnutého ne
-        self.dialog.runner_value = "2"
-        self.dialog.runner_min_input = Pole(3)
-        chteny = self.radek()
-        chteny.runner_select = Pole("2")
-        bez = self.radek()
-        bez.runner_select = Pole(RUNNER_VYPNUTO)
-        await self.zadej(chteny, bez)
-        self.assertIn("runner nezapnut", chteny.poznamka)
-        self.assertIn("runner nezapnut", chteny.stav_label.text)
-        self.assertEqual(bez.poznamka, "")
+    async def test_prideleni_volby_rusi_priznak_rucniho_prepnuti(self):
+        # Přepočet tabulky volbu přiděluje znovu - ruční přepnutí tím zaniká
+        radek = self.radek()
+        radek.runner_rucne = True
+        self.dialog._obnov_runner_radku(radek)
+        self.assertFalse(radek.runner_rucne)
+        self.assertEqual(radek.runner_select.value, "2")
+
+        # Obsluha comboboxu běží i při programovém zápisu; za ruční přepnutí
+        # se považuje jen mimo něj
+        radek.runner_prepis = True
+        self.dialog._rucni_runner(radek)
+        self.assertFalse(radek.runner_rucne)
+        radek.runner_prepis = False
+        self.dialog._rucni_runner(radek)
+        self.assertTrue(radek.runner_rucne)
+
+    async def test_nezapnuty_runner_ukazuje_duvod_z_obchodu(self):
+        # Důvod zná engine a nese ho obchod - stav řádku ho ukazuje živě,
+        # dokud runner není zapnutý
+        puvodni = self.engine.start_flow
+
+        async def start_flow(request: FlowRequest) -> Flow:
+            flow = await puvodni(request)
+            flow.runner_skip_reason = "množství 2 ks je pod minimem 3 ks"
+            return flow
+
+        self.engine.start_flow = start_flow
+        radek = self.radek()
+        await self.zadej(radek)
+        self.assertIn("runner nezapnut: množství 2 ks je pod minimem 3 ks", radek.stav_label.text)
+
+        # Zapnutý runner důvod nahradí
+        flow = self.engine.flows[radek.flow_id]
+        flow.runner_skip_reason = None
+        flow.set_runner_levels(180.0, 1)
+        self.dialog._zapis_stav_obchodu(radek)
+        self.assertIn("runner 1 ks", radek.stav_label.text)
+        self.assertNotIn("nezapnut", radek.stav_label.text)
 
     async def test_prubezny_prepocet_jde_do_zadani_z_konfigurace(self):
         # Bez vykreslených prvků platí konfigurace: zapnuto, 30 s

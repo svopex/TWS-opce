@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 from nicegui import ui
 
-from . import importer
+from . import importer, widgets
 from .config import AppConfig
 from .engine import FlowEngine, Preview
 from .ib_service import IBService
@@ -30,6 +30,7 @@ from .models import (
     RUNNER_VYPNUTO,
     FlowRequest,
     cislo_text,
+    cislo_z_pole,
     format_countdown,
     pomer_z_rrr,
     priznaky_urovne,
@@ -37,6 +38,7 @@ from .models import (
     runner_klic,
     runner_nasobek,
     runner_volby,
+    sekundy_prepoctu,
     urovne_z_rezimu,
 )
 
@@ -132,6 +134,12 @@ class RadekPozice:
     sl_input: Any = None
     qty_input: Any = None
     runner_select: Any = None
+    # Runner v řádku přepnul obchodník ručně - taková volba platí bez ohledu
+    # na množství, kdežto volbu přidělenou dialogem si obchod odnáší
+    # s minimem. Druhý příznak kryje programový zápis, při kterém obsluha
+    # comboboxu běží také
+    runner_rucne: bool = False
+    runner_prepis: bool = False
     stav_label: Any = None
     obnovit_button: Any = None
     # Poslední připravený náhled - drží vybraný kontrakt a určený směr
@@ -364,73 +372,38 @@ class ImportDialog:
             # a čekající příkaz upraví na místě. Volba se zapisuje do každého
             # zakládaného obchodu, takže platí i po zavření dialogu
             with ui.row().classes("blok-obnova"):
-                self.refresh_checkbox = (
-                    ui.checkbox("Po otevření trhu přepočítat", value=imp.refresh_after_open)
-                    .props("dense")
-                    .classes("prepinac")
-                    .tooltip(
-                        "Zaškrtnuto: obchody z této dávky, které po otevření burzy "
-                        "ještě čekají na vstup, se po uplynutí prodlevy vpravo jednou "
-                        "přepočítají podle živých kotací - PT v procentech prémie, SL "
-                        "i množství vyjdou ze skutečné ceny opce místo odhadu ze "
-                        "závěrečné ceny. Čekající příkaz v trhu se upraví na místě, "
-                        "neruší se. Obchod, který už nakoupil, se nemění. Spread nad "
-                        "limitem přepočet nezdrží - počítá se s Max. spread. Zadat po otevření trhu "
-                        "volbu nepoužije - dávku přepočítá samo až po otevření, "
-                        "takže druhý přepočet není potřeba."
-                    )
-                )
-                self.refresh_sec_input = (
-                    ui.number(
-                        "Prodleva [s]",
-                        value=imp.refresh_after_open_sec,
-                        format="%.0f",
-                        step=5,
-                        min=0,
-                    )
-                    .classes("pole pole-obnova-sec")
-                    .props("outlined dense")
-                    .tooltip(
-                        "Kolik sekund po otevření burzy se přepočet provede. "
-                        "V prvních okamžicích jsou kotace opcí nejširší, proto "
-                        "chvíli počkat. Výchozí hodnota je "
-                        "import.refresh_after_open_sec z konfigurace."
-                    )
+                self.refresh_checkbox, self.refresh_sec_input = widgets.blok_prepoctu(
+                    "Po otevření trhu přepočítat",
+                    "Prodleva [s]",
+                    imp.refresh_after_open,
+                    imp.refresh_after_open_sec,
+                    0,
+                    "Zaškrtnuto: obchody z této dávky, které po otevření burzy "
+                    "ještě čekají na vstup, se po uplynutí prodlevy vpravo jednou "
+                    "přepočítají podle živých kotací - PT v procentech prémie, SL "
+                    "i množství vyjdou ze skutečné ceny opce místo odhadu ze "
+                    "závěrečné ceny. Čekající příkaz v trhu se upraví na místě, "
+                    "neruší se. Obchod, který už nakoupil, se nemění. Spread nad "
+                    "limitem přepočet nezdrží - počítá se s Max. spread. Zadat po otevření trhu "
+                    "volbu nepoužije - dávku přepočítá samo až po otevření, "
+                    "takže druhý přepočet není potřeba.",
+                    widgets.NAPOVEDA_PRODLEVY,
+                    "pole pole-obnova-sec",
                 )
 
-            # Průběžný přepočet za otevřené burzy: čekající obchod si každých
-            # tolik sekund dopočítá množství (a PT v % prémie i SL) znovu
-            # a srovná runner s volbou níže. Volba se zapisuje do obchodu
+            # Průběžný přepočet za otevřené burzy - volba se zapisuje do obchodu
             with ui.row().classes("blok-obnova"):
-                self.interval_checkbox = (
-                    ui.checkbox("Přepočítávat každých", value=imp.refresh_interval)
-                    .props("dense")
-                    .classes("prepinac")
-                    .tooltip(
-                        "Zaškrtnuto: obchody z této dávky, které za otevřené burzy "
-                        "čekají na vstup, se v tomto odstupu přepočítávají podle "
-                        "živých kotací - množství (a s ním PT v procentech prémie "
-                        "i SL) vyjde znovu ze skutečné ceny opce a čekající příkaz "
-                        "se upraví na místě. Zároveň se srovná runner: pozice, která "
-                        "na něj dorostla (viz Runner od), ho dostane, pozice pod "
-                        "minimem o něj přijde. Čeká-li obchod na přepočet po otevření, "
-                        "průběžný přepočet začne až po něm. Nakoupený obchod se nemění."
-                    )
-                )
-                self.interval_sec_input = (
-                    ui.number(
-                        "Odstup [s]",
-                        value=imp.refresh_interval_sec,
-                        format="%.0f",
-                        step=5,
-                        min=1,
-                    )
-                    .classes("pole pole-obnova-sec")
-                    .props("outlined dense")
-                    .tooltip(
-                        "Kolik sekund uplyne mezi dvěma přepočty. Výchozí hodnota "
-                        "je import.refresh_interval_sec z konfigurace."
-                    )
+                self.interval_checkbox, self.interval_sec_input = widgets.blok_prepoctu(
+                    "Přepočítávat každých",
+                    "Odstup [s]",
+                    imp.refresh_interval,
+                    imp.refresh_interval_sec,
+                    1,
+                    widgets.NAPOVEDA_INTERVALU.format(
+                        rozsah="obchody z této dávky, které"
+                    ),
+                    widgets.NAPOVEDA_ODSTUPU,
+                    "pole pole-obnova-sec",
                 )
 
         with ui.row().classes("radek"):
@@ -497,7 +470,7 @@ class ImportDialog:
         # Runner se zapíná až po založení obchodu, stejně jako tlačítky
         # v přehledu - před nákupem si volbu obchod jen zapamatuje
         with ui.row().classes("radek radek-runner"):
-            ui.label("Runner:").classes("popisek-runner-import")
+            ui.label("Runner:").classes("popisek-volby-runner")
             napoveda = (
                 "Výchozí nastavení runneru pro všechny načtené pozice - přepíše "
                 "volbu ve sloupci Runner, kde ji lze u každé pozice doladit "
@@ -508,38 +481,14 @@ class ImportDialog:
                 "alespoň takovým, jaké je v poli vpravo; menší zůstanou "
                 "na volbě Bez."
             )
-            self.runner_buttons: dict[str, Any] = {}
-            for hodnota, popisek in runner_volby().items():
-                tlacitko = (
-                    ui.button(
-                        popisek,
-                        on_click=lambda _=None, h=hodnota: self._nastav_runner(h),
-                    )
-                    .props("dense no-caps size=sm")
-                    .classes("tlacitko-runner")
-                )
-                tlacitko.tooltip(napoveda)
-                self.runner_buttons[hodnota] = tlacitko
-            self._zvyrazni_runner()
+            self.runner_buttons = widgets.tlacitka_runneru(
+                self._nastav_runner, napoveda, self.runner_value
+            )
             # Nejmenší velikost pozice, které se runner nastaví. Výchozí
             # hodnota je z konfigurace, změna přerozdělí runnery ve všech
             # řádcích podle právě spočítaného množství
-            self.runner_min_input = (
-                ui.number(
-                    "Runner od [ks]",
-                    value=imp.runner_min_quantity,
-                    format="%.0f",
-                    step=1,
-                    min=1,
-                )
-                .classes("pole pole-runner-min")
-                .props("outlined dense")
-                .tooltip(
-                    "Runner se nastaví jen pozicím s alespoň tímto počtem "
-                    "kontraktů (včetně); menší pozice zůstanou na volbě Bez. "
-                    "Výchozí hodnota je import.runner_min_quantity "
-                    "z konfigurace."
-                )
+            self.runner_min_input = widgets.pole_runner_min(
+                imp.runner_min_quantity, "pole pole-runner-min"
             )
             self.runner_min_input.on_value_change(
                 lambda _=None: self._obnov_runner_vsech()
@@ -758,6 +707,7 @@ class ImportDialog:
             .classes("bunka-import pole-import vyber-runner")
             .props("outlined dense options-dense")
         )
+        radek.runner_select.on_value_change(lambda _=None, r=radek: self._rucni_runner(r))
 
         with ui.row().classes("bunka-import bunka-stav"):
             radek.obnovit_button = (
@@ -780,12 +730,15 @@ class ImportDialog:
 
     def _cislo(self, hodnota: Any) -> float | None:
         """Hodnota číselného pole jako float; prázdné pole vrací None."""
-        if hodnota in (None, ""):
-            return None
-        try:
-            return float(hodnota)
-        except (TypeError, ValueError):
-            return None
+        return cislo_z_pole(hodnota)
+
+    def _rucni_runner(self, radek: RadekPozice) -> None:
+        """
+        Obsluha comboboxu runneru v řádku: přepnutí obchodníkem si řádek
+        poznamená, programový zápis z _obnov_runner_radku ne.
+        """
+        if not radek.runner_prepis:
+            radek.runner_rucne = True
 
     def _rucni_zmena(self, radek: RadekPozice) -> None:
         """Čísla vyplněná v řádku platí v právě zvoleném režimu cíle."""
@@ -897,7 +850,14 @@ class ImportDialog:
         """
         if radek.runner_select is None or self._zamceno(radek):
             return
-        radek.runner_select.set_value(self._runner_pro_radek(radek))
+        # Programový zápis spustí obsluhu comboboxu také - příznak ji odliší
+        # od ručního přepnutí, které se přidělením volby ruší
+        radek.runner_prepis = True
+        try:
+            radek.runner_select.set_value(self._runner_pro_radek(radek))
+        finally:
+            radek.runner_prepis = False
+        radek.runner_rucne = False
 
     def _obnov_runner_vsech(self) -> None:
         """Přerozdělí runner ve všech načtených řádcích."""
@@ -905,15 +865,8 @@ class ImportDialog:
             self._obnov_runner_radku(radek)
 
     def _zvyrazni_runner(self) -> None:
-        """
-        Vybrané tlačítko je plné a oranžové, ostatní zůstávají jen obrysové -
-        stejné rozlišení jako u tlačítek runneru v řádku přehledu.
-        """
-        for hodnota, tlacitko in self.runner_buttons.items():
-            if hodnota == self.runner_value:
-                tlacitko.props(add="color=orange-8", remove="outline")
-            else:
-                tlacitko.props(add="outline color=grey-7")
+        """Zvýrazní vybrané tlačítko runneru."""
+        widgets.zvyrazni_tlacitka(self.runner_buttons, self.runner_value)
 
     def _pomer(self) -> float | None:
         """
@@ -940,43 +893,28 @@ class ImportDialog:
     def _refresh_after_open_sec(self) -> float | None:
         """
         Prodleva přepočtu po otevření burzy pro zakládané obchody; None
-        znamená přepočet nepoužít (vypnutý přepínač). Prázdné nebo záporné
-        pole spadne zpět na hodnotu z konfigurace, ať se přepočet neřídí
-        náhodným číslem. Bez vykreslených prvků platí konfigurace celá.
+        znamená přepočet nepoužít. Bez vykreslených prvků platí konfigurace.
         """
         imp = self.cfg.import_
-        zapnuto = imp.refresh_after_open
-        if self.refresh_checkbox is not None:
-            zapnuto = bool(self.refresh_checkbox.value)
-        if not zapnuto:
-            return None
-        hodnota = self._cislo(
-            self.refresh_sec_input.value if self.refresh_sec_input is not None else None
+        return sekundy_prepoctu(
+            imp.refresh_after_open if self.refresh_checkbox is None else bool(self.refresh_checkbox.value),
+            self.refresh_sec_input.value if self.refresh_sec_input is not None else None,
+            0,
+            imp.refresh_after_open_sec,
         )
-        if hodnota is None or hodnota < 0:
-            return float(imp.refresh_after_open_sec)
-        return float(hodnota)
 
     def _refresh_interval_sec(self) -> float | None:
         """
         Odstup průběžného přepočtu pro zakládané obchody; None znamená
-        nepřepočítávat (vypnutý přepínač). Prázdné pole nebo odstup pod
-        sekundu spadne zpět na hodnotu z konfigurace - přepočet při každém
-        průchodu smyčkou by příkaz v trhu upravoval naprázdno. Bez
-        vykreslených prvků platí konfigurace celá.
+        nepřepočítávat. Bez vykreslených prvků platí konfigurace.
         """
         imp = self.cfg.import_
-        zapnuto = imp.refresh_interval
-        if self.interval_checkbox is not None:
-            zapnuto = bool(self.interval_checkbox.value)
-        if not zapnuto:
-            return None
-        hodnota = self._cislo(
-            self.interval_sec_input.value if self.interval_sec_input is not None else None
+        return sekundy_prepoctu(
+            imp.refresh_interval if self.interval_checkbox is None else bool(self.interval_checkbox.value),
+            self.interval_sec_input.value if self.interval_sec_input is not None else None,
+            1,
+            imp.refresh_interval_sec,
         )
-        if hodnota is None or hodnota < 1:
-            return float(imp.refresh_interval_sec)
-        return float(hodnota)
 
     def _runner_pro_zadani(self, radek: RadekPozice) -> tuple[float, int | None]:
         """
@@ -985,15 +923,13 @@ class ImportDialog:
         náleží. Podle nich engine runner nastaví při založení i po každém
         přepočtu množství.
 
-        Řádek s volbou, jakou by mu dialog přidělil sám, dostává globální
-        nastavení - i řádek na "Bez" jen kvůli malému množství, aby runner
-        dostal, až na něj přepočtem doroste. Ručně přepnutý řádek si nese
-        svou volbu bez minima: přepnutí platí bez ohledu na množství.
+        Řádek s volbou přidělenou dialogem dostává globální nastavení - i řádek
+        na "Bez" jen kvůli malému množství, aby runner dostal, až na něj
+        přepočtem doroste. Ručně přepnutý řádek si nese svou volbu bez minima.
         """
-        volba = radek.runner_select.value if radek.runner_select is not None else RUNNER_VYPNUTO
-        if volba == self._runner_pro_radek(radek):
-            return runner_nasobek(self.runner_value) or 0.0, self._runner_min()
-        return runner_nasobek(volba) or 0.0, None
+        if radek.runner_rucne and radek.runner_select is not None:
+            return runner_nasobek(radek.runner_select.value), None
+        return runner_nasobek(self.runner_value), self._runner_min()
 
     def _zadana_hodnota(self) -> float | None:
         """
@@ -1341,6 +1277,10 @@ class ImportDialog:
             popis_runneru = f", runner {flow.runner_quantity} ks"
             if nasobek is not None:
                 popis_runneru += f" na {nasobek:g}×"
+        # Chtěný, ale nezapnutý runner (málo kontraktů) není chyba - obchod
+        # ho dostane, až na něj přepočtem doroste; důvod zná engine
+        elif flow.runner_skip_reason:
+            popis_runneru = f", runner nezapnut: {flow.runner_skip_reason}"
         # Přepočet po otevření burzy: čekající obchod na něj ještě čeká,
         # nebo už proběhl; obchod bez volby ani po nákupu nic nehlásí
         popis_prepoctu = ""
@@ -1807,16 +1747,6 @@ class ImportDialog:
                     odmitnuto += 1
                     self._zapis_stav_obchodu(radek)
                     continue
-
-                # Runner zapnul engine při založení podle volby v zadání.
-                # Nezapnutý runner (málo kontraktů) není chyba - obchod běží
-                # dál a runner dostane, až na něj přepočtem doroste; do stavu
-                # se to připíše, aby to nezapadlo
-                if nasobek_runneru and not flow.runner_active:
-                    radek.poznamka = (
-                        f"runner nezapnut: množství {flow.quantity} ks je pod "
-                        f"minimem {minimum_runneru or 1} ks, nebo na runner nestačí"
-                    )
 
                 self._zapis_stav_obchodu(radek)
                 zalozeno += 1

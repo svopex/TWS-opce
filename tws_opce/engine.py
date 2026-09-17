@@ -1398,11 +1398,16 @@ class FlowEngine:
             # Čekající obchod stejného směru se nahrazuje až teď, kdy nové
             # zadání prošlo všemi kontrolami - kdyby dřív selhalo, původní
             # obchod by byl zrušený a žádný nový by nevznikl
-            runner_nasobek: float | None = None
+            volba_nahrazeneho: tuple[float | None, int | None] | None = None
             if bezici is not None:
                 # Runner nastavený na čekajícím obchodu nesmí nahrazením tiše
-                # zaniknout - jeho násobek cíle se přenese do nového zadání
-                runner_nasobek = bezici.runner_multiple
+                # zaniknout - nové zadání bez vlastní volby převezme tu jeho
+                volba_nahrazeneho = (
+                    bezici.auto_runner_multiple
+                    if bezici.auto_runner_multiple is not None
+                    else bezici.runner_multiple,
+                    bezici.auto_runner_min_quantity,
+                )
                 self._cancel_locked(bezici)
                 # Nahrazený obchod z přehledu zmizí - nové zadání jej přepisuje
                 self.flows.pop(bezici.id, None)
@@ -1458,12 +1463,19 @@ class FlowEngine:
                 delta=preview.delta,
             )
 
-            # Runner podle volby zadání; zadání bez volby (starší cesta) převezme
-            # runner z nahrazeného obchodu a přepočítá ho na nové úrovně
-            if flow.auto_runner_multiple is not None:
-                self._sync_runner(flow, None, pri_zalozeni=True)
-            elif runner_nasobek is not None:
-                self._adopt_runner(flow, runner_nasobek)
+            # Zadání bez volby runneru převezme volbu nahrazeného obchodu;
+            # runner podle ní zapne _sync_runner už na úrovních nového zadání
+            if (
+                flow.auto_runner_multiple is None
+                and volba_nahrazeneho is not None
+                and volba_nahrazeneho[0] is not None
+            ):
+                flow.auto_runner_multiple, flow.auto_runner_min_quantity = volba_nahrazeneho
+                self.log_event(
+                    f"{flow.id}: volba runneru ({flow.auto_runner_multiple:g}× původní "
+                    f"cíl) převzata z nahrazeného obchodu."
+                )
+            self._sync_runner(flow, "při založení")
 
             # Flow přebírá vlastní odběr tržních dat obou kontraktů
             self.ib.subscribe(flow.underlying_contract)
@@ -1498,89 +1510,50 @@ class FlowEngine:
             self._notify()
             return flow
 
-    def _adopt_runner(self, flow: Flow, nasobek: float) -> None:
-        """
-        Převezme runner z nahrazeného obchodu: stejný násobek cíle se
-        přepočítá na úrovně nového zadání. SL runneru začíná na SL obchodu,
-        stejně jako při ručním zapnutí runneru.
-        """
-        runner_q = self.cfg.trading.runner_quantity
-        if flow.quantity <= runner_q:
-            self.log_event(
-                f"{flow.id}: runner z nahrazeného obchodu nelze převzít - "
-                f"množství {flow.quantity} ks na něj nestačí."
-            )
-            return
-
-        cil = flow.scaled_target(nasobek)
-        flow.runner_profit_target = cil
-        flow.runner_quantity = runner_q
-        flow.runner_stop_loss = flow.stop_loss
-        self.log_event(
-            f"{flow.id}: runner {runner_q} ks převzat z nahrazeného obchodu, "
-            f"cíl {flow.level_text('pt', cil)} ({nasobek:g}× původní cíl)."
-        )
-
-    def _sync_runner(
-        self, flow: Flow, nasobek_zapnuteho: float | None, pri_zalozeni: bool
-    ) -> bool:
+    def _sync_runner(self, flow: Flow, kdy: str) -> None:
         """
         Srovná runner čekajícího obchodu s automatickou volbou a aktuálním
-        množstvím - při založení i po každém přepočtu množství.
-
-        Rozhoduje auto_runner_multiple: kladný násobek runner zapíná pozici
-        s množstvím alespoň auto_runner_min_quantity, nula ho nechává vypnutý.
-        Obchod bez volby (starší stav) si drží runner, jaký měl - dostane jen
-        cíl přepočítaný na nové úrovně. V obou případech runner vyžaduje víc
-        kontraktů, než sám zabírá, jinak se vypne. SL runneru začíná na SL
-        obchodu, stejně jako při ručním zapnutí. Vrací True, pokud se runner
-        zapnul nebo vypnul.
+        množstvím - při založení i po každém přepočtu množství (kdy je slovo
+        pro log). Kladný násobek runner zapíná pozici s množstvím alespoň
+        auto_runner_min_quantity a víc kontraktů, než runner sám zabírá; nula
+        ho nechává vypnutý; obchod bez volby se nemění. Důvod nezapnutého
+        chtěného runneru zůstává v runner_skip_reason pro rozhraní.
         """
-        runner_q = self.cfg.trading.runner_quantity
-        if flow.auto_runner_multiple is not None:
-            nasobek = flow.auto_runner_multiple or None
-            minimum = flow.auto_runner_min_quantity or 1
-        else:
-            nasobek = nasobek_zapnuteho
-            minimum = 1
-
-        # Proč runner nebude - jen pro log, samotné rozhodnutí je chce
-        duvod = "volba runner nepoužívá"
-        chce = False
+        nasobek = flow.auto_runner_multiple
         if nasobek is None:
-            pass
+            return
+        minimum = flow.auto_runner_min_quantity or 1
+        runner_q = self.cfg.trading.runner_quantity
+
+        # Proč runner nebude; None znamená zapnout
+        if not nasobek:
+            duvod = "volba runner nepoužívá"
         elif flow.quantity < minimum:
             duvod = f"množství {flow.quantity} ks je pod minimem {minimum} ks"
         elif flow.quantity <= runner_q:
             duvod = f"množství {flow.quantity} ks na něj nestačí"
         else:
-            chce = True
+            duvod = None
 
         byl = flow.runner_active
-        kdy = "při založení" if pri_zalozeni else "po přepočtu"
-        if not chce:
+        flow.runner_skip_reason = duvod if nasobek and duvod else None
+        if duvod is not None:
             if byl:
-                flow.runner_profit_target = None
-                flow.runner_quantity = 0
-                flow.runner_stop_loss = None
+                flow.clear_runner()
                 self.log_event(f"{flow.id}: runner {kdy} vypnut - {duvod}.")
-                return True
-            # Nezapnutý runner se hlásí jen při založení - průběžný přepočet
-            # by totéž opakoval každou půlminutu
-            if pri_zalozeni and nasobek is not None:
+            # Nezapnutý chtěný runner se hlásí jen při založení - průběžný
+            # přepočet by totéž opakoval každou půlminutu
+            elif nasobek and kdy == "při založení":
                 self.log_event(f"{flow.id}: runner nezapnut - {duvod}.")
-            return False
+            return
 
         cil = flow.scaled_target(nasobek)
-        flow.runner_profit_target = cil
-        flow.runner_quantity = runner_q
-        flow.runner_stop_loss = flow.stop_loss
+        flow.set_runner_levels(cil, runner_q)
         if not byl:
             self.log_event(
                 f"{flow.id}: runner {runner_q} ks zapnut {kdy}, cíl "
                 f"{flow.level_text('pt', cil)} ({nasobek:g}× původní cíl)."
             )
-        return not byl
 
     def _compute_expected_pnl(self, flow: Flow) -> None:
         """
@@ -2475,9 +2448,7 @@ class FlowEngine:
             # obráceně by na okamžik bylo v trhu více kusů, než pozice drží
             self._cancel_part(flow, "runner")
             self._clear_part(flow, "runner")
-            flow.runner_profit_target = None
-            flow.runner_quantity = 0
-            flow.runner_stop_loss = None
+            flow.clear_runner()
             # Ručně zrušený runner před nákupem nemá průběžný přepočet
             # znovu zapínat
             if flow.state.is_before_entry:
@@ -3571,9 +3542,7 @@ class FlowEngine:
                     * calc.OPTION_MULTIPLIER
                 )
             flow.runner_sold_quantity += flow.runner_quantity
-            flow.runner_profit_target = None
-            flow.runner_quantity = 0
-            flow.runner_stop_loss = None
+            flow.clear_runner()
             flow.runner_fill_price = None
 
         flow.entry_trade = prikazy.get(order_ref(flow.id, "entry"))
@@ -3984,14 +3953,11 @@ class FlowEngine:
 
     def _refresh_after_open(self, flow: Flow) -> bool:
         """
-        Jednorázový přepočet čekajícího obchodu po otevření burzy podle
-        živých kotací.
-
-        Obchod zadaný před otevřením má PT, SL i množství spočítané z odhadu
-        prémie (typicky ze závěrečné ceny), který po gapu neplatí. Po uplynutí
-        prodlevy od otevření se úrovně i množství dopočítají znovu stejnými
-        kroky jako při přípravě zadání (viz _recalculate_pending). Vrací True,
-        pokud se obchod změnil.
+        Jednorázový přepočet čekajícího obchodu po otevření burzy. Obchod
+        zadaný před otevřením má PT, SL i množství z odhadu prémie (typicky
+        ze závěrečné ceny), který po gapu neplatí - po prodlevě od otevření
+        se dopočítají znovu (viz _recalculate_pending). Vrací True, pokud se
+        obchod změnil.
         """
         if flow.refresh_after_open_sec is None or flow.refresh_after_open_done:
             return False
@@ -4009,61 +3975,51 @@ class FlowEngine:
             )
             return True
 
-        prepocteno = self._recalculate_pending(
-            flow, f"přepočteno {uplynulo:.0f} s po otevření burzy", po_otevreni=True
-        )
-        if prepocteno:
-            flow.refresh_after_open_done = True
-        return prepocteno
+        if not self._recalculate_pending(flow, po_otevreni=True):
+            return False
+        flow.refresh_after_open_done = True
+        flow.last_refresh_at = datetime.now()
+        flow.touch(f"{flow.message} Přepočteno po otevření burzy.".strip())
+        return True
 
     def _refresh_periodic(self, flow: Flow) -> bool:
         """
         Průběžný přepočet čekajícího obchodu každých refresh_interval_sec
-        sekund za otevřené burzy - tytéž kroky jako po otevření (PT v %
-        prémie, SL, množství, úprava příkazu na místě) a navíc srovnání
-        runneru s automatickou volbou: pozice, která na runner dorostla, ho
-        dostane, pozice pod minimem o něj přijde.
-
-        Mimo obchodní hodiny se nepřepočítává (bez živých kotací není z čeho)
-        a čeká se i na přepočet po otevření, má-li ho obchod před sebou -
-        jeho prodleva chrání před nejširšími kotacemi po otevření. Odstup se
-        měří od posledního přepočtu, před prvním od založení obchodu; pokus,
-        který přepočet odložil (chybí kotace, TWS příkaz zrovna mění), se
-        počítá také, ať se neopakuje při každém průchodu smyčkou. Smíšený
-        režim úrovní se nepřepočítává ze stejného důvodu jako po otevření.
-        Vrací True, pokud se obchod změnil.
+        sekund za otevřené burzy (viz _recalculate_pending). Čeká-li obchod
+        ještě na přepočet po otevření, běží až po něm. Odstup se měří od
+        posledního přepočtu, před prvním od založení; počítá se i pokus, který
+        přepočet odložil (chybí kotace, TWS příkaz zrovna mění), ať se
+        neopakuje při každém průchodu smyčkou. Vrací True, pokud se obchod
+        změnil.
         """
-        if not flow.refresh_interval_sec or flow.refresh_interval_sec <= 0:
+        if not flow.refresh_interval_sec or flow.pt_on_underlying != flow.sl_on_underlying:
             return False
-        if flow.pt_on_underlying != flow.sl_on_underlying:
+        # Odstup je nejlacinější a nejčastěji zamítající podmínka, čas burzy
+        # se počítá až po ní
+        ted = datetime.now()
+        if (ted - (flow.last_refresh_at or flow.created_at)).total_seconds() < flow.refresh_interval_sec:
             return False
         if self.market_open_elapsed() is None:
             return False
         if flow.refresh_after_open_sec is not None and not flow.refresh_after_open_done:
             return False
-        od = flow.last_refresh_at or flow.created_at
-        if (datetime.now() - od).total_seconds() < flow.refresh_interval_sec:
-            return False
-        flow.last_refresh_at = datetime.now()
-        return self._recalculate_pending(flow, "průběžně přepočteno", po_otevreni=False)
+        flow.last_refresh_at = ted
+        return self._recalculate_pending(flow, po_otevreni=False)
 
-    def _recalculate_pending(self, flow: Flow, popis: str, po_otevreni: bool) -> bool:
+    def _recalculate_pending(self, flow: Flow, po_otevreni: bool) -> bool:
         """
-        Přepočet čekajícího obchodu podle živých kotací - společné jádro
-        přepočtu po otevření burzy i průběžného přepočtu.
+        Přepočet čekajícího obchodu podle živých kotací - jádro přepočtu po
+        otevření burzy i průběžného přepočtu.
 
         PT zadané procentem prémie se odvodí znovu z aktuální odhadované
         nákupní ceny, PT v USD a na podkladu zůstává; SL a množství se
-        dopočítají stejnými kroky jako při přípravě zadání a příkaz čekající
-        v trhu se upraví na místě (stejné orderId), takže se neruší a nezávodí
-        s vyplněním. Runner se pak srovná s automatickou volbou (_sync_runner).
-
-        Spread nad limitem přepočet nezdržuje - spread se stropuje limitem
-        (Max. spread), stejně jako při přípravě zadání; příkaz nad limitem
-        už předtím stáhla _withdraw_on_spread_breach, takže se neupravuje.
-        Dokud chybí kotace, TWS příkaz právě mění, nebo není známa velikost
-        účtu, přepočet počká na další pokus. popis uvozuje zápis do logu;
-        průběžný přepočet (po_otevreni=False) se do logu zapisuje jen tehdy,
+        dopočítají stejnými kroky jako při přípravě zadání, příkaz čekající
+        v trhu se upraví na místě (stejné orderId) a runner se srovná
+        s automatickou volbou. Spread nad limitem přepočet nezdržuje - stropuje
+        se limitem jako při přípravě; příkaz nad limitem už předtím stáhla
+        _withdraw_on_spread_breach. Dokud chybí kotace, TWS příkaz právě mění
+        nebo není známa velikost účtu, přepočet počká na další pokus.
+        Přepočet po otevření se zapisuje do logu vždy, průběžný jen tehdy,
         když změnil množství nebo runner. Vrací True, pokud přepočet proběhl.
         """
         # Bez známé velikosti účtu by množství vyšlo z nulového rizika
@@ -4107,9 +4063,6 @@ class FlowEngine:
         if preview.quantity < 1:
             return False
 
-        # Násobek cíle zapnutého runneru se čte před přepisem úrovní - počítá
-        # se z nich; obchod bez automatické volby si ho po přepočtu ponechá
-        nasobek_runneru = flow.runner_multiple if flow.runner_active else None
         puvodni_pt, puvodni_sl, puvodni_ks = flow.profit_target, flow.stop_loss, flow.quantity
         byl_runner = flow.runner_active
         popis_pt, popis_sl = flow.level_text("pt"), flow.level_text("sl")
@@ -4125,12 +4078,7 @@ class FlowEngine:
             flow.expected_fill_price = preview.expected_fill_price
         if premie is not None:
             flow.premium_base = premie
-        flow.last_refresh_at = datetime.now()
-
-        # Runner se srovná s automatickou volbou a novým množstvím: pozice,
-        # která na něj dorostla, ho dostane, pozice pod minimem o něj přijde;
-        # zapnutý runner bez volby se jen přepočítá na nové úrovně
-        self._sync_runner(flow, nasobek_runneru, pri_zalozeni=False)
+        self._sync_runner(flow, "po přepočtu")
 
         # Příkaz v trhu se upraví na místě - odeslání se stejným orderId je
         # modifikace, příkaz se neruší a nevzniká mezera, ve které by vstup
@@ -4153,22 +4101,24 @@ class FlowEngine:
             zmeny.append(f"množství {puvodni_ks} → {flow.quantity} ks")
         if flow.runner_active != byl_runner:
             zmeny.append("runner zapnut" if flow.runner_active else "runner vypnut")
+        self._compute_expected_pnl(flow)
+
         # Průběžný přepočet se opakuje každou půlminutu a PT v procentech
-        # prémie se hýbe s každou kotací - do logu jde jen tehdy, když změnil
-        # množství nebo runner, jinak by log zaplavil
+        # prémie se hýbe s každou kotací - do logu jde jen změna množství
+        # nebo runneru, jinak by log zaplavil
         podstatne = flow.quantity != puvodni_ks or flow.runner_active != byl_runner
         if not po_otevreni and not podstatne:
-            self._compute_expected_pnl(flow)
             return True
+        if po_otevreni:
+            popis = f"přepočteno {self.market_open_elapsed():.0f} s po otevření burzy"
+        else:
+            popis = "průběžně přepočteno"
         souhrn = ", ".join(zmeny) if zmeny else "hodnoty se nezměnily"
         zaklad = f", prémie ≈ {premie * calc.OPTION_MULTIPLIER:.0f} USD" if premie else ""
         vyhrady = f" Výhrady: {' '.join(preview.warnings)}" if preview.warnings else ""
         self.log_event(
             f"{flow.id}: {popis} podle živých kotací - {souhrn}{zaklad}.{vyhrady}"
         )
-        if po_otevreni:
-            flow.touch(f"{flow.message} Přepočteno po otevření burzy.".strip())
-        self._compute_expected_pnl(flow)
         return True
 
     def entry_cross_start(self) -> datetime | None:
@@ -4510,9 +4460,7 @@ class FlowEngine:
                 or flow.entry_trade.orderStatus.status in SETTLED_ORDER_STATES
             )
         ):
-            flow.runner_profit_target = None
-            flow.runner_quantity = 0
-            flow.runner_stop_loss = None
+            flow.clear_runner()
             self.log_event(
                 f"{flow.id}: runner zrušen - nakoupené množství "
                 f"{flow.held_quantity} ks na něj nestačí."
@@ -4582,9 +4530,7 @@ class FlowEngine:
             zbylo = flow.runner_quantity
             if flow.exit_fill_price is None and self._part_modifiable(flow, "exit"):
                 self._clear_part(flow, "runner")
-                flow.runner_profit_target = None
-                flow.runner_quantity = 0
-                flow.runner_stop_loss = None
+                flow.clear_runner()
                 self._resize_part(
                     flow, "exit", flow.held_quantity - flow.main_sold_quantity
                 )
@@ -4783,9 +4729,7 @@ class FlowEngine:
                         * calc.OPTION_MULTIPLIER
                     )
                 flow.runner_sold_quantity += flow.runner_quantity
-                flow.runner_profit_target = None
-                flow.runner_quantity = 0
-                flow.runner_stop_loss = None
+                flow.clear_runner()
                 self._clear_part(flow, "runner")
 
             # Cena prodeje hlavní části se nepřepisuje, pokud už byla prodána
@@ -4961,9 +4905,7 @@ class FlowEngine:
         flow.runner_quantity -= ks
         # Doprodaný runner uvolní svá pole, aby šlo nastartovat další
         if flow.runner_quantity <= 0:
-            flow.runner_profit_target = None
-            flow.runner_quantity = 0
-            flow.runner_stop_loss = None
+            flow.clear_runner()
         return ks, cena
 
     def _settle_part_fills(self, flow: Flow, part: str) -> int:

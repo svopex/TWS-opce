@@ -46,6 +46,10 @@ class ZakladTestu(ZakladEnginu):
             setattr(pozadavek, klic, hodnota)
         return await self.engine.start_flow(pozadavek)
 
+    def zaznamy(self, text: str) -> int:
+        """Počet zápisů v provozním logu obsahujících daný text."""
+        return sum(1 for _, zprava in self.engine.events if text in zprava)
+
 
 class TestZalozeniFlow(ZakladTestu):
     """Založení obchodu a podoba nákupního příkazu."""
@@ -2978,13 +2982,11 @@ class TestUkliduSCekajicimi(ZakladPrehleduStavu):
         self.assertEqual((zruseno, odstraneno), (0, 0))
 
 
-class TestPrepoctuPoOtevreni(ZakladTestu):
+class ZakladPrepoctu(ZakladTestu):
     """
-    Přepočet čekajícího obchodu po otevření burzy podle živých kotací.
-
-    Obchod zadaný před otevřením má úrovně i množství z odhadu prémie;
-    po prodlevě od otevření se dopočítají znovu a příkaz v trhu se upraví
-    na místě. Přepočet běží jednou a jen u obchodu, který ještě čeká na vstup.
+    Společná příprava testů přepočtu čekajícího obchodu (po otevření burzy
+    i průběžného): účet 50 000 USD (riziko 500 USD), podvržený čas burzy
+    a vzorový obchod v procentech prémie.
     """
 
     def setUp(self) -> None:
@@ -2993,9 +2995,41 @@ class TestPrepoctuPoOtevreni(ZakladTestu):
         self.cfg.account.size = 50000.0
 
     def burza(self, sekund_po_otevreni: float) -> None:
-        """Podvrhne čas burzy na daný počet sekund po otevření (středa 19. 8. 2026)."""
+        """Podvrhne čas burzy na daný počet sekund od otevření (středa 19. 8. 2026)."""
         otevreni = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("America/New_York"))
         self.engine._exchange_now = lambda: otevreni + timedelta(seconds=sekund_po_otevreni)
+
+    async def zaloz_v_premii(self, **zmeny):
+        """
+        Obchod v procentech prémie: PT 9 USD/ks jsou 3 % z prémie 3,00
+        (300 USD na kontrakt), SL podle poměru 1:1, přepočet 60 s po otevření.
+        """
+        self.ib.price_underlying = 230.0
+        pozadavek = FlowRequest(
+            symbol="AAPL",
+            entry_price=232.0,
+            profit_target=9.0,
+            pt_on_underlying=False,
+            sl_on_underlying=False,
+            pt_in_premium=True,
+            sl_in_premium=True,
+            premium_base=3.0,
+            sl_to_pt_ratio=1.0,
+            refresh_after_open_sec=60,
+        )
+        for klic, hodnota in zmeny.items():
+            setattr(pozadavek, klic, hodnota)
+        return await self.engine.start_flow(pozadavek)
+
+
+class TestPrepoctuPoOtevreni(ZakladPrepoctu):
+    """
+    Přepočet čekajícího obchodu po otevření burzy podle živých kotací.
+
+    Obchod zadaný před otevřením má úrovně i množství z odhadu prémie;
+    po prodlevě od otevření se dopočítají znovu a příkaz v trhu se upraví
+    na místě. Přepočet běží jednou a jen u obchodu, který ještě čeká na vstup.
+    """
 
     def zmen_kotace(self) -> None:
         """Opce po otevření zlevnila - jiná implikovaná volatilita, jiná delta."""
@@ -3021,27 +3055,6 @@ class TestPrepoctuPoOtevreni(ZakladTestu):
         )
         parametry.update(zmeny)
         return await self.engine.prepare(**parametry)
-
-    async def zaloz_v_premii(self, **zmeny):
-        """
-        Obchod z hromadného zadání v procentech prémie: PT 9 USD/ks jsou 3 %
-        z prémie 3,00 (300 USD na kontrakt), SL podle poměru 1:1.
-        """
-        pozadavek = FlowRequest(
-            symbol="AAPL",
-            entry_price=232.0,
-            profit_target=9.0,
-            pt_on_underlying=False,
-            sl_on_underlying=False,
-            pt_in_premium=True,
-            sl_in_premium=True,
-            premium_base=3.0,
-            sl_to_pt_ratio=1.0,
-            refresh_after_open_sec=60,
-        )
-        for klic, hodnota in zmeny.items():
-            setattr(pozadavek, klic, hodnota)
-        return await self.engine.start_flow(pozadavek)
 
     async def test_prepocet_upravi_mnozstvi_i_prikaz_v_trhu(self):
         flow = await self.zaloz_v_premii()
@@ -3358,10 +3371,9 @@ class TestAutomatickehoRunneru(ZakladTestu):
         self.assertFalse(flow.runner_active)
         # Volba ale zůstává - runner přijde, až na něj množství doroste
         self.assertAlmostEqual(flow.auto_runner_multiple, 2.0)
-        self.assertTrue(
-            any("runner nezapnut" in zprava and "pod minimem 3 ks" in zprava
-                for _, zprava in self.engine.events)
-        )
+        self.assertEqual(self.zaznamy("runner nezapnut - množství 2 ks je pod minimem 3 ks"), 1)
+        # Důvod zůstává u obchodu pro rozhraní
+        self.assertEqual(flow.runner_skip_reason, "množství 2 ks je pod minimem 3 ks")
 
     async def test_pozice_presne_na_minimu_runner_dostane(self):
         flow = await self.zaloz_call(quantity=3, runner_multiple=1.5, runner_min_quantity=3)
@@ -3377,6 +3389,19 @@ class TestAutomatickehoRunneru(ZakladTestu):
 
         self.assertFalse(druhe.runner_active)
         self.assertEqual(druhe.auto_runner_multiple, 0.0)
+
+    async def test_bez_volby_se_prevezme_volba_nahrazeneho_i_s_minimem(self):
+        # Nahrazený obchod nesl volbu 2× od tří kontraktů; nové zadání bez
+        # volby ji převezme a runner zapne až podle svého množství
+        prvni = await self.zaloz_call(quantity=4, runner_multiple=2.0, runner_min_quantity=3)
+        self.assertTrue(prvni.runner_active)
+
+        druhe = await self.zaloz_call(quantity=2, profit_target=236.0)
+
+        self.assertAlmostEqual(druhe.auto_runner_multiple, 2.0)
+        self.assertEqual(druhe.auto_runner_min_quantity, 3)
+        self.assertFalse(druhe.runner_active)
+        self.assertEqual(self.zaznamy("převzata z nahrazeného obchodu"), 1)
 
     async def test_rucni_runner_pred_nakupem_prepise_volbu(self):
         flow = await self.zaloz_call(quantity=4, runner_multiple=0.0, runner_min_quantity=3)
@@ -3409,22 +3434,12 @@ class TestAutomatickehoRunneru(ZakladTestu):
         self.assertEqual(store.dict_to_flow(store.flow_to_dict(bez)).auto_runner_multiple, 0.0)
 
 
-class TestPrubeznehoPrepoctu(ZakladTestu):
+class TestPrubeznehoPrepoctu(ZakladPrepoctu):
     """
     Průběžný přepočet čekajícího obchodu za otevřené burzy: každých tolik
     sekund se množství dopočítá znovu z živých kotací, příkaz v trhu se
     upraví na místě a runner se srovná s volbou ze zadání.
     """
-
-    def setUp(self) -> None:
-        super().setUp()
-        # Účet 50 000 USD, riziko 1 % = 500 USD na obchod
-        self.cfg.account.size = 50000.0
-
-    def burza(self, sekund_po_otevreni: float) -> None:
-        """Podvrhne čas burzy na daný počet sekund od otevření (středa 19. 8. 2026)."""
-        otevreni = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("America/New_York"))
-        self.engine._exchange_now = lambda: otevreni + timedelta(seconds=sekund_po_otevreni)
 
     def odstup(self, flow, sekund: float) -> None:
         """Posune poslední přepočet obchodu o daný počet sekund do minulosti."""
@@ -3440,33 +3455,20 @@ class TestPrubeznehoPrepoctu(ZakladTestu):
 
     async def zaloz(self, **zmeny):
         """
-        Obchod v procentech prémie čekající na vstup: PT 150 USD/ks je 50 %
-        z prémie 3,00, SL 1:1, zadané 2 ks. Průběžný přepočet po 30 s,
-        runner 2× od tří kontraktů.
+        Vzorový obchod s PT 150 USD/ks (50 % z prémie 3,00), zadanými 2 ks,
+        bez přepočtu po otevření, s průběžným přepočtem po 30 s a runnerem
+        2× od tří kontraktů.
         """
-        self.ib.price_underlying = 230.0
-        pozadavek = FlowRequest(
-            symbol="AAPL",
-            entry_price=232.0,
+        volby = dict(
             profit_target=150.0,
             quantity=2,
-            pt_on_underlying=False,
-            sl_on_underlying=False,
-            pt_in_premium=True,
-            sl_in_premium=True,
-            premium_base=3.0,
-            sl_to_pt_ratio=1.0,
+            refresh_after_open_sec=None,
             refresh_interval_sec=30.0,
             runner_multiple=2.0,
             runner_min_quantity=3,
         )
-        for klic, hodnota in zmeny.items():
-            setattr(pozadavek, klic, hodnota)
-        return await self.engine.start_flow(pozadavek)
-
-    def zaznamy(self, text: str) -> int:
-        """Počet zápisů v provozním logu obsahujících daný text."""
-        return sum(1 for _, zprava in self.engine.events if text in zprava)
+        volby.update(zmeny)
+        return await self.zaloz_v_premii(**volby)
 
     async def test_prepocet_probehne_az_po_odstupu(self):
         flow = await self.zaloz()

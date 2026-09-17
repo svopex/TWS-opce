@@ -693,8 +693,10 @@ body.body--dark .log-radek {
   margin-left: 0;
 }
 
-/* Pole s prodlevou stojí u pravého okraje, kde končí i pole nad přepínači */
-.prepinace .blok-prepoctu .pole-prepocet-sec {
+/* Pole s prodlevou, odstupem i minimem runneru stojí u pravého okraje,
+   kde končí i pole nad přepínači */
+.prepinace .pole-prepocet-sec,
+.prepinace .pole-runner-min {
   margin-left: auto;
   width: 120px;
 }
@@ -715,17 +717,6 @@ body.body--dark .log-radek {
   gap: 4px;
 }
 
-.prepinace .blok-runner .popisek-runner {
-  color: #475569;
-  font-size: 0.82rem;
-  font-weight: 600;
-  margin-right: 2px;
-}
-
-body.body--dark .prepinace .blok-runner .popisek-runner {
-  color: #cbd5e1;
-}
-
 /* Násobky mají jednotnou šířku, aby řada nepřeskakovala podle délky
    popisku; "Nepoužít runner" se roztáhne podle textu */
 .prepinace .blok-runner .tlacitko-runner {
@@ -735,10 +726,16 @@ body.body--dark .prepinace .blok-runner .popisek-runner {
   padding: 2px 8px;
 }
 
-/* Pole s minimem množství stojí u pravého okraje jako pole s prodlevou */
-.prepinace .blok-runner .pole-runner-min {
-  margin-left: auto;
-  width: 120px;
+/* Popisek volby runneru - společný formuláři i dialogu načtení pozic */
+.popisek-volby-runner {
+  color: #475569;
+  font-size: 0.82rem;
+  font-weight: 600;
+  margin-right: 2px;
+}
+
+body.body--dark .popisek-volby-runner {
+  color: #cbd5e1;
 }
 
 /* --- Bubliny s nápovědou --- */
@@ -846,16 +843,6 @@ body.body--dark .prepinace .blok-runner .popisek-runner {
   align-items: center;
   gap: 6px;
   margin-top: 4px;
-}
-
-.dialog-import .radek-runner .popisek-runner-import {
-  margin-right: 2px;
-}
-
-.dialog-import .popisek-runner-import {
-  color: #475569;
-  font-size: 0.82rem;
-  font-weight: 600;
 }
 
 /* Samostatná tlačítka volby runneru. Násobky mají jednotnou šířku, aby řada
@@ -1051,8 +1038,7 @@ body.body--dark .dialog-import .hlavicka-import {
 }
 
 body.body--dark .dialog-import .popis-souboru,
-body.body--dark .dialog-import .souhrn-import,
-body.body--dark .dialog-import .popisek-runner-import {
+body.body--dark .dialog-import .souhrn-import {
   color: #cbd5e1;
 }
 

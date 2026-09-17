@@ -131,6 +131,12 @@ def dict_to_flow(data: dict[str, Any]) -> Flow:
     if not flow.original_sl_known:
         flow.original_stop_loss = flow.stop_loss
 
+    # Obchod uložený starší verzí volbu runneru nezná - přepočet množství by
+    # zapnutý runner nechal bez cíle na nových úrovních. Volba se odvodí
+    # z násobku běžícího runneru; obchod bez runneru zůstává bez volby
+    if flow.auto_runner_multiple is None and flow.runner_active:
+        flow.auto_runner_multiple = flow.runner_multiple
+
     for name in TIME_FIELDS:
         hodnota = data.get(name)
         if hodnota:

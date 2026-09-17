@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 from nicegui import app, ui
 
-from . import calc
+from . import calc, widgets
 from .config import AppConfig
 from .engine import FlowEngine, Preview
 from .ib_service import IBService
@@ -22,10 +22,10 @@ from .models import (
     MODE_USD,
     MODES_ON_OPTION,
     PT_MULTIPLES,
-    RUNNER_VYPNUTO,
     Flow,
     FlowRequest,
     FlowState,
+    cislo_z_pole,
     format_countdown,
     level_text,
     pomer_z_rrr,
@@ -33,7 +33,7 @@ from .models import (
     rrr_z_pomeru,
     runner_klic,
     runner_nasobek,
-    runner_volby,
+    sekundy_prepoctu,
 )
 from .report_dialog import ReportDialog
 
@@ -714,75 +714,36 @@ class TradingUI:
                     # k ručnímu zadání během seance - tam by se přepočet spustil
                     # hned při nejbližším průchodu monitorovací smyčkou. Sama se
                     # volba zapíná jen při načtení obchodu, který přepočet čeká
-                    self.refresh_checkbox = (
-                        ui.checkbox("Po otevření trhu přepočítat", value=False)
-                        .props("dense")
-                        .classes("prepinac")
-                        .tooltip(
-                            "Zaškrtnuto: obchod, který po otevření burzy ještě čeká "
-                            "na vstup, se po uplynutí prodlevy vpravo jednou přepočítá "
-                            "podle živých kotací - PT v procentech prémie, SL i množství "
-                            "vyjdou ze skutečné ceny opce místo odhadu ze závěrečné ceny. "
-                            "Čekající příkaz v trhu se upraví na místě, neruší se. Obchod, "
-                            "který už nakoupil, se nemění. Zadává-li se obchod až za "
-                            "otevřeného trhu, přepočet proběhne hned - volba patří "
-                            "k obchodům chystaným před otevřením."
-                        )
-                    )
-                    self.refresh_sec_input = (
-                        ui.number(
-                            "Prodleva [s]",
-                            value=self.cfg.import_.refresh_after_open_sec,
-                            format="%.0f",
-                            step=5,
-                            min=0,
-                        )
-                        .classes("pole-prepocet-sec")
-                        .props("outlined dense")
-                        .tooltip(
-                            "Kolik sekund po otevření burzy se přepočet provede. "
-                            "V prvních okamžicích jsou kotace opcí nejširší, proto "
-                            "chvíli počkat. Výchozí hodnota je "
-                            "import.refresh_after_open_sec z konfigurace."
-                        )
+                    self.refresh_checkbox, self.refresh_sec_input = widgets.blok_prepoctu(
+                        "Po otevření trhu přepočítat",
+                        "Prodleva [s]",
+                        False,
+                        self.cfg.import_.refresh_after_open_sec,
+                        0,
+                        "Zaškrtnuto: obchod, který po otevření burzy ještě čeká "
+                        "na vstup, se po uplynutí prodlevy vpravo jednou přepočítá "
+                        "podle živých kotací - PT v procentech prémie, SL i množství "
+                        "vyjdou ze skutečné ceny opce místo odhadu ze závěrečné ceny. "
+                        "Čekající příkaz v trhu se upraví na místě, neruší se. Obchod, "
+                        "který už nakoupil, se nemění. Zadává-li se obchod až za "
+                        "otevřeného trhu, přepočet proběhne hned - volba patří "
+                        "k obchodům chystaným před otevřením.",
+                        widgets.NAPOVEDA_PRODLEVY,
+                        "pole-prepocet-sec",
                     )
 
                 # Průběžný přepočet za otevřené burzy - tatáž volba jako
-                # v dialogu načtení pozic. Čekající obchod si každých tolik
-                # sekund dopočítá množství (a PT v % prémie i SL) znovu
-                # z živých kotací a srovná runner s volbou v bloku níže
+                # v dialogu načtení pozic; volba se zapisuje do obchodu
                 with ui.row().classes("skupina-prepinacu blok-prepoctu"):
-                    self.interval_checkbox = (
-                        ui.checkbox(
-                            "Přepočítávat každých", value=self.cfg.import_.refresh_interval
-                        )
-                        .props("dense")
-                        .classes("prepinac")
-                        .tooltip(
-                            "Zaškrtnuto: obchod, který za otevřené burzy čeká na vstup, "
-                            "se v tomto odstupu přepočítává podle živých kotací - "
-                            "množství (a s ním PT v procentech prémie i SL) vyjde znovu "
-                            "ze skutečné ceny opce a čekající příkaz se upraví na místě. "
-                            "Zároveň se srovná runner: pozice, která na něj dorostla "
-                            "(viz Runner od), ho dostane, pozice pod minimem o něj přijde. "
-                            "Čeká-li obchod na přepočet po otevření, průběžný přepočet "
-                            "začne až po něm. Nakoupený obchod se nemění."
-                        )
-                    )
-                    self.interval_sec_input = (
-                        ui.number(
-                            "Odstup [s]",
-                            value=self.cfg.import_.refresh_interval_sec,
-                            format="%.0f",
-                            step=5,
-                            min=1,
-                        )
-                        .classes("pole-prepocet-sec")
-                        .props("outlined dense")
-                        .tooltip(
-                            "Kolik sekund uplyne mezi dvěma přepočty. Výchozí hodnota "
-                            "je import.refresh_interval_sec z konfigurace."
-                        )
+                    self.interval_checkbox, self.interval_sec_input = widgets.blok_prepoctu(
+                        "Přepočítávat každých",
+                        "Odstup [s]",
+                        self.cfg.import_.refresh_interval,
+                        self.cfg.import_.refresh_interval_sec,
+                        1,
+                        widgets.NAPOVEDA_INTERVALU.format(rozsah="obchod, který"),
+                        widgets.NAPOVEDA_ODSTUPU,
+                        "pole-prepocet-sec",
                     )
 
                 # Automatický runner - tatáž sada tlačítek jako nad tabulkou
@@ -790,44 +751,20 @@ class TradingUI:
                 # a znovu po každém přepočtu množství; pole vpravo říká, od
                 # kolika kontraktů (včetně) runner náleží
                 with ui.row().classes("skupina-prepinacu blok-runner"):
-                    ui.label("Runner:").classes("popisek-runner")
-                    napoveda_runneru = (
+                    ui.label("Runner:").classes("popisek-volby-runner")
+                    self.runner_buttons = widgets.tlacitka_runneru(
+                        self._nastav_runner,
                         "Runner je část pozice "
                         f"({self.cfg.trading.runner_quantity} ks podle konfigurace) "
                         "s vlastním, vzdálenějším cílem na zvoleném násobku původní "
                         "vzdálenosti PT od vstupu. Zapne se při založení obchodu, má-li "
                         "obchod alespoň tolik kontraktů, kolik je v poli Runner od; "
                         "průběžný přepočet ho pak podle nového množství zapne či vypne. "
-                        "Výchozí volba je import.runner_multiple z konfigurace."
+                        "Výchozí volba je import.runner_multiple z konfigurace.",
+                        self.runner_value,
                     )
-                    for hodnota, popisek in runner_volby().items():
-                        tlacitko = (
-                            ui.button(
-                                popisek,
-                                on_click=lambda _=None, h=hodnota: self._nastav_runner(h),
-                            )
-                            .props("dense no-caps size=sm")
-                            .classes("tlacitko-runner")
-                        )
-                        tlacitko.tooltip(napoveda_runneru)
-                        self.runner_buttons[hodnota] = tlacitko
-                    self._zvyrazni_runner()
-                    self.runner_min_input = (
-                        ui.number(
-                            "Runner od [ks]",
-                            value=self.cfg.import_.runner_min_quantity,
-                            format="%.0f",
-                            step=1,
-                            min=1,
-                        )
-                        .classes("pole-runner-min")
-                        .props("outlined dense")
-                        .tooltip(
-                            "Runner dostane obchod s alespoň tímto počtem kontraktů "
-                            "(včetně); menší běží bez něj, dokud na runner přepočtem "
-                            "nedoroste. Výchozí hodnota je import.runner_min_quantity "
-                            "z konfigurace."
-                        )
+                    self.runner_min_input = widgets.pole_runner_min(
+                        self.cfg.import_.runner_min_quantity, "pole-runner-min"
                     )
 
             # Pole úrovní se rozmístí podle výchozí prvotní úrovně
@@ -1082,60 +1019,37 @@ class TradingUI:
         return bool(self.sl_spread_compensated.value) and sl_mode in MODES_ON_OPTION
 
     def _form_refresh_sec(self) -> float | None:
-        """
-        Prodleva přepočtu po otevření burzy pro zakládaný obchod; None znamená
-        přepočet nepoužít (nezaškrtnutá volba). Prázdné či záporné pole spadne
-        zpět na hodnotu z konfigurace, ať se přepočet neřídí náhodným číslem.
-        """
-        if not self.refresh_checkbox.value:
-            return None
-        hodnota = self.refresh_sec_input.value
-        if hodnota in (None, "") or float(hodnota) < 0:
-            return float(self.cfg.import_.refresh_after_open_sec)
-        return float(hodnota)
+        """Prodleva přepočtu po otevření burzy; None znamená přepočet nepoužít."""
+        return sekundy_prepoctu(
+            bool(self.refresh_checkbox.value),
+            self.refresh_sec_input.value,
+            0,
+            self.cfg.import_.refresh_after_open_sec,
+        )
 
     def _form_interval_sec(self) -> float | None:
-        """
-        Odstup průběžného přepočtu pro zakládaný obchod; None znamená
-        nepřepočítávat (nezaškrtnutá volba). Prázdné pole nebo odstup pod
-        sekundu spadne zpět na hodnotu z konfigurace.
-        """
-        if not self.interval_checkbox.value:
-            return None
-        hodnota = self.interval_sec_input.value
-        if hodnota in (None, "") or float(hodnota) < 1:
-            return float(self.cfg.import_.refresh_interval_sec)
-        return float(hodnota)
-
-    def _form_runner(self) -> float:
-        """Násobek cíle automatického runneru ze zvoleného tlačítka; 0 = nepoužít."""
-        return runner_nasobek(self.runner_value) or 0.0
+        """Odstup průběžného přepočtu; None znamená nepřepočítávat."""
+        return sekundy_prepoctu(
+            bool(self.interval_checkbox.value),
+            self.interval_sec_input.value,
+            1,
+            self.cfg.import_.refresh_interval_sec,
+        )
 
     def _form_runner_min(self) -> int:
         """
         Nejmenší množství, od kterého (včetně) obchod runner dostane. Prázdné
         nebo nesmyslné pole spadne zpět na hodnotu z konfigurace.
         """
-        hodnota = self.runner_min_input.value
-        if hodnota in (None, "") or float(hodnota) < 1:
+        hodnota = cislo_z_pole(self.runner_min_input.value)
+        if hodnota is None or hodnota < 1:
             return self.cfg.import_.runner_min_quantity
-        return int(float(hodnota))
+        return int(hodnota)
 
     def _nastav_runner(self, hodnota: str) -> None:
         """Přepne zvolené tlačítko runneru - platí pro další zadání obchodu."""
         self.runner_value = hodnota
-        self._zvyrazni_runner()
-
-    def _zvyrazni_runner(self) -> None:
-        """
-        Vybrané tlačítko je plné a oranžové, ostatní zůstávají jen obrysové -
-        stejné rozlišení jako u tlačítek runneru v řádku přehledu i v dialogu.
-        """
-        for hodnota, tlacitko in self.runner_buttons.items():
-            if hodnota == self.runner_value:
-                tlacitko.props(add="color=orange-8", remove="outline")
-            else:
-                tlacitko.props(add="outline color=grey-7")
+        widgets.zvyrazni_tlacitka(self.runner_buttons, self.runner_value)
 
     def _set_modes(
         self,
@@ -1317,19 +1231,14 @@ class TradingUI:
         self.refresh_checkbox.set_value(ceka_prepocet)
         if ceka_prepocet:
             self.refresh_sec_input.set_value(flow.refresh_after_open_sec)
-        # Průběžný přepočet se přenáší stejně; obchod ze starší verze ho nezná
-        # a přepínač pak zůstává, jak je
-        if flow.refresh_interval_sec is not None:
-            self.interval_checkbox.set_value(flow.refresh_interval_sec > 0)
-            if flow.refresh_interval_sec > 0:
-                self.interval_sec_input.set_value(flow.refresh_interval_sec)
-        # Volba runneru: automatická ze zadání, jinak násobek zapnutého runneru
-        # (obchod ze starší verze); obchod bez obojího tlačítka nemění
-        nasobek = flow.auto_runner_multiple
-        if nasobek is None and flow.runner_active:
-            nasobek = flow.runner_multiple
-        if nasobek is not None:
-            self._nastav_runner(runner_klic(nasobek))
+        # Průběžný přepočet se přenáší stejně; obchod bez volby (starší verze)
+        # přepínač nechává, jak je
+        if flow.refresh_interval_sec:
+            self.interval_checkbox.set_value(True)
+            self.interval_sec_input.set_value(flow.refresh_interval_sec)
+        # Volba runneru ze zadání; obchod bez volby tlačítka nemění
+        if flow.auto_runner_multiple is not None:
+            self._nastav_runner(runner_klic(flow.auto_runner_multiple))
         if flow.auto_runner_min_quantity is not None:
             self.runner_min_input.set_value(flow.auto_runner_min_quantity)
 
@@ -1950,7 +1859,7 @@ class TradingUI:
             refresh_interval_sec=self._form_interval_sec(),
             # Runner zapíná engine sám při založení a po každém přepočtu
             # množství, podle zvoleného násobku a minima
-            runner_multiple=self._form_runner(),
+            runner_multiple=runner_nasobek(self.runner_value),
             runner_min_quantity=self._form_runner_min(),
         )
 
