@@ -14,7 +14,7 @@ from nicegui import app, ui
 from tws_opce.config import load_config
 from tws_opce.engine import FlowEngine
 from tws_opce.ib_service import IBService
-from tws_opce.ui import create_ui
+from tws_opce.ui import APP_TITLE, create_ui
 
 log = logging.getLogger("tws_opce")
 
@@ -87,7 +87,7 @@ def main() -> None:
     ui.run(
         host=cfg.ui.host,
         port=cfg.ui.port,
-        title="Obchodování opcí – TWS",
+        title=APP_TITLE,
         dark=cfg.ui.dark,
         reload=False,
         show=False,

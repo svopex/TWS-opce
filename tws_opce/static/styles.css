@@ -1,10 +1,18 @@
 /* Styly aplikace pro obchodování opcí přes TWS */
 
 /* --- Hlavička --- */
+/* Sloupec: řádek s údaji a pod ním případný poplach přes celou šířku */
 .hlavicka {
-  align-items: center;
+  align-items: stretch;
   background-color: #1f2933;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px 16px;
+}
+
+/* Řádek s údaji hlavičky - zarovnání přebíjí výchozí .nicegui-row */
+.hlavicka .hlavicka-radek {
+  align-items: center;
 }
 
 .hlavicka .nazev {
@@ -90,6 +98,26 @@
   font-size: 0.8rem;
   font-weight: 600;
   margin-right: 12px;
+}
+
+/* Poplach: naplánované zadání čeká, ale TWS není připojen. Sdílí ho pruh
+   pod údaji hlavičky i varování v dialogu. Pozadí bliká mezi dvěma odstíny
+   červené - text zůstává čitelný i v tmavší fázi, na rozdíl od pulzování
+   průhledností */
+.poplach {
+  animation: poplach 1s ease-in-out infinite;
+  background-color: #dc2626;
+  border-radius: 6px;
+  color: #ffffff;
+  font-size: 1rem;
+  font-weight: 700;
+  padding: 8px 14px;
+  text-align: center;
+}
+
+@keyframes poplach {
+  0%, 100% { background-color: #dc2626; }
+  50% { background-color: #7f1d1d; }
 }
 
 /* --- Pruh s upozorněním na pozice bez dozoru --- */
@@ -1004,6 +1032,23 @@ body.body--dark .popisek-volby-runner {
   animation: pulzovani 1.6s ease-in-out infinite;
 }
 
+/* Varování nad tlačítky, když TWS není připojen. Vzhled dává stav: se
+   zapnutým plánem .poplach jako v hlavičce, bez plánu klidný rámeček -
+   SL ani množství se nedopočítají, ale nic samo neproběhne */
+.dialog-import .varovani-spojeni {
+  width: 100%;
+}
+
+.dialog-import .varovani-spojeni-klid {
+  background-color: #fee2e2;
+  border: 1px solid #dc2626;
+  border-radius: 6px;
+  color: #991b1b;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 8px 12px;
+}
+
 /* Tlačítko otevírající dialog stojí vpravo v nadpisu formuláře */
 .tlacitko-import {
   flex: 0 0 auto;
@@ -1052,6 +1097,13 @@ body.body--dark .dialog-import .stav-import-chyba {
 
 body.body--dark .dialog-import .stav-import-varovani {
   color: #fbbf24;
+}
+
+/* Klidné varování na spojení v tmavém režimu */
+body.body--dark .dialog-import .varovani-spojeni-klid {
+  background-color: #450a0a;
+  border-color: #f87171;
+  color: #fecaca;
 }
 
 /* ===== Přehled výsledků obchodního dne ===== */

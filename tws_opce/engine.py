@@ -3227,8 +3227,7 @@ class FlowEngine:
         if not self.ib.connected:
             # Po obnovení spojení se obchody musí znovu spárovat s příkazy v TWS
             self._synced = False
-            # Automatické připojení jen pokud je povoleno konfigurací i uživatelem
-            if self.cfg.connection.auto_reconnect and self.auto_connect:
+            if self.reconnects_automatically:
                 await self._try_reconnect()
             return
 
@@ -3752,6 +3751,14 @@ class FlowEngine:
             )
         popis += " Zkontrolujte ji v TWS."
         return popis
+
+    @property
+    def reconnects_automatically(self) -> bool:
+        """
+        Obnovuje se spojení s TWS samo? Musí to povolit konfigurace
+        i obchodník - ruční odpojení automatické připojování vypíná.
+        """
+        return self.cfg.connection.auto_reconnect and self.auto_connect
 
     async def _try_reconnect(self) -> None:
         """Pokusí se obnovit spojení s TWS po jeho výpadku."""

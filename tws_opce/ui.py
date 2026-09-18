@@ -41,6 +41,12 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+# Název aplikace v hlavičce i v titulku záložky prohlížeče
+APP_TITLE = "Obchodování opcí – TWS"
+# Titulek záložky, když naplánované zadání čeká bez spojení s TWS - varování
+# je tak vidět i z jiné záložky nebo okna prohlížeče
+TITLE_PLAN_DISCONNECTED = f"⚠ TWS NEPŘIPOJEN – {APP_TITLE}"
+
 # Definice sloupců monitorovací tabulky
 TABLE_COLUMNS = [
     {"name": "live", "label": "", "field": "live", "align": "center"},
@@ -387,47 +393,56 @@ class TradingUI:
         self.dark_mode = ui.dark_mode(
             bool(app.storage.general.get("dark_mode", self.cfg.ui.dark))
         )
+        # Hlavička je sloupec: nahoře řádek s údaji, pod ním poplach
+        # naplánovaného zadání bez spojení. Řádek se nezalamuje, takže
+        # objevení poplachu nerozhodí rozložení údajů nad ním
         with ui.header().classes("hlavicka"):
-            ui.label("Obchodování opcí – TWS").classes("nazev")
-            ui.space()
-            # Odpočet do otevření burzy - mimo obchodní hodiny
-            self.market_open_label = ui.label().classes("odpocet-otevreni")
-            self.market_open_label.set_visibility(False)
-            # Odpočty časovaných funkcí, u každého přepínač celé funkce
-            self.okna = self._popis_oken()
-            for okno in self.okna:
-                okno.box = ui.row().classes("okno-prepinac")
-                with okno.box:
-                    okno.label = ui.label().classes("odpocet-okno")
-                    okno.button = ui.button(
-                        on_click=lambda o=okno: self._toggle_okno(o)
-                    ).props("flat round dense size=sm")
-                    with okno.button:
-                        # Tooltip se zakládá jen jednou. Element.tooltip() by
-                        # při každém překreslení hlavičky vyrobil další a
-                        # stránka by jich za den nasbírala desetitisíce
-                        okno.tip = ui.tooltip("")
-                okno.box.set_visibility(False)
-            # Naplánované zadání pozic ze souboru. Režim běží i se zavřeným
-            # dialogem, takže jinak než tady by nebyl vidět
-            self.plan_label = ui.label().classes("odpocet-plan")
-            self.plan_label.set_visibility(False)
-            self.dark_button = ui.button(on_click=self._toggle_dark).props("flat round dense")
-            with self.dark_button:
-                ui.tooltip("Přepnout světlý/tmavý vzhled")
-            self._refresh_dark_button()
-            self.status_label = ui.label().classes("stav-spojeni")
-            # Kvalita spojení: odezva TWS a stáří tržních dat. Ukazuje, že
-            # spojení nejen stojí, ale i žije - odpojené se skrývá
-            self.link_label = ui.label().classes("stav-linky")
-            self.link_label.tooltip(
-                "Odezva TWS je doba, za kterou odpoví na dotaz na čas - měří "
-                "tedy samotnou aplikaci, ne síť k IB. Stáří dat je doba od "
-                "nejčerstvější kotace ze všech odebíraných kontraktů; mimo "
-                "obchodní hodiny přirozeně roste, protože trh nic neposílá."
-            )
-            self.link_label.set_visibility(False)
-            self.connect_button = ui.button("Připojit", on_click=self._toggle_connection).props("flat")
+            with ui.row(wrap=False).classes("hlavicka-radek"):
+                ui.label(APP_TITLE).classes("nazev")
+                ui.space()
+                # Odpočet do otevření burzy - mimo obchodní hodiny
+                self.market_open_label = ui.label().classes("odpocet-otevreni")
+                self.market_open_label.set_visibility(False)
+                # Odpočty časovaných funkcí, u každého přepínač celé funkce
+                self.okna = self._popis_oken()
+                for okno in self.okna:
+                    okno.box = ui.row().classes("okno-prepinac")
+                    with okno.box:
+                        okno.label = ui.label().classes("odpocet-okno")
+                        okno.button = ui.button(
+                            on_click=lambda o=okno: self._toggle_okno(o)
+                        ).props("flat round dense size=sm")
+                        with okno.button:
+                            # Tooltip se zakládá jen jednou. Element.tooltip() by
+                            # při každém překreslení hlavičky vyrobil další a
+                            # stránka by jich za den nasbírala desetitisíce
+                            okno.tip = ui.tooltip("")
+                    okno.box.set_visibility(False)
+                # Naplánované zadání pozic ze souboru. Režim běží i se zavřeným
+                # dialogem, takže jinak než tady by nebyl vidět
+                self.plan_label = ui.label().classes("odpocet-plan")
+                self.plan_label.set_visibility(False)
+                self.dark_button = ui.button(on_click=self._toggle_dark).props("flat round dense")
+                with self.dark_button:
+                    ui.tooltip("Přepnout světlý/tmavý vzhled")
+                self._refresh_dark_button()
+                self.status_label = ui.label().classes("stav-spojeni")
+                # Kvalita spojení: odezva TWS a stáří tržních dat. Ukazuje, že
+                # spojení nejen stojí, ale i žije - odpojené se skrývá
+                self.link_label = ui.label().classes("stav-linky")
+                self.link_label.tooltip(
+                    "Odezva TWS je doba, za kterou odpoví na dotaz na čas - měří "
+                    "tedy samotnou aplikaci, ne síť k IB. Stáří dat je doba od "
+                    "nejčerstvější kotace ze všech odebíraných kontraktů; mimo "
+                    "obchodní hodiny přirozeně roste, protože trh nic neposílá."
+                )
+                self.link_label.set_visibility(False)
+                self.connect_button = ui.button("Připojit", on_click=self._toggle_connection).props("flat")
+            # Poplach přes celou šířku hlavičky: naplánované zadání čeká, ale
+            # TWS není připojen. Hlavička zůstává nahoře i při posunuté
+            # stránce, takže pruh nejde přehlédnout
+            self.plan_alarm_label = ui.label().classes("poplach")
+            self.plan_alarm_label.set_visibility(False)
 
     def _toggle_dark(self) -> None:
         """Přepne světlý/tmavý vzhled a volbu si zapamatuje."""
@@ -2169,15 +2184,29 @@ class TradingUI:
         Signalizace naplánovaného zadání pozic ze souboru v hlavičce.
 
         Dialog si popis skládá sám - zná odpočet i počet vybraných pozic;
-        prázdný popis znamená, že režim neběží a pruh se skryje.
-        """
-        popis = self.import_dialog.plan_popis()
-        if popis is None:
-            self.plan_label.set_visibility(False)
-            return
+        prázdný popis znamená, že režim neběží a popisek se skryje.
 
-        self.plan_label.set_visibility(True)
-        self.plan_label.set_text(popis)
+        Čeká-li plán bez spojení s TWS, po otevření trhu nic nezadá, a
+        červený stav spojení mezi ostatními údaji snadno zapadne. Místo
+        popisku se pak pod údaji hlavičky ukáže poplach přes celou její
+        šířku (nese počet pozic i odpočet, popisek by je jen opakoval
+        a přeplnil řádek) a varování dostane i titulek záložky.
+        """
+        alarm = self.import_dialog.plan_bez_spojeni()
+        popis = None if alarm else self.import_dialog.plan_popis()
+        self.plan_label.set_visibility(popis is not None)
+        if popis is not None:
+            self.plan_label.set_text(popis)
+
+        self.plan_alarm_label.set_visibility(alarm)
+        if alarm:
+            self.plan_alarm_label.set_text(self.import_dialog.varovani_spojeni())
+
+        # Titulek se posílá jen při změně - každé nastavení znamená volání
+        # JavaScriptu v prohlížeči
+        title = TITLE_PLAN_DISCONNECTED if alarm else APP_TITLE
+        if ui.context.client.resolve_title() != title:
+            ui.page_title(title)
 
     def _refresh_okno(self, okno: CasovaneOkno) -> None:
         """

@@ -227,6 +227,9 @@ class ImportDialog:
         self.plan_prodleva: float = 0.0
         # Tlačítko plánu vzniká až s vykresleným dialogem
         self.plan_button: Any = None
+        # Varování na chybějící spojení s TWS nad tlačítky; také vzniká až
+        # s vykresleným dialogem
+        self.spojeni_label: Any = None
 
     # ------------------------------------------------------------------
     # Sestavení dialogu
@@ -277,6 +280,13 @@ class ImportDialog:
             self.tabulka.set_visibility(False)
 
             self.souhrn_label = ui.label("").classes("souhrn-import")
+
+            # Varování na chybějící spojení s TWS. Stojí těsně nad tlačítky,
+            # aby ho obchodník viděl ve chvíli, kdy zadání do trhu spouští
+            self.spojeni_label = ui.label("").classes(
+                "varovani-spojeni varovani-spojeni-klid"
+            )
+            self.spojeni_label.set_visibility(False)
 
             with ui.row().classes("radek radek-tlacitka"):
                 self.zadat_button = (
@@ -1346,6 +1356,7 @@ class ImportDialog:
         protože obchodník ho zapne a dialog odklidí.
         """
         self._tik_planu()
+        self._obnov_varovani_spojeni()
         if not self.dialog.value or not self.radky:
             return
 
@@ -1355,13 +1366,21 @@ class ImportDialog:
         self._obnov_zamky()
         self._obnov_souhrn()
 
-    def _obnov_souhrn(self) -> None:
-        """Souhrn pod tabulkou - kolik pozic a kontraktů se chystá do trhu."""
-        vybrane = [
+    def _k_zadani(self) -> list[RadekPozice]:
+        """
+        Řádky, které jdou do trhu - vybrané a nezamčené. Z téhož výběru
+        počítá souhrn, popis plánu i varování, aby se shodovaly s dávkou,
+        kterou zadání skutečně pošle.
+        """
+        return [
             radek
             for radek in self.radky
             if radek.vybrano.value and not self._zamceno(radek)
         ]
+
+    def _obnov_souhrn(self) -> None:
+        """Souhrn pod tabulkou - kolik pozic a kontraktů se chystá do trhu."""
+        vybrane = self._k_zadani()
         kontrakty = sum(int(self._cislo(radek.qty_input.value) or 0) for radek in vybrane)
         self.souhrn_label.set_text(
             f"K zadání {len(vybrane)} pozic, celkem {kontrakty} kontraktů | "
@@ -1416,12 +1435,67 @@ class ImportDialog:
         zbyva = self._plan_zbyva()
         if zbyva is None:
             return None
-        pocet = sum(
-            1
-            for radek in self.radky
-            if radek.vybrano.value and not self._zamceno(radek)
+        return f"Naplánováno zadání {self._davka_planu(zbyva)}"
+
+    def _davka_planu(self, zbyva: float) -> str:
+        """Počet pozic plánu a odpočet do spuštění - pro popis i varování."""
+        return f"{len(self._k_zadani())} pozic za {format_countdown(zbyva)}"
+
+    def plan_bez_spojeni(self) -> bool:
+        """
+        Naplánované zadání čeká, ale TWS není připojen.
+
+        V takovém stavu by plán po otevření trhu nedopočítal SL ani množství
+        a žádnou pozici by do trhu nezadal - chyba by se ukázala až ve
+        stavech řádků, kdy už je pozdě. Hlavička stránky i dialog to proto
+        hlásí výrazně, dokud se spojení nenaváže.
+        """
+        return self.plan_aktivni and not self.ib.connected
+
+    def varovani_spojeni(self) -> str | None:
+        """
+        Text varování na chybějící spojení s TWS; None, když spojení stojí.
+
+        Se zapnutým plánem říká, že zadání neproběhne, a nese i počet pozic
+        a odpočet - hlavička pak skrývá popisek plánu, aby se její řádek
+        nepřeplnil. Bez plánu jen připomene, co bez spojení nejde. Rada na
+        konci se řídí tím, zda se aplikace po spuštění TWS připojí sama -
+        po ručním odpojení to neudělá.
+        """
+        if self.ib.connected:
+            return None
+        if self.engine.reconnects_automatically:
+            rada = "Spusťte Trader Workstation, aplikace se k němu připojí sama."
+        else:
+            rada = "Spusťte Trader Workstation a v hlavičce klikněte na Připojit."
+        if self.plan_aktivni:
+            davka = self._davka_planu(self._plan_zbyva() or 0.0)
+            return (
+                f"POZOR: TWS není připojen - naplánované zadání {davka} "
+                f"bez spojení neproběhne. {rada}"
+            )
+        return (
+            "TWS není připojen - bez něj se nedopočítá SL ani množství "
+            f"a do trhu nepůjde žádná pozice. {rada}"
         )
-        return f"Naplánováno zadání {pocet} pozic za {format_countdown(zbyva)}"
+
+    def _obnov_varovani_spojeni(self) -> None:
+        """
+        Sladí varování nad tlačítky se stavem spojení a plánu. Se zapnutým
+        plánem dostane naléhavý vzhled, protože zadání samo proběhne jen
+        tehdy, když spojení do okamžiku spuštění naskočí.
+        """
+        if self.spojeni_label is None:
+            return
+        text = self.varovani_spojeni()
+        self.spojeni_label.set_visibility(text is not None)
+        if text is None:
+            return
+        self.spojeni_label.set_text(text)
+        # Se zapnutým plánem má varování stejný vzhled jako poplach
+        # v hlavičce stránky, bez plánu je to klidný rámeček
+        stav = "poplach" if self.plan_aktivni else "varovani-spojeni-klid"
+        self.spojeni_label.classes(replace=f"varovani-spojeni {stav}")
 
     def _obnov_plan(self) -> None:
         """
@@ -1491,9 +1565,7 @@ class ImportDialog:
         # nemění. Prázdný by tiše skončil zadáním nula pozic, a to až po
         # otevření trhu, kdy už je na nápravu pozdě: znovu otevřený dialog
         # zaškrtnutí nepřepočtených řádků sundává
-        if not any(
-            radek.vybrano.value and not self._zamceno(radek) for radek in self.radky
-        ):
+        if not self._k_zadani():
             ui.notify(
                 "Není vybrána žádná pozice - plán by do trhu nezadal nic.",
                 type="warning",
@@ -1514,6 +1586,21 @@ class ImportDialog:
         self.plan_prodleva = prodleva
         self.plan_aktivni = True
         self._obnov_plan()
+        # Bez spojení s TWS plán zapnout jde - TWS se dá do otevření trhu
+        # ještě spustit. Místo potvrzení, že zadání proběhne, se ale ukáže
+        # varování, že bez spojení neproběhne. Hláška sama nezmizí a čeká
+        # na potvrzení (timeout 0); potvrzovací tlačítko je akce Quasaru,
+        # ne close_button - jen u akce jde nastavit bílá barva, výchozí
+        # modrá na červeném pozadí špatně čte
+        if not self.ib.connected:
+            ui.notify(
+                self.varovani_spojeni(),
+                type="negative",
+                multi_line=True,
+                timeout=0,
+                actions=[{"label": "Rozumím", "color": "white"}],
+            )
+            return
         zbyva = self._plan_zbyva() or 0.0
         ui.notify(
             f"Přepočet a zadání proběhne za {format_countdown(zbyva)} "
@@ -1626,11 +1713,7 @@ class ImportDialog:
         nezastaví, zapíše se do jejího stavu; už založený řádek se podruhé
         nezadává.
         """
-        vybrane = [
-            radek
-            for radek in self.radky
-            if radek.vybrano.value and not self._zamceno(radek)
-        ]
+        vybrane = self._k_zadani()
         if not vybrane:
             ui.notify("Není vybrána žádná pozice k zadání.", type="warning")
             return

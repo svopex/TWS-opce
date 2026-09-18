@@ -1172,6 +1172,77 @@ class TestVychozihoNastaveniImportu(unittest.TestCase):
         self.assertEqual(vychozi(False, True), False)
 
 
+class TestVarovaniNaSpojeni(unittest.TestCase):
+    """
+    Varování na chybějící spojení s TWS. Naplánované zadání bez spojení
+    po otevření trhu nic nezadá, proto se musí hlásit výrazně - hlavička
+    stránky se řídí příznakem plan_bez_spojeni, dialog textem varování.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = AppConfig()
+        self.cfg.state.enabled = False
+        self.ib = FakeIBService(self.cfg)
+        self.engine = FlowEngine(self.cfg, self.ib)
+        self.dialog = ImportDialog(self.cfg, self.engine, self.ib, None)
+        # Varování nad tlačítky; rozhraní se nevykresluje
+        self.dialog.spojeni_label = Popisek()
+
+    def test_se_spojenim_se_nevaruje(self):
+        self.dialog.plan_aktivni = True
+        self.assertFalse(self.dialog.plan_bez_spojeni())
+        self.assertIsNone(self.dialog.varovani_spojeni())
+        self.dialog._obnov_varovani_spojeni()
+        self.assertFalse(self.dialog.spojeni_label.visible)
+
+    def test_zapnuty_plan_bez_spojeni_vyhlasi_poplach(self):
+        self.ib.connected_flag = False
+        self.dialog.plan_aktivni = True
+        self.assertTrue(self.dialog.plan_bez_spojeni())
+        self.dialog._obnov_varovani_spojeni()
+        self.assertTrue(self.dialog.spojeni_label.visible)
+        self.assertIn("naplánované zadání", self.dialog.spojeni_label.text)
+
+    def test_bez_planu_jen_pripomene_co_nejde(self):
+        # Bez zapnutého plánu se nic samo nespustí - hlavička poplach
+        # nevyhlásí, dialog jen připomene, že bez spojení se nic nezadá
+        self.ib.connected_flag = False
+        self.assertFalse(self.dialog.plan_bez_spojeni())
+        text = self.dialog.varovani_spojeni()
+        self.assertIsNotNone(text)
+        self.assertNotIn("naplánované", text)
+
+    def test_rada_podle_automatickeho_pripojeni(self):
+        # Po ručním odpojení se aplikace sama nepřipojí - rada musí
+        # obchodníka poslat na tlačítko Připojit
+        self.ib.connected_flag = False
+        self.assertIn("připojí sama", self.dialog.varovani_spojeni())
+        self.engine.auto_connect = False
+        self.assertIn("Připojit", self.dialog.varovani_spojeni())
+        self.engine.auto_connect = True
+        self.cfg.connection.auto_reconnect = False
+        self.assertIn("Připojit", self.dialog.varovani_spojeni())
+
+    def test_zapnuti_planu_bez_spojeni_vyhlasi_trvalou_hlasku(self):
+        self.ib.connected_flag = False
+        # Plán jde zapnout jen s načtenou a vybranou pozicí před okamžikem
+        # spuštění; ostatní podmínky zapnutí se tu obcházejí
+        self.dialog.radky = [mock.Mock()]
+        self.dialog._zadana_hodnota = lambda: 3.0
+        self.dialog._zamceno = lambda radek: False
+        self.engine.market_open_elapsed = lambda: None
+        self.engine.market_open_seconds = lambda: 3600.0
+        with mock.patch.object(import_dialog.ui, "notify") as hlaska:
+            self.dialog._prepni_plan()
+        self.assertTrue(self.dialog.plan_aktivni)
+        # Místo potvrzení, že zadání proběhne, jen hláška o chybějícím
+        # spojení - a ta nezmizí sama (timeout 0)
+        hlasky = hlaska.call_args_list
+        self.assertEqual(len(hlasky), 1)
+        self.assertEqual(hlasky[0].kwargs.get("type"), "negative")
+        self.assertEqual(hlasky[0].kwargs.get("timeout"), 0)
+
+
 class TestKonfiguraceImportu(unittest.TestCase):
     """Validace sekce import - vadné hodnoty musí padnout hned při startu."""
 

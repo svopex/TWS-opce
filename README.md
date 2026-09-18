@@ -988,6 +988,11 @@ protože v prvních okamžicích po otevření jsou kotace opcí nejširší.
 Tlačítko **Zadat po otevření trhu** přepínač nepoužije: řádky přepočítá až
 po otevření a uplynutí prodlevy a hned je zadá, takže proběhne jediný
 přepočet a přehled ukáže stejná čísla i runner jako dialog.
+Bez spojení s TWS by plán po otevření nic nezadal. Dokud tedy čeká a TWS
+není připojen, bliká pod hlavičkou stránky i nad tlačítky dialogu červený
+pruh s počtem pozic a odpočtem a titulek záložky prohlížeče začíná
+„⚠ TWS NEPŘIPOJEN“. Zapnutí plánu bez spojení navíc ohlásí hláška, která
+sama nezmizí.
 
 **Přepočítávat každých [s]** zapíná průběžný přepočet čekajících obchodů
 za otevřené burzy — tatáž volba, jakou má formulář zadání (podrobně
