@@ -229,6 +229,11 @@ def stav_linky_text(rtt_ms: float | None, stari_sec: float | None) -> str:
     return f"TWS {odezva} · data {stari_text(stari_sec)}"
 
 
+def oer_text(ratio: float) -> str:
+    """Order Efficiency Ratio dne do hlavičky, například 'OER: 3,4'."""
+    return f"OER: {ratio:.1f}".replace(".", ",")
+
+
 def linka_varuje(
     rtt_ms: float | None, stari_sec: float | None, trh_otevren: bool
 ) -> bool:
@@ -437,6 +442,12 @@ class TradingUI:
                     "obchodní hodiny přirozeně roste, protože trh nic neposílá."
                 )
                 self.link_label.set_visibility(False)
+                # Order Efficiency Ratio dne - kolik zpráv do TWS připadá na
+                # vyplněný příkaz; počty a rozpočet dne ukazuje tooltip, který
+                # se zakládá jen jednou a při obnově se mu přepisuje text
+                self.oer_label = ui.label().classes("stav-oer")
+                with self.oer_label:
+                    self.oer_tip = ui.tooltip("")
                 self.connect_button = ui.button("Připojit", on_click=self._toggle_connection).props("flat")
             # Poplach přes celou šířku hlavičky: naplánované zadání čeká, ale
             # TWS není připojen. Hlavička zůstává nahoře i při posunuté
@@ -2158,6 +2169,7 @@ class TradingUI:
         self._refresh_warning()
         self._refresh_status()
         self._refresh_market_open()
+        self._refresh_oer()
         for okno in self.okna:
             self._refresh_okno(okno)
         self._refresh_table()
@@ -2178,6 +2190,21 @@ class TradingUI:
 
         self.market_open_label.set_visibility(True)
         self.market_open_label.set_text(f"Otevření trhu za {format_countdown(sekundy)}")
+
+    def _refresh_oer(self) -> None:
+        """
+        Order Efficiency Ratio dne v hlavičce. Zvýrazní se, jakmile zprávy
+        dne přesáhnou rozpočet a nepovinné úpravy příkazů se pozastaví.
+        """
+        oer = self.ib.oer
+        self.oer_label.set_text(oer_text(oer.ratio))
+        self.oer_tip.set_text(
+            f"Order Efficiency Ratio (IBKR očekává nejvýš kolem 20): {oer.summary()}"
+        )
+        if oer.over_limit:
+            self.oer_label.classes(add="oer-varovani")
+        else:
+            self.oer_label.classes(remove="oer-varovani")
 
     def _refresh_plan(self) -> None:
         """

@@ -816,6 +816,10 @@ rozpočet vlivem povinných zpráv, log to ohlásí jednou. Znovu to ohlásí a�
 návratu do rozpočtu (vyplněním příkazu nebo novým dnem) a dalším překročení.
 `trading.oer_limit: 0` hlídání vypíná.
 
+Aktuální OER dne ukazuje hlavička aplikace za údajem o odezvě TWS a stáří
+dat („OER: 3,4“). Tooltip nese počet zpráv, vyplněných příkazů a rozpočet dne.
+Po překročení rozpočtu se údaj zvýrazní žlutě.
+
 Kromě limitu šetří zprávy i samotná logika příkazů: limit čekajícího
 příkazu se upravuje až po spuštění jeho podmínky, prodleva před návratem do
 trhu po spreadu se s každým odstraněním prodlouží a průběžný přepočet

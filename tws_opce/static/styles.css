@@ -38,16 +38,20 @@
   color: #fee2e2;
 }
 
-/* Kvalita spojení - odezva TWS a stáří tržních dat vedle stavu spojení */
-.stav-linky {
+/* Kvalita spojení - odezva TWS a stáří tržních dat vedle stavu spojení;
+   stejně vypadá Order Efficiency Ratio dne */
+.stav-linky,
+.stav-oer {
   color: #cbd5e1;
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
   margin-right: 12px;
 }
 
-/* Pomalá odezva nebo stojící kotace během seance */
-.stav-linky.linka-varovani {
+/* Pomalá odezva nebo stojící kotace během seance; u OER zprávy dne nad
+   rozpočtem, kdy se nepovinné úpravy příkazů pozastavují */
+.stav-linky.linka-varovani,
+.stav-oer.oer-varovani {
   color: #fbbf24;
   font-weight: 600;
 }

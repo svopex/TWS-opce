@@ -19,7 +19,7 @@ from ib_async import OptionComputation, Stock, Ticker
 
 from tws_opce.config import AppConfig
 from tws_opce.ib_service import IBService, valid_price
-from tws_opce.ui import linka_varuje, stari_text, stav_linky_text
+from tws_opce.ui import linka_varuje, oer_text, stari_text, stav_linky_text
 
 NAN = float("nan")
 
@@ -373,6 +373,14 @@ class TestPopisuLinky(unittest.TestCase):
         self.assertEqual(stari_text(42.4), "42 s")
         self.assertEqual(stari_text(185.0), "3 min")
         self.assertEqual(stari_text(None), "-")
+
+
+class TestPopisuOer(unittest.TestCase):
+    """Order Efficiency Ratio dne v hlavičce."""
+
+    def test_jedno_desetinne_misto_s_carkou(self):
+        self.assertEqual(oer_text(10.0), "OER: 10,0")
+        self.assertEqual(oer_text(175.666), "OER: 175,7")
 
 
 class TestVarovaniLinky(unittest.TestCase):
