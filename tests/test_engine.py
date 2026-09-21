@@ -860,6 +860,8 @@ class TestProdlevyNavratuPoSpreadu(ZakladTestu):
     async def test_navrat_do_trhu_respektuje_limit_oer(self):
         # Limit 3: zadání (1) + zrušení (1) + návrat by potřeboval další dvě
         self.ib.oer.limit = 3.0
+        # Bez volného základu rozhoduje jen limit poměru
+        self.ib.oer.free_messages = 0
         flow = await self.zaloz_call()
 
         await self.odstran_a_vrat(flow, 30)
@@ -978,6 +980,8 @@ class TestPrubehnaAktualizaceLimitu(ZakladTestu):
         # a rezervu na jeho zrušení - na úpravu limitu už nezbude
         self.cfg.trading.oer_limit = 2.0
         self.ib.oer.limit = 2.0
+        # Bez volného základu rozhoduje jen limit poměru
+        self.ib.oer.free_messages = 0
         flow = await self.zaloz_call()
         puvodni = flow.entry_limit
         flow.entry_trade.orderStatus.status = "Submitted"
@@ -997,6 +1001,8 @@ class TestPrubehnaAktualizaceLimitu(ZakladTestu):
         # Každý vyplněný příkaz přidá prostor pro další limit zpráv
         self.cfg.trading.oer_limit = 2.0
         self.ib.oer.limit = 2.0
+        # Bez volného základu rozhoduje jen limit poměru
+        self.ib.oer.free_messages = 0
         flow = await self.zaloz_call()
         flow.entry_trade.orderStatus.status = "Submitted"
         self.ib.price_bid, self.ib.price_ask = 3.55, 3.60
@@ -3773,6 +3779,8 @@ class TestPrubeznehoPrepoctu(ZakladPrepoctu):
         # Bez pásma, ale limit OER dovolí jen zadání a rezervu na zrušení
         self.cfg.trading.refresh_increase_margin_pct = 0.0
         self.ib.oer.limit = 2.0
+        # Bez volného základu rozhoduje jen limit poměru
+        self.ib.oer.free_messages = 0
         flow = await self.zaloz()
         self.burza(600)
         self.zlevni()
@@ -3786,6 +3794,8 @@ class TestPrubeznehoPrepoctu(ZakladPrepoctu):
     async def test_snizeni_mnozstvi_projde_i_nad_limitem_oer(self):
         # Snížení chrání riziko na obchod, proto se posílá vždy
         self.ib.oer.limit = 1.0
+        # Bez volného základu rozhoduje jen limit poměru
+        self.ib.oer.free_messages = 0
         flow = await self.zaloz(quantity=5)
         self.burza(600)
         self.zdrazi()

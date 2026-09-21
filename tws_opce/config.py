@@ -136,6 +136,12 @@ class TradingConfig:
     # zprávy (zajištění pozice, uzavření, zrušení) se posílají vždy.
     # 0 = hlídání vypnuto
     oer_limit: float = 15.0
+    # Volný denní základ zpráv: do tohoto počtu projdou nepovinné zprávy bez
+    # ohledu na OER, nad ním rozhoduje oer_limit. IBKR minimální hranici
+    # nezveřejňuje; podle zkušeností obchodníků poměr neřeší při stovkách
+    # zpráv denně, varování přicházela až při tisících. Bez základu by pět
+    # čekajících obchodů bez vyplnění mělo na celý den jen pár úprav
+    oer_free_messages: int = 200
     # Pásmo necitlivosti průběžného přepočtu (import.refresh_interval) pro
     # zvýšení množství čekajícího příkazu v trhu: vyšší množství se pošle,
     # jen když by vyšlo i z rizika na obchod sníženého o tolik procent.
@@ -444,6 +450,8 @@ def validate_config(cfg: AppConfig) -> None:
         problems.append("trading.rearm_delay_max_sec nesmí být záporné")
     if cfg.trading.oer_limit < 0:
         problems.append("trading.oer_limit nesmí být záporné (0 = hlídání vypnuto)")
+    if cfg.trading.oer_free_messages < 0:
+        problems.append("trading.oer_free_messages nesmí být záporné")
     # Pásmo 100 % a víc by zvýšení množství zakázalo úplně
     if not 0 <= cfg.trading.refresh_increase_margin_pct < 100:
         problems.append("trading.refresh_increase_margin_pct musí být v rozsahu 0 až 99")

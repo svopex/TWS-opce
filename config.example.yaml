@@ -276,17 +276,25 @@ trading:
   # Hlídání Order Efficiency Ratio. IBKR počítá za každý obchodní den
   #   OER = (odeslané příkazy + úpravy + zrušení) / (vyplněné příkazy + 1)
   # a očekává hodnotu nejvýš kolem 20; při vyšší posílá varování a při
-  # opakování omezuje obchodování. Nepovinné zprávy - přelimitování, návrat
-  # příkazu do trhu po uvolnění spreadu, zvýšení množství průběžným
-  # přepočtem - se pošlou jen tehdy, když OER dne zůstane nejvýš na této
-  # hodnotě; jako rezerva se přitom počítá zrušení každého čekajícího
-  # nákupního příkazu v trhu. Povinné zprávy (zajištění a uzavření pozice,
-  # zrušení příkazu, zadání nového obchodu) se posílají vždy. Počítadla se
-  # ukládají se stavem obchodů, takže je restart během dne nevynuluje.
-  # Bez vyplněného příkazu vystačí limit 15 na 15 zpráv za den; každý
-  # vyplněný příkaz přidá dalších 15.
+  # opakování omezuje obchodování. Počítá se za celý účet a den, přes všechny
+  # instrumenty dohromady. Nepovinné zprávy - přelimitování, návrat příkazu
+  # do trhu po uvolnění spreadu, zvýšení množství průběžným přepočtem - se
+  # pošlou jen tehdy, když zprávy dne zůstanou v rozpočtu:
+  #   rozpočet dne = větší z (oer_free_messages, oer_limit × (vyplněné + 1))
+  # Jako rezerva se přitom počítá zrušení každého čekajícího nákupního
+  # příkazu v trhu. Povinné zprávy (zajištění a uzavření pozice, zrušení
+  # příkazu, zadání nového obchodu) se posílají vždy. Počítadla se ukládají
+  # se stavem obchodů, takže je restart během dne nevynuluje.
   # 0 = hlídání vypnuto
   oer_limit: 15
+
+  # Volný denní základ zpráv: do tohoto počtu projdou nepovinné zprávy bez
+  # ohledu na OER, nad ním rozhoduje oer_limit. IBKR minimální hranici
+  # oficiálně nezveřejňuje; podle zkušeností obchodníků poměr při stovkách
+  # zpráv denně neřeší a varování přicházela až při tisících. Bez základu
+  # by pět čekajících obchodů bez vyplnění mělo z limitu 15 po odečtení
+  # zadání a rezervy na zrušení jen pět úprav za celý den.
+  oer_free_messages: 200
 
   # Pásmo necitlivosti průběžného přepočtu (import.refresh_interval) pro
   # zvýšení množství čekajícího příkazu v trhu, v procentech: vyšší množství

@@ -130,7 +130,9 @@ class IBService:
         # Denní Order Efficiency Ratio - každé odeslání, úprava i zrušení
         # příkazu prochází place() a cancel(), kde se započítá
         self.oer = OrderEfficiency(
-            cfg.trading.oer_limit, ZoneInfo(cfg.trading.exchange_timezone)
+            cfg.trading.oer_limit,
+            ZoneInfo(cfg.trading.exchange_timezone),
+            free_messages=cfg.trading.oer_free_messages,
         )
 
         self.ib.disconnectedEvent += self._on_disconnected

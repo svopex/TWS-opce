@@ -769,9 +769,14 @@ OER = (odeslané příkazy + úpravy + zrušení) / (vyplněné příkazy + 1)
 ```
 
 IBKR očekává OER nejvýš kolem 20. Při vyšší hodnotě posílá varování a při
-opakování omezuje obchodování. Automatická správa příkazů tuto mez snadno
-přetáhne. Obchod, který celý den čeká na vstup, přelimitovává, ruší se kvůli
-spreadu a znovu zadává, pošle stovky zpráv bez jediného vyplnění.
+opakování omezuje obchodování. Počítá se za celý účet a den, přes všechny
+instrumenty dohromady. Automatická správa příkazů tuto mez snadno přetáhne.
+Obchod, který celý den čeká na vstup, přelimitovává, ruší se kvůli spreadu
+a znovu zadává, pošle stovky zpráv bez jediného vyplnění.
+
+Minimální objem, od kterého IBKR poměr vymáhá, oficiálně zveřejněný není.
+Podle zkušeností obchodníků (neoficiální) jim při stovkách zpráv denně OER
+nevadil a varování přicházela až při tisících zpráv denně.
 
 Aplikace proto každou zprávu do TWS počítá (nový příkaz, úpravu i zrušení)
 a sleduje vyplněné příkazy dne (částečně vyplněný příkaz se počítá jednou).
@@ -781,20 +786,32 @@ takže je restart během seance nevynuluje. Zprávy se dělí na dvě skupiny:
 - **Povinné** se posílají vždy: zadání nového obchodu, zajištění a uzavření
   pozice, zrušení příkazu (ruční, v nastavený čas, kvůli spreadu,
   propásnutý vstup), přepočet po otevření burzy a snížení množství.
-- **Nepovinné** se pošlou jen tehdy, když OER dne zůstane nejvýš na hodnotě
-  `trading.oer_limit` (výchozí 15, rezerva pod hranicí 20): přelimitování
-  nákupního příkazu, zadání příkazu po uvolnění spreadu (návrat do trhu
-  i první zadání obchodu založeného při spreadu nad limitem) a zvýšení
-  množství průběžným přepočtem. Jako rezerva se přitom počítá zrušení
-  každého čekajícího nákupního příkazu v trhu, aby na povinné zprávy vždy
-  zbylo místo.
+- **Nepovinné** se pošlou jen tehdy, když se zprávy dne vejdou do rozpočtu:
+  přelimitování nákupního příkazu, zadání příkazu po uvolnění spreadu
+  (návrat do trhu i první zadání obchodu založeného při spreadu nad limitem)
+  a zvýšení množství průběžným přepočtem. Jako rezerva se přitom počítá
+  zrušení každého čekajícího nákupního příkazu v trhu, aby na povinné
+  zprávy vždy zbylo místo.
 
-Bez vyplněného příkazu tedy limit 15 dovolí za den jen 15 zpráv. Každý
-vyplněný příkaz (nákup, prodej, runner) přidá dalších 15. Odložená nepovinná
-úprava se do provozního logu hlásí jednou za obchod („přelimitování nákupního
-příkazu odloženo – OER dne …“). Po vyplnění dalšího příkazu se úpravy samy
-obnoví. Překročí-li OER limit vlivem povinných zpráv, log to jednou za den
-ohlásí. `trading.oer_limit: 0` hlídání vypíná.
+Rozpočet dne je větší ze dvou hodnot:
+
+```text
+rozpočet dne = max(oer_free_messages, oer_limit × (vyplněné příkazy + 1))
+```
+
+- `trading.oer_free_messages` (výchozí 200) je volný základ. Do něj
+  nepovinné zprávy projdou bez ohledu na poměr. Bez něj by pět čekajících
+  obchodů bez vyplnění mělo z limitu 15 po odečtení pěti zadání a pěti
+  rezervovaných zrušení jen pět úprav na celý den.
+- `trading.oer_limit` (výchozí 15, rezerva pod hranicí 20) rozhoduje nad
+  základem. Každý vyplněný příkaz (nákup, prodej, runner) přidá 15 zpráv,
+  takže při 20 vyplněných příkazech je rozpočet 315.
+
+Odložená nepovinná úprava se do provozního logu hlásí jednou za obchod
+(„přelimitování nákupního příkazu odloženo – vyčerpán rozpočet zpráv …“).
+Po vyplnění dalšího příkazu se úpravy samy obnoví. Přesáhnou-li zprávy
+rozpočet vlivem povinných zpráv, log to jednou za den ohlásí.
+`trading.oer_limit: 0` hlídání vypíná.
 
 Kromě limitu šetří zprávy i samotná logika příkazů: limit čekajícího
 příkazu se upravuje až po spuštění jeho podmínky, prodleva před návratem do

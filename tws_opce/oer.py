@@ -11,6 +11,11 @@ do TWS odeslala, a příkazy, které se (i jen zčásti) vyplnily, a rozhoduje,
 zda se do limitu vejde ještě další nepovinná zpráva - přelimitování
 čekajícího příkazu, jeho návrat do trhu po uvolnění spreadu a podobně.
 Den se určuje v časové zóně burzy; s novým dnem se počítadla nulují.
+
+Poměr IBKR podle zkušeností obchodníků vymáhá až u velkého objemu zpráv
+(varování přicházela při tisících zpráv denně, při stovkách ne). Proto má
+rozpočet dne volný základ: do něj zprávy projdou bez ohledu na poměr,
+nad ním rozhoduje limit OER.
 """
 
 from __future__ import annotations
@@ -25,19 +30,22 @@ class OrderEfficiency:
     """
     Denní počítadlo zpráv a vyplněných příkazů pro výpočet OER.
 
-    limit    - nejvyšší OER, který nepovinné zprávy nesmějí překročit;
-               nula nebo záporná hodnota hlídání vypíná
-    timezone - časová zóna burzy, ve které se určuje obchodní den
-    now      - zdroj aktuálního času (testy si jím podvrhují den)
+    limit         - nejvyšší OER, který nepovinné zprávy nesmějí překročit;
+                    nula nebo záporná hodnota hlídání vypíná
+    timezone      - časová zóna burzy, ve které se určuje obchodní den
+    free_messages - volný základ: tolik zpráv za den projde bez ohledu na OER
+    now           - zdroj aktuálního času (testy si jím podvrhují den)
     """
 
     def __init__(
         self,
         limit: float,
         timezone: ZoneInfo,
+        free_messages: int = 0,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.limit = limit
+        self.free_messages = free_messages
         self.timezone = timezone
         self._now = now or (lambda: datetime.now(self.timezone))
         self._day: date = self._today()
@@ -84,6 +92,20 @@ class OrderEfficiency:
         """Aktuální OER dne podle vzorce IBKR."""
         return self.messages / (self.executed + 1)
 
+    @property
+    def budget(self) -> float:
+        """
+        Kolik zpráv smí den celkem obsahovat: větší z volného základu
+        a počtu, který drží OER na limitu (limit × (vyplněné + 1)).
+        """
+        self._roll()
+        return max(float(self.free_messages), self.limit * (len(self._executed) + 1))
+
+    @property
+    def over_limit(self) -> bool:
+        """True, pokud dnešní zprávy přesáhly volný základ i limit OER."""
+        return self.enabled and self.messages > self.budget
+
     def record_message(self, count: int = 1) -> None:
         """Započte odeslanou zprávu - nový příkaz, jeho úpravu nebo zrušení."""
         self._roll()
@@ -129,16 +151,16 @@ class OrderEfficiency:
 
     def allows(self, count: int, reserve: int = 0) -> bool:
         """
-        True, pokud se vejde dalších `count` nepovinných zpráv.
+        True, pokud se vejde dalších `count` nepovinných zpráv - buď do
+        volného základu dne, nebo do limitu OER (viz budget).
 
         reserve - zprávy, které bude aplikace možná muset poslat povinně
         (zrušení čekajících nákupních příkazů); nepovinné zprávy je nesmějí
-        vytlačit z limitu. Při vypnutém hlídání vrací vždy True.
+        vytlačit z rozpočtu. Při vypnutém hlídání vrací vždy True.
         """
         if not self.enabled:
             return True
-        self._roll()
-        return self._messages + count + reserve <= self.limit * (len(self._executed) + 1)
+        return self.messages + count + reserve <= self.budget
 
     # ------------------------------------------------------------------
     # Uložení a obnova

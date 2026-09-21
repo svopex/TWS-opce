@@ -3289,31 +3289,38 @@ class FlowEngine:
         if changed:
             self._notify()
 
+    def _oer_text(self) -> str:
+        """Stav OER dne pro log - poměr, počty a rozpočet dne."""
+        oer = self.ib.oer
+        return (
+            f"OER dne {oer.ratio:.1f} ({oer.messages} zpráv / {oer.executed} "
+            f"vyplněných příkazů + 1), rozpočet dne {oer.budget:.0f} zpráv "
+            f"(volný základ {oer.free_messages}, limit OER {oer.limit:g})"
+        )
+
     def _warn_oer_over_limit(self) -> None:
         """
-        Jednou za den ohlásí, že OER překročil limit. Nepovinné zprávy se
-        nad limit nepouštějí, přetáhnout ho mohou jen povinné (zajištění
-        a uzavření pozic, rušení příkazů) nebo zásahy obchodníka.
+        Jednou za den ohlásí, že zprávy dne přesáhly volný základ i limit
+        OER. Nepovinné zprávy se nad rozpočet nepouštějí, přetáhnout ho
+        mohou jen povinné (zajištění a uzavření pozic, rušení příkazů)
+        nebo zásahy obchodníka.
         """
-        oer = self.ib.oer
-        if not oer.enabled or oer.ratio <= oer.limit:
+        if not self.ib.oer.over_limit:
             return
         dnes = self._exchange_now().date()
         if self._oer_over_day == dnes:
             return
         self._oer_over_day = dnes
         self.log_event(
-            f"POZOR - Order Efficiency Ratio dne je {oer.ratio:.1f} "
-            f"({oer.messages} zpráv / {oer.executed} vyplněných příkazů + 1), "
-            f"nad limitem {oer.limit:g}. Nepovinné úpravy příkazů jsou "
-            f"pozastavené, dokud se nevyplní další příkaz."
+            f"POZOR - {self._oer_text()} je překročen. Nepovinné úpravy "
+            f"příkazů jsou pozastavené, dokud se nevyplní další příkaz."
         )
 
     def _oer_allows(self, count: int, flow: Flow, akce: str) -> bool:
         """
         Posoudí, zda se smí odeslat `count` nepovinných zpráv do TWS (nový
-        příkaz, úprava, zrušení), aniž by Order Efficiency Ratio dne přesáhl
-        limit trading.oer_limit.
+        příkaz, úprava, zrušení), aniž by zprávy dne přesáhly volný základ
+        trading.oer_free_messages i limit OER trading.oer_limit.
 
         Rezervou jsou zrušení všech čekajících nákupních příkazů v trhu -
         ta může být potřeba poslat povinně (rušení v nastavený čas, propásnutý
@@ -3332,11 +3339,9 @@ class FlowEngine:
             return True
         if klic not in self._oer_warned:
             self._oer_warned.add(klic)
-            oer = self.ib.oer
             self.log_event(
-                f"{flow.id}: {akce} odloženo - OER dne {oer.ratio:.1f} "
-                f"({oer.messages} zpráv / {oer.executed} vyplněných příkazů + 1) "
-                f"by přesáhl limit {oer.limit:g}."
+                f"{flow.id}: {akce} odloženo - vyčerpán rozpočet zpráv: "
+                f"{self._oer_text()}, rezerva na zrušení {rezerva}."
             )
         return False
 

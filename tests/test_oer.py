@@ -88,6 +88,28 @@ class TestPocitadla(unittest.TestCase):
         self.oer.record_executions([vyplneni(perm_id=1, cas=self.ted)])
         self.assertTrue(self.oer.allows(18, reserve=2))
 
+    def test_volny_zaklad_projde_bez_ohledu_na_pomer(self):
+        # Pět čekajících obchodů bez vyplnění: 5 zadání a rezerva 5 zrušení.
+        # Samotný limit 15 by nechal jen 5 zpráv, základ 200 jich nechá 190
+        oer = OrderEfficiency(15.0, BURZA, free_messages=200, now=lambda: self.ted)
+        oer.record_message(5)
+        self.assertAlmostEqual(oer.budget, 200.0)
+        self.assertTrue(oer.allows(190, reserve=5))
+        self.assertFalse(oer.allows(191, reserve=5))
+        # OER 33 je nad limitem, ale v základu - překročení se nehlásí
+        oer.record_message(160)
+        self.assertGreater(oer.ratio, oer.limit)
+        self.assertFalse(oer.over_limit)
+
+    def test_nad_zakladem_rozhoduje_limit_pomeru(self):
+        # Po 20 vyplněných příkazech drží limit 15 víc než základ: 15 × 21
+        oer = OrderEfficiency(15.0, BURZA, free_messages=200, now=lambda: self.ted)
+        oer.record_executions([vyplneni(perm_id=i, cas=self.ted) for i in range(1, 21)])
+        self.assertAlmostEqual(oer.budget, 315.0)
+        oer.record_message(316)
+        self.assertTrue(oer.over_limit)
+        self.assertFalse(oer.allows(1))
+
     def test_nulovy_limit_hlidani_vypina(self):
         oer = OrderEfficiency(0.0, BURZA, now=lambda: self.ted)
         oer.record_message(1000)
@@ -215,6 +237,7 @@ class TestValidaceKonfigurace(unittest.TestCase):
     def test_neplatne_hodnoty_se_odmitnou(self):
         for nazev, hodnota in (
             ("oer_limit", -1.0),
+            ("oer_free_messages", -1),
             ("rearm_delay_max_sec", -5.0),
             ("refresh_increase_margin_pct", 100.0),
             ("refresh_increase_margin_pct", -1.0),
