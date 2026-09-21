@@ -229,7 +229,7 @@ trading:
 
   # Nejkratší prodleva v sekundách mezi odstraněním příkazu z trhu
   # a jeho novým zadáním.
-  rearm_delay_sec: 5.0
+  rearm_delay_sec: 30.0
 
   # Strop prodlevy před návratem do trhu v sekundách. Každé další odstranění
   # příkazu kvůli spreadu u téhož obchodu prodlevu zdvojnásobí (5, 10, 20,
