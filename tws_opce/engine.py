@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
-import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -4370,16 +4369,14 @@ class FlowEngine:
         trading = self.cfg.trading
         zaklad = trading.rearm_delay_sec
         strop = max(trading.rearm_delay_max_sec, zaklad)
-        nasobek = trading.rearm_delay_factor
-        kroky = max(flow.spread_breaches - 1, 0)
-        # Násobek 1 ani nulový základ prodlevu neprodlužují. Jinak se počet
-        # kroků omezí na ten, po kterém prodleva dosáhne stropu - dlouho
-        # kolísající spread by jinak mocninou přetekl rozsah čísla
-        if nasobek <= 1 or zaklad <= 0:
-            kroky = 0
-        else:
-            kroky = min(kroky, math.ceil(math.log(strop / zaklad, nasobek)))
-        return min(zaklad * nasobek**kroky, strop)
+        # Prodleva se násobí po krocích a na stropu se skončí - mocnina by
+        # při dlouho kolísajícím spreadu přetekla rozsah čísla
+        prodleva = zaklad
+        for _ in range(max(flow.spread_breaches - 1, 0)):
+            if prodleva >= strop:
+                break
+            prodleva *= trading.rearm_delay_factor
+        return min(prodleva, strop)
 
     def _update_entry_limit(self, flow: Flow) -> bool:
         """

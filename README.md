@@ -818,7 +818,7 @@ návratu do rozpočtu (vyplněním příkazu nebo novým dnem) a dalším překr
 
 Kromě limitu šetří zprávy i samotná logika příkazů: limit čekajícího
 příkazu se upravuje až po spuštění jeho podmínky, prodleva před návratem do
-trhu po spreadu se s každým odstraněním zdvojnásobí a průběžný přepočet
+trhu po spreadu se s každým odstraněním prodlouží a průběžný přepočet
 zvyšuje množství jen mimo pásmo necitlivosti (viz výše).
 
 ### Stavy obchodu

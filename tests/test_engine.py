@@ -838,6 +838,7 @@ class TestProdlevyNavratuPoSpreadu(ZakladTestu):
 
     async def test_prodleva_se_s_kazdym_odstranenim_prodlouzi(self):
         self.cfg.trading.rearm_delay_sec = 5.0
+        self.cfg.trading.rearm_delay_factor = 1.5
         flow = await self.zaloz_call()
 
         # První odstranění - základní prodleva 5 s
@@ -845,7 +846,7 @@ class TestProdlevyNavratuPoSpreadu(ZakladTestu):
         self.assertEqual(flow.state, FlowState.ARMED)
         self.assertEqual(flow.spread_breaches, 1)
 
-        # Druhé odstranění - výchozí násobek 1,5 dává 7,5 s, 6 s je brzy
+        # Druhé odstranění - násobek 1,5 dává 7,5 s, 6 s je ještě brzy
         await self.odstran_a_vrat(flow, 6)
         self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
         flow.blocked_since = datetime.now() - timedelta(seconds=8)
@@ -860,46 +861,35 @@ class TestProdlevyNavratuPoSpreadu(ZakladTestu):
         obnovene = store.dict_to_flow(store.flow_to_dict(flow))
         self.assertEqual(obnovene.spread_breaches, 1)
 
-    async def test_vychozi_nasobek_prodlevy(self):
-        # Výchozí násobek 1,5 od základu 30 s až po strop 600 s
-        self.cfg.trading.rearm_delay_sec = 30.0
-        self.cfg.trading.rearm_delay_max_sec = 600.0
+    async def test_vypocet_prodlevy(self):
+        # (základ, strop, násobek, počet odstranění, očekávaná prodleva)
+        tabulka = (
+            # Výchozí násobek 1,5 od základu 30 s až po strop 600 s
+            (30.0, 600.0, 1.5, 1, 30.0),
+            (30.0, 600.0, 1.5, 2, 45.0),
+            (30.0, 600.0, 1.5, 3, 67.5),
+            (30.0, 600.0, 1.5, 4, 101.25),
+            (30.0, 600.0, 1.5, 8, 512.578125),
+            (30.0, 600.0, 1.5, 9, 600.0),
+            # Zdvojování se stropem 60 s
+            (5.0, 60.0, 2.0, 4, 40.0),
+            (5.0, 60.0, 2.0, 5, 60.0),
+            (5.0, 60.0, 2.0, 40, 60.0),
+            # Násobek 1 i strop pod základem prodlužování vypínají
+            (30.0, 600.0, 1.0, 500, 30.0),
+            (5.0, 0.0, 2.0, 6, 5.0),
+            # Velký násobek ani počet odstranění výpočet nepřetečou
+            (30.0, 600.0, 10.0, 10_000, 600.0),
+        )
         flow = await self.zaloz_call()
-
-        for pocet, cekani in ((1, 30.0), (2, 45.0), (3, 67.5), (4, 101.25), (8, 512.578125), (9, 600.0)):
+        trading = self.cfg.trading
+        for zaklad, strop, nasobek, pocet, cekani in tabulka:
+            trading.rearm_delay_sec = zaklad
+            trading.rearm_delay_max_sec = strop
+            trading.rearm_delay_factor = nasobek
             flow.spread_breaches = pocet
-            self.assertAlmostEqual(self.engine._rearm_delay(flow), cekani)
-
-    async def test_nasobek_1_prodlevu_neprodluzuje(self):
-        self.cfg.trading.rearm_delay_sec = 30.0
-        self.cfg.trading.rearm_delay_factor = 1.0
-        flow = await self.zaloz_call()
-        flow.spread_breaches = 500
-        self.assertAlmostEqual(self.engine._rearm_delay(flow), 30.0)
-
-    async def test_velky_pocet_odstraneni_nepretece(self):
-        # Mocnina se omezí počtem kroků ke stropu, velký násobek nepřeteče
-        self.cfg.trading.rearm_delay_sec = 30.0
-        self.cfg.trading.rearm_delay_max_sec = 600.0
-        self.cfg.trading.rearm_delay_factor = 10.0
-        flow = await self.zaloz_call()
-        flow.spread_breaches = 10_000
-        self.assertAlmostEqual(self.engine._rearm_delay(flow), 600.0)
-
-    async def test_prodleva_ma_strop(self):
-        self.cfg.trading.rearm_delay_sec = 5.0
-        self.cfg.trading.rearm_delay_max_sec = 60.0
-        self.cfg.trading.rearm_delay_factor = 2.0
-        flow = await self.zaloz_call()
-
-        for pocet, cekani in ((1, 5.0), (2, 10.0), (3, 20.0), (4, 40.0), (5, 60.0), (40, 60.0)):
-            flow.spread_breaches = pocet
-            self.assertAlmostEqual(self.engine._rearm_delay(flow), cekani)
-
-        # Strop pod základní prodlevou prodlužování vypíná
-        self.cfg.trading.rearm_delay_max_sec = 0.0
-        flow.spread_breaches = 6
-        self.assertAlmostEqual(self.engine._rearm_delay(flow), 5.0)
+            with self.subTest(zaklad=zaklad, strop=strop, nasobek=nasobek, pocet=pocet):
+                self.assertAlmostEqual(self.engine._rearm_delay(flow), cekani)
 
     async def test_navrat_do_trhu_respektuje_limit_oer(self):
         # Limit 3: zadání (1) + zrušení (1) + návrat by potřeboval další dvě

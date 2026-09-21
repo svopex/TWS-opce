@@ -518,7 +518,7 @@ class Flow:
     # Kdy byl příkaz naposledy odstraněn z trhu kvůli spreadu
     blocked_since: datetime | None = None
     # Kolikrát byl příkaz odstraněn z trhu kvůli spreadu - s každým dalším
-    # odstraněním se prodleva před návratem do trhu zdvojnásobí (šetří OER)
+    # odstraněním se prodleva před návratem do trhu prodlouží (šetří OER)
     spread_breaches: int = 0
     exit_order_id: int | None = None
     # Druhý prodejní příkaz hlavní části (SL), když se PT a SL realizují
