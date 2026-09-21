@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -4361,17 +4362,24 @@ class FlowEngine:
         Prodleva před návratem příkazu do trhu po odstranění kvůli spreadu.
 
         Začíná na trading.rearm_delay_sec a každé další odstranění u téhož
-        obchodu ji zdvojnásobí, nejvýš na trading.rearm_delay_max_sec.
-        U levné opce, kde jediný tik posune spread přes limit a zpět, by
-        jinak cyklus zrušení a nového zadání běžel každých pár sekund
-        a vyčerpal limit Order Efficiency Ratio.
+        obchodu ji vynásobí trading.rearm_delay_factor, nejvýš na
+        trading.rearm_delay_max_sec. U levné opce, kde jediný tik posune
+        spread přes limit a zpět, by jinak cyklus zrušení a nového zadání
+        běžel každých pár sekund a vyčerpal limit Order Efficiency Ratio.
         """
         trading = self.cfg.trading
         zaklad = trading.rearm_delay_sec
         strop = max(trading.rearm_delay_max_sec, zaklad)
-        # Mocnina se omezí, aby dlouho kolísající spread nevedl k přetečení
-        mocnina = min(max(flow.spread_breaches - 1, 0), 30)
-        return min(zaklad * 2**mocnina, strop)
+        nasobek = trading.rearm_delay_factor
+        kroky = max(flow.spread_breaches - 1, 0)
+        # Násobek 1 ani nulový základ prodlevu neprodlužují. Jinak se počet
+        # kroků omezí na ten, po kterém prodleva dosáhne stropu - dlouho
+        # kolísající spread by jinak mocninou přetekl rozsah čísla
+        if nasobek <= 1 or zaklad <= 0:
+            kroky = 0
+        else:
+            kroky = min(kroky, math.ceil(math.log(strop / zaklad, nasobek)))
+        return min(zaklad * nasobek**kroky, strop)
 
     def _update_entry_limit(self, flow: Flow) -> bool:
         """

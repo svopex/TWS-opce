@@ -226,6 +226,7 @@ class TestValidaceKonfigurace(unittest.TestCase):
             ("oer_limit", -1.0),
             ("oer_free_messages", -1),
             ("rearm_delay_max_sec", -5.0),
+            ("rearm_delay_factor", 0.5),
             ("refresh_increase_margin_pct", 100.0),
             ("refresh_increase_margin_pct", -1.0),
         ):

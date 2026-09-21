@@ -232,12 +232,19 @@ trading:
   rearm_delay_sec: 30.0
 
   # Strop prodlevy před návratem do trhu v sekundách. Každé další odstranění
-  # příkazu kvůli spreadu u téhož obchodu prodlevu zdvojnásobí (5, 10, 20,
-  # 40 … s), nejvýš na tuto hodnotu. U levné opce, kde jediný tik posune
-  # spread přes limit a zpět, by se jinak příkaz rušil a zadával každých pár
-  # sekund a každý takový cyklus stojí dvě zprávy do TWS (viz oer_limit).
-  # Hodnota nejvýš rearm_delay_sec zdvojování vypíná.
-  rearm_delay_max_sec: 600
+  # příkazu kvůli spreadu u téhož obchodu prodlevu vynásobí hodnotou
+  # rearm_delay_factor, nejvýš na tuto hodnotu. U levné opce, kde jediný tik
+  # posune spread přes limit a zpět, by se jinak příkaz rušil a zadával
+  # každých pár sekund a každý takový cyklus stojí dvě zprávy do TWS (viz
+  # oer_limit). Po dosažení stropu zůstává prodleva na něm - počet odstranění
+  # se u obchodu nenuluje, od začátku začíná až nový obchod.
+  # Hodnota nejvýš rearm_delay_sec prodlužování vypíná.
+  rearm_delay_max_sec: 240.0
+
+  # Násobek prodlevy při každém dalším odstranění kvůli spreadu. Při 1.5
+  # a základu 30 s: 30, 45, 67.5, 101, 152, 228 … s až po strop.
+  # 2 = zdvojování (30, 60, 120, 240 … s), 1 = prodleva se nemění.
+  rearm_delay_factor: 1.4
 
   # Počet kontraktů runneru. Runner je část pozice, která se po zapnutí
   # (tlačítky Runner v monitoringu) prodává samostatným příkazem s vlastním,

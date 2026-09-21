@@ -400,8 +400,9 @@ projít.
    spread klesnout s rezervou pod limit a od odstranění musí uplynout
    nastavená prodleva (`trading.rearm_spread_margin_pct`,
    `trading.rearm_delay_sec`). Každé další odstranění u téhož obchodu
-   prodlevu zdvojnásobí (5, 10, 20, 40 … s), nejvýš na
-   `trading.rearm_delay_max_sec` (výchozí 600 s). U levné opce, kde jediný
+   prodlevu vynásobí `trading.rearm_delay_factor` (výchozí 1,5; při
+   základu 30 s tedy 30, 45, 67,5, 101 … s), nejvýš na `trading.rearm_delay_max_sec`
+   (výchozí 600 s); na stropu pak prodleva zůstává. U levné opce, kde jediný
    tik posune spread přes limit a zpět, by se jinak příkaz rušil a zadával
    každých pár sekund. Samotný návrat do trhu stojí dvě zprávy do TWS
    (zadání a případné pozdější zrušení) a musí projít limitem OER; jinak

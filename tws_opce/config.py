@@ -107,10 +107,13 @@ class TradingConfig:
     # Nejkratší prodleva mezi odstraněním příkazu z trhu a jeho novým zadáním
     rearm_delay_sec: float = 5.0
     # Strop prodlevy před návratem do trhu. Každé další odstranění příkazu
-    # kvůli spreadu u téhož obchodu prodlevu zdvojnásobí (5, 10, 20 … s),
+    # kvůli spreadu u téhož obchodu prodlevu vynásobí rearm_delay_factor,
     # nejvýš na tuto hodnotu - kolísající spread tak příkaz nezadává a neruší
-    # každých pár sekund. Hodnota nejvýš rearm_delay_sec zdvojování vypíná
+    # každých pár sekund. Hodnota nejvýš rearm_delay_sec prodlužování vypíná
     rearm_delay_max_sec: float = 600.0
+    # Násobek prodlevy při každém dalším odstranění kvůli spreadu
+    # (při 1,5 a základu 30 s: 30, 45, 67,5, 101 … s). 1 = prodleva se nemění
+    rearm_delay_factor: float = 1.5
     # Počet kontraktů runneru - části pozice, která se po aktivaci runneru
     # prodává samostatným příkazem s vlastním (vzdálenějším) cílem.
     # Runner lze zapnout jen u obchodu s větším množstvím, než je tato hodnota.
@@ -448,6 +451,9 @@ def validate_config(cfg: AppConfig) -> None:
     # hlídání OER vypíná
     if cfg.trading.rearm_delay_max_sec < 0:
         problems.append("trading.rearm_delay_max_sec nesmí být záporné")
+    # Násobek pod 1 by prodlevu s každým odstraněním zkracoval
+    if cfg.trading.rearm_delay_factor < 1:
+        problems.append("trading.rearm_delay_factor musí být alespoň 1")
     if cfg.trading.oer_limit < 0:
         problems.append("trading.oer_limit nesmí být záporné (0 = hlídání vypnuto)")
     if cfg.trading.oer_free_messages < 0:
