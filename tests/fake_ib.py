@@ -199,10 +199,12 @@ class FakeIBService(IBService):
 
     # --- příkazy ---
 
-    def place(self, contract: Contract, order) -> Trade:
+    def _submit(self, contract: Contract, order) -> Trade:
         """
         Zaznamená odeslaný příkaz. Opakované odeslání se stejným orderId
         znamená modifikaci, proto se vrací původní záznam s aktualizovaným příkazem.
+        Nahrazuje se jen samotné odeslání - započtení do OER prochází ostrou
+        metodou place().
         """
         for trade in self.placed:
             if trade.order.orderId == order.orderId and order.orderId:
@@ -223,13 +225,11 @@ class FakeIBService(IBService):
         self.placed.append(trade)
         return trade
 
-    def cancel(self, trade: Trade | None) -> None:
-        """Zaznamená zrušení příkazu a nastaví odpovídající stav."""
-        if trade is None:
-            return
-        # Stejné omezení jako v ostré službě - neaktivní příkaz se neruší
-        if trade.orderStatus.status not in OrderStatus.ActiveStates:
-            return
+    def _submit_cancel(self, trade: Trade) -> None:
+        """
+        Zaznamená zrušení příkazu a nastaví odpovídající stav. Kontroly
+        (aktivní příkaz, spojení) i započtení do OER provádí ostrá cancel().
+        """
         trade.orderStatus.status = "Cancelled"
         self.cancelled.append(trade)
 
@@ -264,15 +264,17 @@ class FakeIBService(IBService):
         commission: float = 0.0,
     ) -> None:
         """
-        Simuluje vyplnění příkazu v TWS. Nenulová provize navíc založí záznam
-        exekuce, ze kterého ji engine přebírá stejně jako z ostré služby.
+        Simuluje vyplnění příkazu v TWS včetně záznamu exekuce, ze kterého
+        engine přebírá provizi i počet vyplněných příkazů pro OER stejně
+        jako z ostré služby. Nulová provize se při převzetí přeskakuje.
         """
         trade.orderStatus.status = status
         trade.orderStatus.filled = quantity
         trade.orderStatus.remaining = max(0, int(trade.order.totalQuantity) - quantity)
         trade.orderStatus.avgFillPrice = price
-        if commission:
-            self.record_commission(trade, commission)
+        # Každé vyplnění založí exekuci (případně i s provizí) - podle
+        # exekucí počítá vyplněné příkazy i Order Efficiency Ratio
+        self.record_commission(trade, commission)
 
     def record_commission(self, trade: Trade, commission: float) -> None:
         """
@@ -280,7 +282,10 @@ class FakeIBService(IBService):
         vyzkoušet i částečné plnění účtované po částech.
         """
         exec_id = f"EXEC-{len(self.fills) + 1}"
-        execution = Execution(execId=exec_id, orderRef=trade.order.orderRef)
+        # orderId odliší exekuce různých příkazů - OER počítá příkazy, ne exekuce
+        execution = Execution(
+            execId=exec_id, orderRef=trade.order.orderRef, orderId=trade.order.orderId
+        )
         self.fills.append(
             Fill(
                 contract=trade.contract,

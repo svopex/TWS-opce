@@ -11,7 +11,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -175,6 +175,11 @@ class FlowEngine:
         # Části pozice, u kterých už bylo hlášeno, že z dvojice prodejních
         # příkazů zmizel jeden - varování se nemá opakovat každý průchod
         self._lost_leg_warned: set[str] = set()
+        # Obchody a akce (flow_id, akce), u kterých už log ohlásil odklad
+        # kvůli limitu OER - hláška se nemá opakovat každý průchod smyčkou
+        self._oer_warned: set[tuple[str, str]] = set()
+        # Den, pro který už log ohlásil překročení limitu OER
+        self._oer_over_day: date | None = None
 
     # ------------------------------------------------------------------
     # Pomocné
@@ -196,7 +201,10 @@ class FlowEngine:
         """
         if not self.cfg.state.enabled or not self._restored:
             return
-        store.save(list(self.flows.values()), self.cfg.state.file)
+        # S obchody se ukládají i dnešní počítadla OER, aby je restart nevynuloval
+        store.save(
+            list(self.flows.values()), self.cfg.state.file, order_stats=self.ib.oer.to_dict()
+        )
 
     def _handle_disconnect(self) -> None:
         """
@@ -666,37 +674,23 @@ class FlowEngine:
             else self._default_stop_loss(preview, entry_price, profit_target, used_delta)
         )
 
-        # Množství z riskované částky a ztráty na kontrakt: při SL na podkladu
-        # se ztráta odhaduje přes deltu, při SL na opci je zadaná přímo v USD
-        if preview.sl_on_underlying:
-            preview.quantity = calc.suggest_quantity(
-                self.risk_amount,
-                entry_price,
-                preview.stop_loss,
-                used_delta,
-                self.cfg.trading.min_quantity,
-                self.cfg.trading.max_quantity,
+        # SL na opci nad zaplacenou prémií znamená stop na nejnižší možné ceně,
+        # který pozici prakticky nechrání - na to se musí upozornit už
+        # v náhledu, sám příkaz by později vypadal v pořádku. Kompenzovaný SL
+        # zvětšuje ztrátu na kontrakt, proto se kontroluje i se spreadem
+        if not preview.sl_on_underlying and preview.expected_fill_price is not None:
+            varovani = self._premium_cap_text(
+                preview.stop_loss + preview.sl_spread_usd,
+                preview.expected_fill_price,
+                preview.min_tick,
+                odhad=True,
             )
-        else:
-            # Ztráta na kontrakt se stropuje zaplacenou prémií. SL nad ní
-            # znamená stop na nejnižší možné ceně, který pozici prakticky
-            # nechrání - na to se musí upozornit už v náhledu, sám příkaz
-            # by později vypadal v pořádku
-            # Kompenzovaný SL zvětšuje ztrátu na kontrakt, takže se musí
-            # promítnout i do množství a do kontroly stropu prémie
-            ztrata = preview.stop_loss + preview.sl_spread_usd
-            cena = preview.expected_fill_price
-            if cena is not None:
-                varovani = self._premium_cap_text(ztrata, cena, preview.min_tick, odhad=True)
-                if varovani is not None:
-                    preview.warnings.append(varovani)
-                ztrata = min(ztrata, calc.max_option_loss(cena, preview.min_tick))
-            preview.quantity = calc.suggest_quantity_for_loss(
-                self.risk_amount,
-                ztrata,
-                self.cfg.trading.min_quantity,
-                self.cfg.trading.max_quantity,
-            )
+            if varovani is not None:
+                preview.warnings.append(varovani)
+
+        preview.quantity = self._quantity_for_risk(
+            preview, entry_price, used_delta, self.risk_amount
+        )
 
         # Závěrečná cena je jediná dostupná mimo obchodní hodiny; pohnul-li se
         # mezitím podklad (typicky pre-market gap), vyjde z ní nesmyslná
@@ -712,6 +706,37 @@ class FlowEngine:
                 f"Aktuální spread {preview.spread_pct:.2f} % překračuje limit "
                 f"{limit_spreadu:g} %."
             )
+
+    def _quantity_for_risk(
+        self, preview: Preview, entry_price: float, used_delta: float, riziko: float
+    ) -> int:
+        """
+        Množství kontraktů pro riskovanou částku `riziko` nad úrovněmi náhledu.
+
+        Při SL na podkladu se ztráta na kontrakt odhaduje přes deltu, při SL
+        na opci je zadaná přímo v USD (včetně kompenzace o spread) a stropuje
+        se zaplacenou prémií - stop nemůže klesnout pod jeden tik. Částku
+        lze předat nižší, než je riziko na obchod; průběžný přepočet tak
+        zjišťuje, zda by zvýšení množství obstálo i s rezervou.
+        """
+        trading = self.cfg.trading
+        if preview.sl_on_underlying:
+            return calc.suggest_quantity(
+                riziko,
+                entry_price,
+                preview.stop_loss,
+                used_delta,
+                trading.min_quantity,
+                trading.max_quantity,
+            )
+        ztrata = preview.stop_loss + preview.sl_spread_usd
+        if preview.expected_fill_price is not None:
+            ztrata = min(
+                ztrata, calc.max_option_loss(preview.expected_fill_price, preview.min_tick)
+            )
+        return calc.suggest_quantity_for_loss(
+            riziko, ztrata, trading.min_quantity, trading.max_quantity
+        )
 
     def _model_delta(
         self,
@@ -3246,6 +3271,9 @@ class FlowEngine:
         # Provize dorazí z TWS až po vyplnění příkazu, proto se dobírají průběžně
         changed = self._sync_commissions()
 
+        # Vyplněné příkazy zvyšují prostor OER pro nepovinné úpravy příkazů
+        self.ib.refresh_executions()
+
         for flow in list(self.flows.values()):
             if not flow.state.is_active:
                 continue
@@ -3256,8 +3284,61 @@ class FlowEngine:
                 flow.set_state(FlowState.ERROR, f"Chyba monitoringu: {exc}")
                 changed = True
 
+        self._warn_oer_over_limit()
+
         if changed:
             self._notify()
+
+    def _warn_oer_over_limit(self) -> None:
+        """
+        Jednou za den ohlásí, že OER překročil limit. Nepovinné zprávy se
+        nad limit nepouštějí, přetáhnout ho mohou jen povinné (zajištění
+        a uzavření pozic, rušení příkazů) nebo zásahy obchodníka.
+        """
+        oer = self.ib.oer
+        if not oer.enabled or oer.ratio <= oer.limit:
+            return
+        dnes = self._exchange_now().date()
+        if self._oer_over_day == dnes:
+            return
+        self._oer_over_day = dnes
+        self.log_event(
+            f"POZOR - Order Efficiency Ratio dne je {oer.ratio:.1f} "
+            f"({oer.messages} zpráv / {oer.executed} vyplněných příkazů + 1), "
+            f"nad limitem {oer.limit:g}. Nepovinné úpravy příkazů jsou "
+            f"pozastavené, dokud se nevyplní další příkaz."
+        )
+
+    def _oer_allows(self, count: int, flow: Flow, akce: str) -> bool:
+        """
+        Posoudí, zda se smí odeslat `count` nepovinných zpráv do TWS (nový
+        příkaz, úprava, zrušení), aniž by Order Efficiency Ratio dne přesáhl
+        limit trading.oer_limit.
+
+        Rezervou jsou zrušení všech čekajících nákupních příkazů v trhu -
+        ta může být potřeba poslat povinně (rušení v nastavený čas, propásnutý
+        vstup, spread nad limitem) a nepovinné zprávy je nesmějí vytlačit.
+        Odklad se do logu hlásí jednou za obchod a akci (akce je slovo pro
+        log); jakmile úprava znovu projde, další odklad se ohlásí znovu.
+        """
+        rezerva = sum(
+            1
+            for f in self.flows.values()
+            if f.state.is_before_entry and f.entry_trade is not None
+        )
+        klic = (flow.id, akce)
+        if self.ib.oer.allows(count, rezerva):
+            self._oer_warned.discard(klic)
+            return True
+        if klic not in self._oer_warned:
+            self._oer_warned.add(klic)
+            oer = self.ib.oer
+            self.log_event(
+                f"{flow.id}: {akce} odloženo - OER dne {oer.ratio:.1f} "
+                f"({oer.messages} zpráv / {oer.executed} vyplněných příkazů + 1) "
+                f"by přesáhl limit {oer.limit:g}."
+            )
+        return False
 
     async def restore(self) -> None:
         """
@@ -3286,6 +3367,9 @@ class FlowEngine:
         if not self._restored:
             self._restored = True
             if self.cfg.state.enabled:
+                # Počítadla OER z dřívějška téhož dne - bez nich by restart
+                # během seance dovolil limit vyčerpat podruhé
+                self.ib.oer.load(store.load_order_stats(self.cfg.state.file))
                 ulozene = store.load(self.cfg.state.file)
                 if ulozene:
                     self.log_event(
@@ -3886,6 +3970,8 @@ class FlowEngine:
         flow.entry_trade = None
         flow.entry_order_id = None
         flow.blocked_since = datetime.now()
+        # Každé další odstranění prodlouží prodlevu před návratem do trhu
+        flow.spread_breaches += 1
         flow.set_state(
             FlowState.SPREAD_BLOCKED,
             f"Spread {spread:.2f} % > limit {flow.max_spread_pct:g} %, "
@@ -3910,9 +3996,15 @@ class FlowEngine:
         if flow.state == FlowState.ARMED and spread is not None and spread > flow.max_spread_pct:
             return False
 
-        # Spread zpět v limitu - příkaz se vrací do trhu
+        # Spread zpět v limitu - příkaz se vrací do trhu. Návrat stojí dvě
+        # zprávy (zadání a případné pozdější zrušení), proto musí projít
+        # limitem OER; jinak obchod zůstává zablokovaný
         if flow.state == FlowState.SPREAD_BLOCKED:
-            if trading.rearm_on_spread_ok and self._can_rearm(flow, spread):
+            if (
+                trading.rearm_on_spread_ok
+                and self._can_rearm(flow, spread)
+                and self._oer_allows(2, flow, "návrat příkazu do trhu")
+            ):
                 return self._place_entry(flow)
             return False
 
@@ -4069,6 +4161,22 @@ class FlowEngine:
         )
         if preview.quantity < 1:
             return False
+
+        # Zvýšení množství příkazu v trhu průběžným přepočtem je nepovinná
+        # úprava. Projde jen tehdy, když by vyšší množství obstálo i s riskem
+        # sníženým o pásmo necitlivosti (jinak by drobný pohyb prémie množství
+        # přehazoval tam a zpět a každá úprava by zvýšila OER) a když se
+        # vejde do limitu OER; jinak zůstává dosavadní, menší množství.
+        # Snížení se posílá vždy - chrání riziko na obchod
+        if not po_otevreni and trade is not None and preview.quantity > flow.quantity:
+            pasmo = self.cfg.trading.refresh_increase_margin_pct / 100.0
+            s_rezervou = self._quantity_for_risk(
+                preview, flow.entry_price, used_delta, self.risk_amount * (1.0 - pasmo)
+            )
+            if s_rezervou <= flow.quantity or not self._oer_allows(
+                1, flow, "zvýšení množství přepočtem"
+            ):
+                preview.quantity = flow.quantity
 
         puvodni_pt, puvodni_sl, puvodni_ks = flow.profit_target, flow.stop_loss, flow.quantity
         byl_runner = flow.runner_active
@@ -4228,8 +4336,8 @@ class FlowEngine:
         """
         Posoudí, zda lze příkaz vrátit do trhu po zablokování spreadem.
         Spread musí klesnout s rezervou pod limit a od odstranění příkazu
-        musí uplynout nastavená prodleva - jinak by se příkaz při kolísání
-        spreadu kolem limitu opakovaně zadával a rušil.
+        musí uplynout prodleva (viz _rearm_delay) - jinak by se příkaz při
+        kolísání spreadu kolem limitu opakovaně zadával a rušil.
         """
         if spread is None:
             return False
@@ -4241,16 +4349,38 @@ class FlowEngine:
 
         if flow.blocked_since is not None:
             uplynulo = (datetime.now() - flow.blocked_since).total_seconds()
-            if uplynulo < trading.rearm_delay_sec:
+            if uplynulo < self._rearm_delay(flow):
                 return False
 
         return True
+
+    def _rearm_delay(self, flow: Flow) -> float:
+        """
+        Prodleva před návratem příkazu do trhu po odstranění kvůli spreadu.
+
+        Začíná na trading.rearm_delay_sec a každé další odstranění u téhož
+        obchodu ji zdvojnásobí, nejvýš na trading.rearm_delay_max_sec.
+        U levné opce, kde jediný tik posune spread přes limit a zpět, by
+        jinak cyklus zrušení a nového zadání běžel každých pár sekund
+        a vyčerpal limit Order Efficiency Ratio.
+        """
+        trading = self.cfg.trading
+        zaklad = trading.rearm_delay_sec
+        strop = max(trading.rearm_delay_max_sec, zaklad)
+        # Mocnina se omezí, aby dlouho kolísající spread nevedl k přetečení
+        mocnina = min(max(flow.spread_breaches - 1, 0), 30)
+        return min(zaklad * 2**mocnina, strop)
 
     def _update_entry_limit(self, flow: Flow) -> bool:
         """
         Přepočítá limitní cenu nákupního příkazu podle aktuálního ASK / MID.
         Příkaz se modifikuje jen při změně větší než práh z konfigurace,
         aby se TWS nezahlcovala drobnými úpravami.
+
+        Každá úprava je pro IBKR zpráva, která zvyšuje Order Efficiency Ratio.
+        Příkaz čekající na splnění cenové podmínky (PreSubmitted) proto
+        ve výchozím nastavení upravován není (viz relimit_before_trigger)
+        a úprava vůbec projde jen tehdy, když ji dovolí limit OER.
         """
         if flow.entry_trade is None or self.cfg.trading.entry_order_type == "MKT":
             return False
@@ -4263,12 +4393,31 @@ class FlowEngine:
         if flow.entry_trade.orderStatus.filled > 0:
             return False
 
+        # Podmíněný příkaz, jehož podmínka ještě nespustila, drží TWS u sebe
+        # a na burzu ho pošle až v okamžiku spuštění. Dnešní ASK o ceně opce
+        # v tu chvíli mnoho neříká a úpravy za každým tikem kotace plýtvají
+        # zprávami - limit se srovná, až příkaz na burze skutečně čeká
+        # (stav Submitted), případně při průběžném přepočtu množství.
+        # Překonal-li podklad vstup, podmínka spouští, i když TWS stav
+        # příkazu ještě nepřepsala - pak se limit upravuje hned
+        if (
+            flow.entry_trade.orderStatus.status == "PreSubmitted"
+            and not self.cfg.trading.relimit_before_trigger
+        ):
+            cena = self.ib.underlying_price(flow.underlying_contract)
+            if cena is None or calc.entry_still_valid(flow.right, cena, flow.entry_price):
+                return False
+
         new_limit = self._entry_limit(flow)
         if new_limit is None or flow.entry_limit is None:
             return False
 
         change_pct = abs(new_limit - flow.entry_limit) / flow.entry_limit * 100.0
         if change_pct < self.cfg.trading.relimit_min_change_pct:
+            return False
+
+        # Přelimitování je nepovinné - jen dokud se vejde do limitu OER
+        if not self._oer_allows(1, flow, "přelimitování nákupního příkazu"):
             return False
 
         order = flow.entry_trade.order

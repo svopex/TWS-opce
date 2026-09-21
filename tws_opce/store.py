@@ -92,6 +92,9 @@ SAVED_FIELDS = (
     "main_close_requested",
     "runner_close_requested",
     "entry_cancel_requested",
+    # Počet odstranění z trhu kvůli spreadu - restart nesmí vrátit prodlevu
+    # před návratem do trhu na začátek a znovu rozjet časté rušení a zadávání
+    "spread_breaches",
 )
 
 # Pole s časovým údajem se ukládají v textovém tvaru ISO
@@ -148,18 +151,26 @@ def dict_to_flow(data: dict[str, Any]) -> Flow:
     return flow
 
 
-def save(flows: list[Flow], path: str | Path) -> None:
+def save(
+    flows: list[Flow], path: str | Path, order_stats: dict[str, Any] | None = None
+) -> None:
     """
     Uloží stav obchodů do souboru.
     Zápis probíhá přes dočasný soubor a přejmenování, aby při pádu aplikace
     nezůstal soubor rozepsaný.
+
+    order_stats - dnešní počítadla Order Efficiency Ratio (viz oer.py);
+    bez uložení by restart během dne počítadla vynuloval a aplikace by
+    limit OER přečerpala
     """
     cesta = Path(path)
-    obsah = {
+    obsah: dict[str, Any] = {
         "version": FORMAT_VERSION,
         "saved_at": datetime.now().isoformat(),
         "flows": [flow_to_dict(f) for f in flows],
     }
+    if order_stats is not None:
+        obsah["order_stats"] = order_stats
 
     docasny: str | None = None
     try:
@@ -189,24 +200,44 @@ def save(flows: list[Flow], path: str | Path) -> None:
                 log.warning("Dočasný soubor %s se nepodařilo odstranit.", docasny)
 
 
-def load(path: str | Path) -> list[Flow]:
+def _read(path: str | Path) -> dict[str, Any] | None:
     """
-    Načte uložený stav obchodů.
-    Chybějící, poškozený nebo neznámou verzí zapsaný soubor vrací prázdný seznam.
+    Načte obsah souboru se stavem. Chybějící, poškozený nebo neznámou
+    verzí zapsaný soubor vrací None.
     """
     cesta = Path(path)
     if not cesta.exists():
-        return []
+        return None
 
     try:
         with cesta.open("r", encoding="utf-8") as fh:
             obsah = json.load(fh)
     except Exception:
         log.exception("Uložený stav v %s se nepodařilo načíst.", cesta)
-        return []
+        return None
 
-    if obsah.get("version") != FORMAT_VERSION:
+    if not isinstance(obsah, dict) or obsah.get("version") != FORMAT_VERSION:
         log.warning("Uložený stav v %s má neznámou verzi formátu - ignoruji jej.", cesta)
+        return None
+    return obsah
+
+
+def load_order_stats(path: str | Path) -> dict[str, Any] | None:
+    """Načte uložená počítadla Order Efficiency Ratio; None, pokud v souboru nejsou."""
+    obsah = _read(path)
+    if obsah is None:
+        return None
+    stats = obsah.get("order_stats")
+    return stats if isinstance(stats, dict) else None
+
+
+def load(path: str | Path) -> list[Flow]:
+    """
+    Načte uložený stav obchodů.
+    Chybějící, poškozený nebo neznámou verzí zapsaný soubor vrací prázdný seznam.
+    """
+    obsah = _read(path)
+    if obsah is None:
         return []
 
     flows: list[Flow] = []

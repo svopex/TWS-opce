@@ -106,6 +106,11 @@ class TradingConfig:
     rearm_spread_margin_pct: float = 10.0
     # Nejkratší prodleva mezi odstraněním příkazu z trhu a jeho novým zadáním
     rearm_delay_sec: float = 5.0
+    # Strop prodlevy před návratem do trhu. Každé další odstranění příkazu
+    # kvůli spreadu u téhož obchodu prodlevu zdvojnásobí (5, 10, 20 … s),
+    # nejvýš na tuto hodnotu - kolísající spread tak příkaz nezadává a neruší
+    # každých pár sekund. Hodnota nejvýš rearm_delay_sec zdvojování vypíná
+    rearm_delay_max_sec: float = 600.0
     # Počet kontraktů runneru - části pozice, která se po aktivaci runneru
     # prodává samostatným příkazem s vlastním (vzdálenějším) cílem.
     # Runner lze zapnout jen u obchodu s větším množstvím, než je tato hodnota.
@@ -118,6 +123,26 @@ class TradingConfig:
     relimit_enabled: bool = True
     # Minimální změna limitní ceny (v procentech), která vyvolá modifikaci příkazu
     relimit_min_change_pct: float = 0.5
+    # Upravovat limit i příkazu, který ještě čeká na splnění cenové podmínky
+    # na podkladu (stav PreSubmitted). Takový příkaz na burze neleží, jeho
+    # limit se uplatní až při spuštění podmínky a dnešní ASK o ceně v tom
+    # okamžiku mnoho neříká - úpravy by jen zvyšovaly OER. Při false se limit
+    # upravuje až po spuštění podmínky, kdy příkaz na burze skutečně čeká
+    relimit_before_trigger: bool = False
+    # Nejvyšší Order Efficiency Ratio dne, který smějí nepovinné zprávy do TWS
+    # (přelimitování, návrat příkazu do trhu po uvolnění spreadu, zvýšení
+    # množství průběžným přepočtem) vyčerpat. IBKR očekává OER nejvýš kolem
+    # 20: (příkazy + úpravy + zrušení) / (vyplněné příkazy + 1). Povinné
+    # zprávy (zajištění pozice, uzavření, zrušení) se posílají vždy.
+    # 0 = hlídání vypnuto
+    oer_limit: float = 15.0
+    # Pásmo necitlivosti průběžného přepočtu (import.refresh_interval) pro
+    # zvýšení množství čekajícího příkazu v trhu: vyšší množství se pošle,
+    # jen když by vyšlo i z rizika na obchod sníženého o tolik procent.
+    # Brání přehazování množství tam a zpět (3 -> 4 -> 3 ks) při drobném
+    # pohybu prémie; každá taková úprava zvyšuje OER. Snížení množství se
+    # posílá vždy - chrání riziko na obchod. 0 = bez pásma
+    refresh_increase_margin_pct: float = 10.0
     # Automatické uzavření obchodů krátce před koncem obchodování burzy:
     # čekající obchody se zruší, otevřené pozice se prodají trhem
     auto_close_enabled: bool = True
@@ -413,6 +438,15 @@ def validate_config(cfg: AppConfig) -> None:
         )
     if cfg.trading.runner_quantity < 1:
         problems.append("trading.runner_quantity musí být alespoň 1")
+    # Záporná prodleva ani záporný limit OER nedávají smysl; nula limitu
+    # hlídání OER vypíná
+    if cfg.trading.rearm_delay_max_sec < 0:
+        problems.append("trading.rearm_delay_max_sec nesmí být záporné")
+    if cfg.trading.oer_limit < 0:
+        problems.append("trading.oer_limit nesmí být záporné (0 = hlídání vypnuto)")
+    # Pásmo 100 % a víc by zvýšení množství zakázalo úplně
+    if not 0 <= cfg.trading.refresh_increase_margin_pct < 100:
+        problems.append("trading.refresh_increase_margin_pct musí být v rozsahu 0 až 99")
     if cfg.trading.pt_change_strike not in PT_STRIKE_MODES:
         problems.append(
             f"trading.pt_change_strike musí být jedna z {PT_STRIKE_MODES}, "

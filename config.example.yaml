@@ -144,7 +144,7 @@ trading:
   # Je-li spread vyšší, nákupní příkaz se do trhu nezadá; pokud už zadán byl
   # a dosud se nevyplnil, aplikace jej z trhu odstraní. Hodnotu lze pro každý
   # obchod přepsat přímo ve formuláři.
-  max_spread_pct: 7.0
+  max_spread_pct: 10.0
 
   # Typ nákupního příkazu, který se použije po splnění cenové podmínky
   # na podkladovém aktivu:
@@ -231,6 +231,14 @@ trading:
   # a jeho novým zadáním.
   rearm_delay_sec: 5.0
 
+  # Strop prodlevy před návratem do trhu v sekundách. Každé další odstranění
+  # příkazu kvůli spreadu u téhož obchodu prodlevu zdvojnásobí (5, 10, 20,
+  # 40 … s), nejvýš na tuto hodnotu. U levné opce, kde jediný tik posune
+  # spread přes limit a zpět, by se jinak příkaz rušil a zadával každých pár
+  # sekund a každý takový cyklus stojí dvě zprávy do TWS (viz oer_limit).
+  # Hodnota nejvýš rearm_delay_sec zdvojování vypíná.
+  rearm_delay_max_sec: 600
+
   # Počet kontraktů runneru. Runner je část pozice, která se po zapnutí
   # (tlačítky Runner v monitoringu) prodává samostatným příkazem s vlastním,
   # zpravidla vzdálenějším cílem; SL sdílí se zbytkem pozice. Tlačítka runneru
@@ -256,6 +264,37 @@ trading:
   # O kolik procent se musí nová limitní cena lišit od zadané, aby se příkaz
   # skutečně upravil. Zabraňuje zbytečnému zahlcování TWS drobnými změnami.
   relimit_min_change_pct: 0.5
+
+  # true = limit se upravuje i u příkazu, který ještě čeká na splnění cenové
+  # podmínky na podkladu (v TWS stav PreSubmitted). Takový příkaz na burze
+  # neleží - TWS ho tam pošle až při spuštění podmínky - a dnešní ASK o ceně
+  # opce v tu chvíli mnoho neříká; úpravy za každým tikem kotace jen zvyšují
+  # OER. false (výchozí) = limit se upravuje až po spuštění podmínky, kdy
+  # příkaz na burze skutečně čeká, a při průběžném přepočtu množství.
+  relimit_before_trigger: false
+
+  # Hlídání Order Efficiency Ratio. IBKR počítá za každý obchodní den
+  #   OER = (odeslané příkazy + úpravy + zrušení) / (vyplněné příkazy + 1)
+  # a očekává hodnotu nejvýš kolem 20; při vyšší posílá varování a při
+  # opakování omezuje obchodování. Nepovinné zprávy - přelimitování, návrat
+  # příkazu do trhu po uvolnění spreadu, zvýšení množství průběžným
+  # přepočtem - se pošlou jen tehdy, když OER dne zůstane nejvýš na této
+  # hodnotě; jako rezerva se přitom počítá zrušení každého čekajícího
+  # nákupního příkazu v trhu. Povinné zprávy (zajištění a uzavření pozice,
+  # zrušení příkazu, zadání nového obchodu) se posílají vždy. Počítadla se
+  # ukládají se stavem obchodů, takže je restart během dne nevynuluje.
+  # Bez vyplněného příkazu vystačí limit 15 na 15 zpráv za den; každý
+  # vyplněný příkaz přidá dalších 15.
+  # 0 = hlídání vypnuto
+  oer_limit: 15
+
+  # Pásmo necitlivosti průběžného přepočtu (import.refresh_interval) pro
+  # zvýšení množství čekajícího příkazu v trhu, v procentech: vyšší množství
+  # se pošle, jen když by vyšlo i z rizika na obchod sníženého o tolik
+  # procent. Brání přehazování množství tam a zpět (3 -> 4 -> 3 ks) při
+  # drobném pohybu prémie - každá taková úprava zvyšuje OER. Snížení
+  # množství se posílá vždy, chrání riziko na obchod. 0 = bez pásma.
+  refresh_increase_margin_pct: 10
 
   # Automatické uzavření obchodů krátce před koncem obchodování burzy.
   # Čekající obchody se zruší (nákupní příkaz se odstraní z trhu),
@@ -324,7 +363,7 @@ import:
   # Následující tři volby má i běžný formulář zadání. Prázdná hodnota (null)
   # znamená převzít nastavení ze sekce trading, vyplněná dovolí, aby se
   # hromadné zadání od jednotlivého lišilo.
-  max_spread_pct: 7.0
+  max_spread_pct: 10.0
 
   # Poměr PT:SL tak, jak se zadává v dialogu - RRR 2 znamená, že PT je
   # dvakrát dál než SL. Prázdná hodnota se odvodí z trading.sl_to_pt_ratio.

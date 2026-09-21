@@ -296,6 +296,14 @@ projít.
    ho ukazují průběžně. Odstup se měří od posledního přepočtu, před prvním
    od založení obchodu; i pokus, který přepočet odložil (chybí kotace, TWS
    příkaz zrovna mění), se do odstupu počítá.
+   Každá úprava příkazu v trhu je zpráva do TWS, která zvyšuje OER.
+   Průběžný přepočet proto **snižuje** množství vždy (chrání riziko na
+   obchod), ale **zvyšuje** ho jen tehdy, když by vyšší množství vyšlo
+   i z rizika sníženého o pásmo necitlivosti
+   `trading.refresh_increase_margin_pct` (výchozí 10 %) a když zvýšení
+   dovolí limit OER. Drobný pohyb prémie tak množství nepřehazuje tam
+   a zpět (3 → 4 → 3 ks). Přepočet po otevření burzy pásmem ani limitem
+   OER neprochází, proběhne jen jednou.
 
    **Runner.** Řada tlačítek *Nepoužít runner* / *1×* … *3×* s polem
    **Runner od [ks]** — tatáž volba jako nad tabulkou dialogu načtení pozic
@@ -373,6 +381,13 @@ projít.
    Dokud se nevyplní, aplikace průběžně upravuje jeho limitní cenu podle
    aktuálního ASK (resp. MID) — lze vypnout přes `trading.relimit_enabled`,
    práh změny udává `trading.relimit_min_change_pct` — a hlídá spread.
+   Limit se upravuje až poté, co cenová podmínka spustila a příkaz na burze
+   skutečně čeká. Do té doby ho TWS drží u sebe (stav *PreSubmitted*), jeho
+   limit se uplatní teprve v okamžiku spuštění a úprava za každým pohybem
+   dnešního ASK by jen zvyšovala OER (viz [Order Efficiency
+   Ratio](#order-efficiency-ratio-oer)). Původní chování, tedy úpravy
+   i před spuštěním, vrací `trading.relimit_before_trigger: true`. Každá
+   úprava navíc musí projít limitem OER.
    Není-li k dispozici ani cena podkladu, obchod čeká ve stavu *Čeká na
    kotace opce* stejně jako bez kotací opce. Zruší-li obchodník nákupní
    příkaz ručně v TWS, obchod skončí ve stavu *Zrušeno*.
@@ -384,7 +399,14 @@ projít.
    příkaz při kolísání kolem limitu nezadával a nerušil stále dokola, musí
    spread klesnout s rezervou pod limit a od odstranění musí uplynout
    nastavená prodleva (`trading.rearm_spread_margin_pct`,
-   `trading.rearm_delay_sec`). Obchod založený při spreadu nad limitem
+   `trading.rearm_delay_sec`). Každé další odstranění u téhož obchodu
+   prodlevu zdvojnásobí (5, 10, 20, 40 … s), nejvýš na
+   `trading.rearm_delay_max_sec` (výchozí 600 s). U levné opce, kde jediný
+   tik posune spread přes limit a zpět, by se jinak příkaz rušil a zadával
+   každých pár sekund. Samotný návrat do trhu stojí dvě zprávy do TWS
+   (zadání a případné pozdější zrušení) a musí projít limitem OER; jinak
+   obchod zůstává blokovaný. Počet odstranění se ukládá se stavem obchodu,
+   takže ho restart nevynuluje. Obchod založený při spreadu nad limitem
    začíná rovnou ve stavu *Blokováno spreadem*; totéž platí, přijdou-li
    kotace ze stavu *Čeká na kotace opce* s příliš širokým spreadem.
 4. **Zajištění** — po nákupu se zadá prodejní příkaz se dvěma cenovými
@@ -736,6 +758,48 @@ Ukazatel **zoranžoví** při odezvě nad 500 ms nebo když kotace stojí déle 
 neposílá a trvale svítící varování by ztratilo význam.
 
 Údaj o kvalitě spojení je informativní; obchodování neovlivňuje.
+
+### Order Efficiency Ratio (OER)
+
+Interactive Brokers hodnotí za každý obchodní den, kolik zpráv účet do systému
+posílá vůči tomu, kolik z nich vede k obchodu:
+
+```text
+OER = (odeslané příkazy + úpravy + zrušení) / (vyplněné příkazy + 1)
+```
+
+IBKR očekává OER nejvýš kolem 20. Při vyšší hodnotě posílá varování a při
+opakování omezuje obchodování. Automatická správa příkazů tuto mez snadno
+přetáhne. Obchod, který celý den čeká na vstup, přelimitovává, ruší se kvůli
+spreadu a znovu zadává, pošle stovky zpráv bez jediného vyplnění.
+
+Aplikace proto každou zprávu do TWS počítá (nový příkaz, úpravu i zrušení)
+a sleduje vyplněné příkazy dne (částečně vyplněný příkaz se počítá jednou).
+Den se určuje v časové zóně burzy. Počítadla se ukládají se stavem obchodů,
+takže je restart během seance nevynuluje. Zprávy se dělí na dvě skupiny:
+
+- **Povinné** se posílají vždy: zadání nového obchodu, zajištění a uzavření
+  pozice, zrušení příkazu (ruční, v nastavený čas, kvůli spreadu,
+  propásnutý vstup), přepočet po otevření burzy a snížení množství.
+- **Nepovinné** se pošlou jen tehdy, když OER dne zůstane nejvýš na hodnotě
+  `trading.oer_limit` (výchozí 15, rezerva pod hranicí 20): přelimitování
+  nákupního příkazu, zadání příkazu po uvolnění spreadu (návrat do trhu
+  i první zadání obchodu založeného při spreadu nad limitem) a zvýšení
+  množství průběžným přepočtem. Jako rezerva se přitom počítá zrušení
+  každého čekajícího nákupního příkazu v trhu, aby na povinné zprávy vždy
+  zbylo místo.
+
+Bez vyplněného příkazu tedy limit 15 dovolí za den jen 15 zpráv. Každý
+vyplněný příkaz (nákup, prodej, runner) přidá dalších 15. Odložená nepovinná
+úprava se do provozního logu hlásí jednou za obchod („přelimitování nákupního
+příkazu odloženo – OER dne …“). Po vyplnění dalšího příkazu se úpravy samy
+obnoví. Překročí-li OER limit vlivem povinných zpráv, log to jednou za den
+ohlásí. `trading.oer_limit: 0` hlídání vypíná.
+
+Kromě limitu šetří zprávy i samotná logika příkazů: limit čekajícího
+příkazu se upravuje až po spuštění jeho podmínky, prodleva před návratem do
+trhu po spreadu se s každým odstraněním zdvojnásobí a průběžný přepočet
+zvyšuje množství jen mimo pásmo necitlivosti (viz výše).
 
 ### Stavy obchodu
 
@@ -1157,7 +1221,8 @@ Vše podstatné je v `config.yaml` (podrobné komentáře u každé položky):
   průběžný přepočet, typ prodejního příkazu, limit spreadu a jeho
   hlídání, poměr SL:PT, výchozí režimy PT a SL, prvotní úroveň, kompenzace
   spreadu, meze množství, runner, chování strike při posunu cíle, doba
-  platnosti příkazů a automatické uzavírání před koncem seance,
+  platnosti příkazů, automatické uzavírání před koncem seance a hlídání
+  Order Efficiency Ratio (`oer_limit`),
 * `expiration` a `strike` — výběr expirace a strike,
 * `engine` — časování monitorovací smyčky, čekání na tržní data, kontrola
   pozic bez dozoru a obnova velikosti účtu,
@@ -1177,7 +1242,8 @@ v `tests/zaklad.py`) — pokrývají výpočty (`tests/test_calc.py`),
 příkazů, jejich podmínek a runneru (`tests/test_engine.py`), režimy PT/SL
 na opci (`tests/test_rezimy.py`), načítání pozic ze
 souboru (`tests/test_import.py`), souhrn obchodního dne
-(`tests/test_report.py`) a obnovu po restartu (`tests/test_obnova.py`).
+(`tests/test_report.py`), obnovu po restartu (`tests/test_obnova.py`)
+a hlídání Order Efficiency Ratio (`tests/test_oer.py`).
 Spojení s TWS není potřeba. Jeden test se přeskočí, není-li v kořeni
 repozitáře vzorový soubor se zadáním dne `2026-08-25.yaml`.
 
@@ -1195,6 +1261,7 @@ tws_opce/
   models.py              model obchodu a jeho stavy
   ib_service.py          obálka nad ib_async (kontrakty, data, příkazy)
   engine.py              řízení obchodů a monitorovací smyčka
+  oer.py                 denní počítadlo Order Efficiency Ratio (zprávy do TWS / vyplnění)
   store.py               ukládání stavu obchodů na disk
   importer.py            načtení vstupních pozic ze souboru se zadáním dne
   import_dialog.py       popup formulář hromadného zadání načtených pozic
@@ -1213,7 +1280,9 @@ a adresář `.nicegui/`, kde si rozhraní pamatuje volbu tmavého vzhledu.
 Stav obchodů se průběžně zapisuje do `state.json`, takže restart ani pád
 aplikace o rozpracované obchody nepřipraví. Součástí zápisu jsou i provize
 naúčtované TWS — po novém spojení je TWS pošle jen za dnešní den, takže bez
-uložení by se u starších obchodů ztratily. Po startu se uložený stav **vždy
+uložení by se u starších obchodů ztratily. Ukládají se také dnešní počítadla
+[Order Efficiency Ratio](#order-efficiency-ratio-oer); záznam z jiného dne se
+po startu zahodí. Po startu se uložený stav **vždy
 srovná se skutečností v TWS** — rozhoduje to, co je v TWS, nikoliv zápis
 v souboru:
 

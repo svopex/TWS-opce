@@ -811,6 +811,64 @@ class TestSpread(ZakladTestu):
         self.assertEqual(self.ib.cancelled, [])
 
 
+class TestProdlevyNavratuPoSpreadu(ZakladTestu):
+    """
+    Zdvojování prodlevy před návratem příkazu do trhu a limit OER.
+    Kolísající spread u levné opce jinak příkaz ruší a zadává každých pár
+    sekund a každý takový cyklus stojí dvě zprávy do TWS.
+    """
+
+    async def odstran_a_vrat(self, flow, sekund_od_odstraneni: float) -> None:
+        """Spread nad limit (odstranění), pak zpět v limitu po dané době."""
+        self.ib.price_bid, self.ib.price_ask = 3.00, 3.50
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
+        self.ib.price_bid, self.ib.price_ask = 3.00, 3.10
+        flow.blocked_since = datetime.now() - timedelta(seconds=sekund_od_odstraneni)
+        await self.engine._tick()
+
+    async def test_prodleva_se_s_kazdym_odstranenim_zdvojnasobi(self):
+        flow = await self.zaloz_call()
+
+        # První odstranění - základní prodleva 5 s
+        await self.odstran_a_vrat(flow, 6)
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(flow.spread_breaches, 1)
+
+        # Druhé odstranění - 6 s po něm je ještě brzy, prodleva je 10 s
+        await self.odstran_a_vrat(flow, 6)
+        self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
+        flow.blocked_since = datetime.now() - timedelta(seconds=11)
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(flow.spread_breaches, 2)
+
+    async def test_prodleva_ma_strop(self):
+        self.cfg.trading.rearm_delay_sec = 5.0
+        self.cfg.trading.rearm_delay_max_sec = 60.0
+        flow = await self.zaloz_call()
+
+        for pocet, cekani in ((1, 5.0), (2, 10.0), (3, 20.0), (4, 40.0), (5, 60.0), (40, 60.0)):
+            flow.spread_breaches = pocet
+            self.assertAlmostEqual(self.engine._rearm_delay(flow), cekani)
+
+        # Strop pod základní prodlevou zdvojování vypíná
+        self.cfg.trading.rearm_delay_max_sec = 0.0
+        flow.spread_breaches = 6
+        self.assertAlmostEqual(self.engine._rearm_delay(flow), 5.0)
+
+    async def test_navrat_do_trhu_respektuje_limit_oer(self):
+        # Limit 3: zadání (1) + zrušení (1) + návrat by potřeboval další dvě
+        self.ib.oer.limit = 3.0
+        flow = await self.zaloz_call()
+
+        await self.odstran_a_vrat(flow, 30)
+
+        self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
+        self.assertEqual(self.ib.oer.messages, 2)
+        self.assertEqual(self.zaznamy("návrat příkazu do trhu odloženo"), 1)
+
+
 class TestChybejiciKotace(ZakladTestu):
     """Chování, když z TWS nedorazily kotace opce (mimo obchodní hodiny)."""
 
@@ -863,6 +921,8 @@ class TestPrubehnaAktualizaceLimitu(ZakladTestu):
     async def test_limit_se_upravi_pri_vetsi_zmene_ask(self):
         flow = await self.zaloz_call()
         puvodni = flow.entry_limit
+        # Podmínka na podkladu spustila, příkaz čeká na burze
+        flow.entry_trade.orderStatus.status = "Submitted"
 
         # ASK vyroste na 3,60 -> limit 3,672 -> na tik 3,65
         self.ib.price_bid, self.ib.price_ask = 3.55, 3.60
@@ -874,9 +934,87 @@ class TestPrubehnaAktualizaceLimitu(ZakladTestu):
         self.assertEqual(len(self.ib.placed), 1)
         self.assertAlmostEqual(self.ib.placed[0].order.lmtPrice, 3.65)
 
+    async def test_prikaz_cekajici_na_podminku_se_neupravuje(self):
+        # Podmínka ještě nespustila (PreSubmitted) - příkaz na burze neleží
+        # a úprava za každým pohybem ASK by jen zvyšovala OER
+        flow = await self.zaloz_call()
+        puvodni = flow.entry_limit
+        self.assertEqual(flow.entry_trade.orderStatus.status, "PreSubmitted")
+
+        self.ib.price_bid, self.ib.price_ask = 3.55, 3.60
+        await self.engine._tick()
+
+        self.assertAlmostEqual(flow.entry_limit, puvodni)
+        self.assertAlmostEqual(self.ib.placed[0].order.lmtPrice, puvodni)
+        # Do TWS šlo jen samotné zadání příkazu
+        self.assertEqual(self.ib.oer.messages, 1)
+
+    async def test_prekonany_vstup_limit_upravi_i_bez_zmeny_stavu(self):
+        # Podklad vstup 232 překonal - podmínka spouští, i když TWS stav
+        # příkazu (PreSubmitted) ještě nepřepsala; limit se upraví hned
+        self.podvrhni_cas_burzy(10, 0)
+        flow = await self.zaloz_call()
+        self.ib.price_underlying = 232.5
+
+        self.ib.price_bid, self.ib.price_ask = 3.55, 3.60
+        await self.engine._tick()
+
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertAlmostEqual(flow.entry_limit, 3.65)
+
+    async def test_uprava_pred_spustenim_podminky_lze_zapnout(self):
+        # Volba relimit_before_trigger vrací původní chování
+        self.cfg.trading.relimit_before_trigger = True
+        flow = await self.zaloz_call()
+
+        self.ib.price_bid, self.ib.price_ask = 3.55, 3.60
+        await self.engine._tick()
+
+        self.assertAlmostEqual(flow.entry_limit, 3.65)
+        self.assertEqual(self.ib.oer.messages, 2)
+
+    async def test_uprava_limitu_respektuje_limit_oer(self):
+        # Limit OER 2 dovolí bez vyplnění jen dvě zprávy: zadání příkazu
+        # a rezervu na jeho zrušení - na úpravu limitu už nezbude
+        self.cfg.trading.oer_limit = 2.0
+        self.ib.oer.limit = 2.0
+        flow = await self.zaloz_call()
+        puvodni = flow.entry_limit
+        flow.entry_trade.orderStatus.status = "Submitted"
+
+        self.ib.price_bid, self.ib.price_ask = 3.55, 3.60
+        await self.engine._tick()
+        await self.engine._tick()
+
+        self.assertAlmostEqual(flow.entry_limit, puvodni)
+        self.assertEqual(self.ib.oer.messages, 1)
+        # Odklad se do logu hlásí jen jednou, ne každým průchodem smyčkou
+        odklady = [zprava for _, zprava in self.engine.events if "odloženo" in zprava]
+        self.assertEqual(len(odklady), 1)
+        self.assertIn("přelimitování", odklady[0])
+
+    async def test_vyplneni_uvolni_limit_oer(self):
+        # Každý vyplněný příkaz přidá prostor pro další limit zpráv
+        self.cfg.trading.oer_limit = 2.0
+        self.ib.oer.limit = 2.0
+        flow = await self.zaloz_call()
+        flow.entry_trade.orderStatus.status = "Submitted"
+        self.ib.price_bid, self.ib.price_ask = 3.55, 3.60
+        await self.engine._tick()
+        self.assertEqual(self.ib.oer.messages, 1)
+
+        # Vyplnění jiného příkazu aplikace (jiné orderId) zvedne limit na 4
+        jiny = self.ib.place(flow.option_contract, self.ib.market_sell_order(1, "JINY"))
+        self.ib.fill(jiny, 1, 3.00)
+        await self.engine._tick()
+
+        self.assertEqual(self.ib.oer.executed, 1)
+        self.assertAlmostEqual(flow.entry_limit, 3.65)
+
     async def test_drobna_zmena_prikaz_nemodifikuje(self):
         flow = await self.zaloz_call()
         puvodni = flow.entry_limit
+        flow.entry_trade.orderStatus.status = "Submitted"
 
         # Změna pod prahem 0,5 % se ignoruje
         self.ib.price_ask = 3.11
@@ -3616,6 +3754,47 @@ class TestPrubeznehoPrepoctu(ZakladPrepoctu):
         self.zlevni()
         await self.engine._tick()
         self.assertEqual(flow.quantity, 2)
+
+    async def test_zvyseni_v_pasmu_necitlivosti_se_neposila(self):
+        # Pásmo 90 %: vyšší množství by muselo vyjít i z desetiny rizika -
+        # to nevyjde, příkaz v trhu zůstává beze změny a do TWS nic nejde
+        self.cfg.trading.refresh_increase_margin_pct = 90.0
+        flow = await self.zaloz()
+        self.burza(600)
+        self.zlevni()
+        self.odstup(flow, 31)
+        await self.engine._tick()
+
+        self.assertEqual(flow.quantity, 2)
+        self.assertEqual(self.ib.placed[0].order.totalQuantity, 2)
+        self.assertEqual(self.ib.oer.messages, 1)
+
+    async def test_zvyseni_mnozstvi_respektuje_limit_oer(self):
+        # Bez pásma, ale limit OER dovolí jen zadání a rezervu na zrušení
+        self.cfg.trading.refresh_increase_margin_pct = 0.0
+        self.ib.oer.limit = 2.0
+        flow = await self.zaloz()
+        self.burza(600)
+        self.zlevni()
+        self.odstup(flow, 31)
+        await self.engine._tick()
+
+        self.assertEqual(flow.quantity, 2)
+        self.assertEqual(self.ib.oer.messages, 1)
+        self.assertEqual(self.zaznamy("zvýšení množství přepočtem odloženo"), 1)
+
+    async def test_snizeni_mnozstvi_projde_i_nad_limitem_oer(self):
+        # Snížení chrání riziko na obchod, proto se posílá vždy
+        self.ib.oer.limit = 1.0
+        flow = await self.zaloz(quantity=5)
+        self.burza(600)
+        self.zdrazi()
+        self.odstup(flow, 31)
+        await self.engine._tick()
+
+        self.assertLess(flow.quantity, 5)
+        self.assertEqual(self.ib.placed[0].order.totalQuantity, flow.quantity)
+        self.assertEqual(self.ib.oer.messages, 2)
 
 
 if __name__ == "__main__":
