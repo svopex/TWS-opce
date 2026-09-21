@@ -11,7 +11,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -172,14 +172,14 @@ class FlowEngine:
         # Čas posledního dokončeného průchodu smyčkou - podle něj se pozná,
         # že monitoring opravdu běží a nikde neuvázl
         self._last_tick: float = 0.0
-        # Části pozice, u kterých už bylo hlášeno, že z dvojice prodejních
-        # příkazů zmizel jeden - varování se nemá opakovat každý průchod
-        self._lost_leg_warned: set[str] = set()
-        # Obchody a akce (flow_id, akce), u kterých už log ohlásil odklad
-        # kvůli limitu OER - hláška se nemá opakovat každý průchod smyčkou
-        self._oer_warned: set[tuple[str, str]] = set()
-        # Den, pro který už log ohlásil překročení limitu OER
-        self._oer_over_day: date | None = None
+        # Už ohlášená varování, která se nemají opakovat každý průchod smyčkou,
+        # s klíčem "flow_id:...": část pozice, z jejíž dvojice prodejních
+        # příkazů zmizel jeden ("flow_id:part"), a nepovinná akce odložená
+        # kvůli rozpočtu OER ("flow_id:oer:akce"). Předpona id obchodu
+        # dovoluje uklidit varování odebraného obchodu najednou
+        self._warned: set[str] = set()
+        # Překročení rozpočtu OER už bylo ohlášeno - hlásí se změna stavu
+        self._oer_over_warned: bool = False
 
     # ------------------------------------------------------------------
     # Pomocné
@@ -1918,7 +1918,7 @@ class FlowEngine:
         predpona = self._sold_prefix(part)
         setattr(flow, f"{predpona}_counted_quantity", 0)
         setattr(flow, f"{predpona}_counted_value", 0.0)
-        self._lost_leg_warned.discard(f"{flow.id}:{part}")
+        self._warned.discard(f"{flow.id}:{part}")
 
     def _cancel_part(self, flow: Flow, part: str) -> None:
         """Zruší všechny aktivní příkazy části."""
@@ -2901,8 +2901,8 @@ class FlowEngine:
             # ale levné a pojistí se tím proti zapomenutému odběru
             self._release(flow)
             self.flows.pop(flow.id, None)
-            self._lost_leg_warned -= {
-                klic for klic in self._lost_leg_warned if klic.startswith(f"{flow.id}:")
+            self._warned -= {
+                klic for klic in self._warned if klic.startswith(f"{flow.id}:")
             }
 
         self.log_event(
@@ -2967,7 +2967,7 @@ class FlowEngine:
                     self._release(flow)
 
             self.flows.clear()
-            self._lost_leg_warned.clear()
+            self._warned.clear()
             self.log_event(
                 f"Přehled obchodů vyprázdněn - zrušeno {zruseno} běžících, "
                 f"smazáno {len(flows)} položek."
@@ -3271,9 +3271,6 @@ class FlowEngine:
         # Provize dorazí z TWS až po vyplnění příkazu, proto se dobírají průběžně
         changed = self._sync_commissions()
 
-        # Vyplněné příkazy zvyšují prostor OER pro nepovinné úpravy příkazů
-        self.ib.refresh_executions()
-
         for flow in list(self.flows.values()):
             if not flow.state.is_active:
                 continue
@@ -3300,21 +3297,20 @@ class FlowEngine:
 
     def _warn_oer_over_limit(self) -> None:
         """
-        Jednou za den ohlásí, že zprávy dne přesáhly volný základ i limit
-        OER. Nepovinné zprávy se nad rozpočet nepouštějí, přetáhnout ho
-        mohou jen povinné (zajištění a uzavření pozic, rušení příkazů)
-        nebo zásahy obchodníka.
+        Ohlásí, že zprávy dne přesáhly volný základ i limit OER. Hlásí se
+        změna stavu: po vyplnění dalšího příkazu nebo s novým dnem (počítadlo
+        se nuluje) stav pomine a další překročení se ohlásí znovu.
+        Nepovinné zprávy se nad rozpočet nepouštějí, přetáhnout ho mohou jen
+        povinné (zajištění a uzavření pozic, rušení příkazů) nebo zásahy
+        obchodníka.
         """
-        if not self.ib.oer.over_limit:
-            return
-        dnes = self._exchange_now().date()
-        if self._oer_over_day == dnes:
-            return
-        self._oer_over_day = dnes
-        self.log_event(
-            f"POZOR - {self._oer_text()} je překročen. Nepovinné úpravy "
-            f"příkazů jsou pozastavené, dokud se nevyplní další příkaz."
-        )
+        prekroceno = self.ib.oer.over_limit
+        if prekroceno and not self._oer_over_warned:
+            self.log_event(
+                f"POZOR - {self._oer_text()} je překročen. Nepovinné úpravy "
+                f"příkazů jsou pozastavené, dokud se nevyplní další příkaz."
+            )
+        self._oer_over_warned = prekroceno
 
     def _oer_allows(self, count: int, flow: Flow, akce: str) -> bool:
         """
@@ -3333,12 +3329,12 @@ class FlowEngine:
             for f in self.flows.values()
             if f.state.is_before_entry and f.entry_trade is not None
         )
-        klic = (flow.id, akce)
+        klic = f"{flow.id}:oer:{akce}"
         if self.ib.oer.allows(count, rezerva):
-            self._oer_warned.discard(klic)
+            self._warned.discard(klic)
             return True
-        if klic not in self._oer_warned:
-            self._oer_warned.add(klic)
+        if klic not in self._warned:
+            self._warned.add(klic)
             self.log_event(
                 f"{flow.id}: {akce} odloženo - vyčerpán rozpočet zpráv: "
                 f"{self._oer_text()}, rezerva na zrušení {rezerva}."
@@ -3372,10 +3368,11 @@ class FlowEngine:
         if not self._restored:
             self._restored = True
             if self.cfg.state.enabled:
-                # Počítadla OER z dřívějška téhož dne - bez nich by restart
-                # během seance dovolil limit vyčerpat podruhé
-                self.ib.oer.load(store.load_order_stats(self.cfg.state.file))
-                ulozene = store.load(self.cfg.state.file)
+                # S obchody se obnoví i počítadlo zpráv OER z dřívějška téhož
+                # dne - bez něj by restart během seance dovolil rozpočet
+                # vyčerpat podruhé
+                ulozene, statistiky = store.load_state(self.cfg.state.file)
+                self.ib.oer.load(statistiky)
                 if ulozene:
                     self.log_event(
                         f"Obnovuji {len(ulozene)} uložených obchodů a ověřuji je v TWS."
@@ -4808,9 +4805,9 @@ class FlowEngine:
             return False
 
         klic = f"{flow.id}:{part}"
-        if klic in self._lost_leg_warned:
+        if klic in self._warned:
             return False
-        self._lost_leg_warned.add(klic)
+        self._warned.add(klic)
 
         ztraceny = "SL" if mrtve[0] is self._leg(flow, part, "sl") else "PT"
         popis = "runneru" if part == "runner" else "hlavní části"

@@ -34,6 +34,9 @@ class OrderEfficiency:
                     nula nebo záporná hodnota hlídání vypíná
     timezone      - časová zóna burzy, ve které se určuje obchodní den
     free_messages - volný základ: tolik zpráv za den projde bez ohledu na OER
+    fills         - zdroj vyplnění příkazů (objekty Fill z ib_async); ib_async
+                    si po připojení vyžádá exekuce celého dne, takže vyplněné
+                    příkazy není potřeba počítat ani ukládat zvlášť
     now           - zdroj aktuálního času (testy si jím podvrhují den)
     """
 
@@ -42,17 +45,16 @@ class OrderEfficiency:
         limit: float,
         timezone: ZoneInfo,
         free_messages: int = 0,
+        fills: Callable[[], Iterable[Any]] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.limit = limit
         self.free_messages = free_messages
         self.timezone = timezone
+        self._fills = fills or tuple
         self._now = now or (lambda: datetime.now(self.timezone))
         self._day: date = self._today()
         self._messages: int = 0
-        # Klíče vyplněných příkazů (permId, náhradou orderId) - částečně
-        # vyplněný příkaz má víc exekucí, ale do OER se počítá jednou
-        self._executed: set[str] = set()
 
     # ------------------------------------------------------------------
     # Den a počítadla
@@ -63,12 +65,11 @@ class OrderEfficiency:
         return self._now().astimezone(self.timezone).date()
 
     def _roll(self) -> None:
-        """S novým obchodním dnem vynuluje počítadla - IBKR hodnotí každý den zvlášť."""
+        """S novým obchodním dnem vynuluje počítadlo zpráv - IBKR hodnotí každý den zvlášť."""
         dnes = self._today()
         if dnes != self._day:
             self._day = dnes
             self._messages = 0
-            self._executed.clear()
 
     @property
     def enabled(self) -> bool:
@@ -83,9 +84,19 @@ class OrderEfficiency:
 
     @property
     def executed(self) -> int:
-        """Počet dnes vyplněných příkazů (i částečně)."""
+        """
+        Počet dnes vyplněných příkazů. Částečně vyplněný příkaz má víc
+        exekucí, ale do OER se počítá jednou; exekuce z jiného dne se
+        přeskakují. Čas bez časové zóny se bere jako místní čas počítače.
+        """
         self._roll()
-        return len(self._executed)
+        return len(
+            {
+                self._execution_key(fill.execution)
+                for fill in self._fills()
+                if fill.time.astimezone(self.timezone).date() == self._day
+            }
+        )
 
     @property
     def ratio(self) -> float:
@@ -98,37 +109,17 @@ class OrderEfficiency:
         Kolik zpráv smí den celkem obsahovat: větší z volného základu
         a počtu, který drží OER na limitu (limit × (vyplněné + 1)).
         """
-        self._roll()
-        return max(float(self.free_messages), self.limit * (len(self._executed) + 1))
+        return max(float(self.free_messages), self.limit * (self.executed + 1))
 
     @property
     def over_limit(self) -> bool:
-        """True, pokud dnešní zprávy přesáhly volný základ i limit OER."""
-        return self.enabled and self.messages > self.budget
+        """True, pokud dnešní zprávy přesáhly rozpočet dne (viz allows)."""
+        return not self.allows(0)
 
     def record_message(self, count: int = 1) -> None:
         """Započte odeslanou zprávu - nový příkaz, jeho úpravu nebo zrušení."""
         self._roll()
         self._messages += count
-
-    def record_executions(self, fills: Iterable[Any]) -> None:
-        """
-        Převezme dnešní vyplnění příkazů (objekty Fill z ib_async).
-
-        Seznam vyplnění z TWS obsahuje exekuce celého dne, včetně těch
-        z doby před startem aplikace; opakované předání téhož vyplnění
-        nic nemění. Exekuce z jiného dne se přeskakují.
-        """
-        self._roll()
-        for fill in fills:
-            cas = getattr(fill, "time", None)
-            # Čas bez časové zóny (ib_async ho posílá v UTC s zónou) se
-            # bere jako místní čas počítače
-            if isinstance(cas, datetime) and cas.astimezone(self.timezone).date() != self._day:
-                continue
-            klic = self._execution_key(fill.execution)
-            if klic:
-                self._executed.add(klic)
 
     @staticmethod
     def _execution_key(execution: Any) -> str:
@@ -136,14 +127,11 @@ class OrderEfficiency:
         Klíč vyplněného příkazu. permId je v TWS trvalý napříč spojeními,
         orderId stačí jako náhrada; bez obou se exekuce počítá samostatně.
         """
-        perm_id = getattr(execution, "permId", 0)
-        if perm_id:
-            return f"perm:{perm_id}"
-        order_id = getattr(execution, "orderId", 0)
-        if order_id:
-            return f"order:{order_id}"
-        exec_id = getattr(execution, "execId", "")
-        return f"exec:{exec_id}" if exec_id else ""
+        if execution.permId:
+            return f"perm:{execution.permId}"
+        if execution.orderId:
+            return f"order:{execution.orderId}"
+        return f"exec:{execution.execId}"
 
     # ------------------------------------------------------------------
     # Rozhodování
@@ -167,17 +155,13 @@ class OrderEfficiency:
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        """Stav počítadel k uložení na disk - přežije tak restart aplikace."""
+        """Počítadlo zpráv k uložení na disk - přežije tak restart aplikace."""
         self._roll()
-        return {
-            "day": self._day.isoformat(),
-            "messages": self._messages,
-            "executed": sorted(self._executed),
-        }
+        return {"day": self._day.isoformat(), "messages": self._messages}
 
     def load(self, data: dict[str, Any] | None) -> None:
         """
-        Obnoví počítadla uložená dříve téhož dne. Záznam z jiného dne
+        Obnoví počítadlo zpráv uložené dříve téhož dne. Záznam z jiného dne
         (nebo poškozený) se zahodí - IBKR počítá každý den znovu.
         """
         if not isinstance(data, dict):
@@ -185,13 +169,11 @@ class OrderEfficiency:
         try:
             den = date.fromisoformat(str(data.get("day", "")))
             zpravy = int(data.get("messages", 0))
-            vyplnene = {str(klic) for klic in data.get("executed", [])}
         except (TypeError, ValueError):
             return
         self._roll()
         if den != self._day:
             return
-        # Počítadla se slučují s tím, co se napočítalo před obnovou (zprávy
+        # Počítadlo se slučuje s tím, co se napočítalo před obnovou (zprávy
         # z obnovy spojení se odesílají dřív, než se stav načte)
         self._messages += max(zpravy, 0)
-        self._executed |= vyplnene

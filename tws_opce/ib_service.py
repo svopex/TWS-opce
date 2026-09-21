@@ -128,11 +128,13 @@ class IBService:
         # ji synchronní obnova hlavičky mohla jen přečíst
         self.rtt_ms: float | None = None
         # Denní Order Efficiency Ratio - každé odeslání, úprava i zrušení
-        # příkazu prochází place() a cancel(), kde se započítá
+        # příkazu prochází place() a cancel(), kde se započítá; vyplněné
+        # příkazy si počítadlo čte ze seznamu vyplnění spojení
         self.oer = OrderEfficiency(
             cfg.trading.oer_limit,
             ZoneInfo(cfg.trading.exchange_timezone),
             free_messages=cfg.trading.oer_free_messages,
+            fills=self._raw_fills,
         )
 
         self.ib.disconnectedEvent += self._on_disconnected
@@ -818,11 +820,3 @@ class IBService:
     def _submit_cancel(self, trade: Trade) -> None:
         """Vlastní odeslání zrušení do TWS - vyčleněno kvůli testům."""
         self.ib.cancelOrder(trade.order)
-
-    def refresh_executions(self) -> None:
-        """
-        Předá počítadlu OER vyplnění příkazů, o kterých spojení ví.
-        ib_async si po připojení vyžádá exekuce celého dne, takže se
-        započtou i příkazy vyplněné před startem aplikace.
-        """
-        self.oer.record_executions(self._raw_fills())

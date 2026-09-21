@@ -50,6 +50,15 @@ class ZakladTestu(ZakladEnginu):
         """Počet zápisů v provozním logu obsahujících daný text."""
         return sum(1 for _, zprava in self.engine.events if text in zprava)
 
+    def omez_oer(self, limit: float) -> None:
+        """
+        Nastaví počítadlu OER limit poměru bez volného základu, aby test
+        zkoušel samotný limit (počítadlo vzniká v setUp, konfigurace ho už
+        nezmění).
+        """
+        self.ib.oer.limit = limit
+        self.ib.oer.free_messages = 0
+
 
 class TestZalozeniFlow(ZakladTestu):
     """Založení obchodu a podoba nákupního příkazu."""
@@ -843,6 +852,13 @@ class TestProdlevyNavratuPoSpreadu(ZakladTestu):
         self.assertEqual(flow.state, FlowState.ARMED)
         self.assertEqual(flow.spread_breaches, 2)
 
+    async def test_pocet_odstraneni_prezije_ulozeni(self):
+        # Restart nesmí vrátit prodlevu před návratem do trhu na začátek
+        flow = await self.zaloz_call()
+        await self.odstran_a_vrat(flow, 6)
+        obnovene = store.dict_to_flow(store.flow_to_dict(flow))
+        self.assertEqual(obnovene.spread_breaches, 1)
+
     async def test_prodleva_ma_strop(self):
         self.cfg.trading.rearm_delay_sec = 5.0
         self.cfg.trading.rearm_delay_max_sec = 60.0
@@ -859,9 +875,7 @@ class TestProdlevyNavratuPoSpreadu(ZakladTestu):
 
     async def test_navrat_do_trhu_respektuje_limit_oer(self):
         # Limit 3: zadání (1) + zrušení (1) + návrat by potřeboval další dvě
-        self.ib.oer.limit = 3.0
-        # Bez volného základu rozhoduje jen limit poměru
-        self.ib.oer.free_messages = 0
+        self.omez_oer(3.0)
         flow = await self.zaloz_call()
 
         await self.odstran_a_vrat(flow, 30)
@@ -978,10 +992,7 @@ class TestPrubehnaAktualizaceLimitu(ZakladTestu):
     async def test_uprava_limitu_respektuje_limit_oer(self):
         # Limit OER 2 dovolí bez vyplnění jen dvě zprávy: zadání příkazu
         # a rezervu na jeho zrušení - na úpravu limitu už nezbude
-        self.cfg.trading.oer_limit = 2.0
-        self.ib.oer.limit = 2.0
-        # Bez volného základu rozhoduje jen limit poměru
-        self.ib.oer.free_messages = 0
+        self.omez_oer(2.0)
         flow = await self.zaloz_call()
         puvodni = flow.entry_limit
         flow.entry_trade.orderStatus.status = "Submitted"
@@ -993,16 +1004,12 @@ class TestPrubehnaAktualizaceLimitu(ZakladTestu):
         self.assertAlmostEqual(flow.entry_limit, puvodni)
         self.assertEqual(self.ib.oer.messages, 1)
         # Odklad se do logu hlásí jen jednou, ne každým průchodem smyčkou
-        odklady = [zprava for _, zprava in self.engine.events if "odloženo" in zprava]
-        self.assertEqual(len(odklady), 1)
-        self.assertIn("přelimitování", odklady[0])
+        self.assertEqual(self.zaznamy("odloženo"), 1)
+        self.assertEqual(self.zaznamy("přelimitování nákupního příkazu odloženo"), 1)
 
     async def test_vyplneni_uvolni_limit_oer(self):
         # Každý vyplněný příkaz přidá prostor pro další limit zpráv
-        self.cfg.trading.oer_limit = 2.0
-        self.ib.oer.limit = 2.0
-        # Bez volného základu rozhoduje jen limit poměru
-        self.ib.oer.free_messages = 0
+        self.omez_oer(2.0)
         flow = await self.zaloz_call()
         flow.entry_trade.orderStatus.status = "Submitted"
         self.ib.price_bid, self.ib.price_ask = 3.55, 3.60
@@ -3778,9 +3785,7 @@ class TestPrubeznehoPrepoctu(ZakladPrepoctu):
     async def test_zvyseni_mnozstvi_respektuje_limit_oer(self):
         # Bez pásma, ale limit OER dovolí jen zadání a rezervu na zrušení
         self.cfg.trading.refresh_increase_margin_pct = 0.0
-        self.ib.oer.limit = 2.0
-        # Bez volného základu rozhoduje jen limit poměru
-        self.ib.oer.free_messages = 0
+        self.omez_oer(2.0)
         flow = await self.zaloz()
         self.burza(600)
         self.zlevni()
@@ -3793,9 +3798,7 @@ class TestPrubeznehoPrepoctu(ZakladPrepoctu):
 
     async def test_snizeni_mnozstvi_projde_i_nad_limitem_oer(self):
         # Snížení chrání riziko na obchod, proto se posílá vždy
-        self.ib.oer.limit = 1.0
-        # Bez volného základu rozhoduje jen limit poměru
-        self.ib.oer.free_messages = 0
+        self.omez_oer(1.0)
         flow = await self.zaloz(quantity=5)
         self.burza(600)
         self.zdrazi()

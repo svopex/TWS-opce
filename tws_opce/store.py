@@ -159,9 +159,9 @@ def save(
     Zápis probíhá přes dočasný soubor a přejmenování, aby při pádu aplikace
     nezůstal soubor rozepsaný.
 
-    order_stats - dnešní počítadla Order Efficiency Ratio (viz oer.py);
-    bez uložení by restart během dne počítadla vynuloval a aplikace by
-    limit OER přečerpala
+    order_stats - dnešní počítadlo zpráv Order Efficiency Ratio (viz oer.py);
+    bez uložení by ho restart během dne vynuloval a aplikace by rozpočet
+    zpráv přečerpala
     """
     cesta = Path(path)
     obsah: dict[str, Any] = {
@@ -200,45 +200,27 @@ def save(
                 log.warning("Dočasný soubor %s se nepodařilo odstranit.", docasny)
 
 
-def _read(path: str | Path) -> dict[str, Any] | None:
+def load_state(path: str | Path) -> tuple[list[Flow], Any]:
     """
-    Načte obsah souboru se stavem. Chybějící, poškozený nebo neznámou
-    verzí zapsaný soubor vrací None.
+    Načte uložený stav jedním čtením souboru: obchody a počítadlo zpráv
+    Order Efficiency Ratio (neověřené - kontroluje ho OrderEfficiency.load).
+    Chybějící, poškozený nebo neznámou verzí zapsaný soubor vrací prázdný
+    seznam a None.
     """
     cesta = Path(path)
     if not cesta.exists():
-        return None
+        return [], None
 
     try:
         with cesta.open("r", encoding="utf-8") as fh:
             obsah = json.load(fh)
     except Exception:
         log.exception("Uložený stav v %s se nepodařilo načíst.", cesta)
-        return None
+        return [], None
 
     if not isinstance(obsah, dict) or obsah.get("version") != FORMAT_VERSION:
         log.warning("Uložený stav v %s má neznámou verzi formátu - ignoruji jej.", cesta)
-        return None
-    return obsah
-
-
-def load_order_stats(path: str | Path) -> dict[str, Any] | None:
-    """Načte uložená počítadla Order Efficiency Ratio; None, pokud v souboru nejsou."""
-    obsah = _read(path)
-    if obsah is None:
-        return None
-    stats = obsah.get("order_stats")
-    return stats if isinstance(stats, dict) else None
-
-
-def load(path: str | Path) -> list[Flow]:
-    """
-    Načte uložený stav obchodů.
-    Chybějící, poškozený nebo neznámou verzí zapsaný soubor vrací prázdný seznam.
-    """
-    obsah = _read(path)
-    if obsah is None:
-        return []
+        return [], None
 
     flows: list[Flow] = []
     for zaznam in obsah.get("flows", []):
@@ -246,4 +228,9 @@ def load(path: str | Path) -> list[Flow]:
             flows.append(dict_to_flow(zaznam))
         except Exception:
             log.exception("Záznam obchodu se nepodařilo obnovit: %s", zaznam)
-    return flows
+    return flows, obsah.get("order_stats")
+
+
+def load(path: str | Path) -> list[Flow]:
+    """Načte uložené obchody (viz load_state)."""
+    return load_state(path)[0]

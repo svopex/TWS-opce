@@ -780,8 +780,9 @@ nevadil a varování přicházela až při tisících zpráv denně.
 
 Aplikace proto každou zprávu do TWS počítá (nový příkaz, úpravu i zrušení)
 a sleduje vyplněné příkazy dne (částečně vyplněný příkaz se počítá jednou).
-Den se určuje v časové zóně burzy. Počítadla se ukládají se stavem obchodů,
-takže je restart během seance nevynuluje. Zprávy se dělí na dvě skupiny:
+Den se určuje v časové zóně burzy. Počítadlo zpráv se ukládá se stavem
+obchodů, takže ho restart během seance nevynuluje. Vyplněné příkazy dne pošle
+TWS po připojení znovu, ty se neukládají. Zprávy se dělí na dvě skupiny:
 
 - **Povinné** se posílají vždy: zadání nového obchodu, zajištění a uzavření
   pozice, zrušení příkazu (ruční, v nastavený čas, kvůli spreadu,
@@ -810,7 +811,8 @@ rozpočet dne = max(oer_free_messages, oer_limit × (vyplněné příkazy + 1))
 Odložená nepovinná úprava se do provozního logu hlásí jednou za obchod
 („přelimitování nákupního příkazu odloženo – vyčerpán rozpočet zpráv …“).
 Po vyplnění dalšího příkazu se úpravy samy obnoví. Přesáhnou-li zprávy
-rozpočet vlivem povinných zpráv, log to jednou za den ohlásí.
+rozpočet vlivem povinných zpráv, log to ohlásí jednou. Znovu to ohlásí až po
+návratu do rozpočtu (vyplněním příkazu nebo novým dnem) a dalším překročení.
 `trading.oer_limit: 0` hlídání vypíná.
 
 Kromě limitu šetří zprávy i samotná logika příkazů: limit čekajícího
@@ -1297,9 +1299,9 @@ a adresář `.nicegui/`, kde si rozhraní pamatuje volbu tmavého vzhledu.
 Stav obchodů se průběžně zapisuje do `state.json`, takže restart ani pád
 aplikace o rozpracované obchody nepřipraví. Součástí zápisu jsou i provize
 naúčtované TWS — po novém spojení je TWS pošle jen za dnešní den, takže bez
-uložení by se u starších obchodů ztratily. Ukládají se také dnešní počítadla
-[Order Efficiency Ratio](#order-efficiency-ratio-oer); záznam z jiného dne se
-po startu zahodí. Po startu se uložený stav **vždy
+uložení by se u starších obchodů ztratily. Ukládá se také dnešní počítadlo
+zpráv [Order Efficiency Ratio](#order-efficiency-ratio-oer); záznam z jiného
+dne se po startu zahodí. Po startu se uložený stav **vždy
 srovná se skutečností v TWS** — rozhoduje to, co je v TWS, nikoliv zápis
 v souboru:
 

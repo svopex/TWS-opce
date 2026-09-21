@@ -283,8 +283,9 @@ trading:
   #   rozpočet dne = větší z (oer_free_messages, oer_limit × (vyplněné + 1))
   # Jako rezerva se přitom počítá zrušení každého čekajícího nákupního
   # příkazu v trhu. Povinné zprávy (zajištění a uzavření pozice, zrušení
-  # příkazu, zadání nového obchodu) se posílají vždy. Počítadla se ukládají
-  # se stavem obchodů, takže je restart během dne nevynuluje.
+  # příkazu, zadání nového obchodu) se posílají vždy. Počítadlo zpráv se
+  # ukládá se stavem obchodů, takže ho restart během dne nevynuluje;
+  # vyplněné příkazy dne pošle TWS po připojení znovu.
   # 0 = hlídání vypnuto
   oer_limit: 15
 
@@ -400,7 +401,7 @@ import:
   # otevření, průběžný přepočet běží až po něm. Volba předvyplní přepínač
   # "Přepočítávat každých" v dialogu načtení pozic i ve formuláři zadání.
   refresh_interval: true
-  refresh_interval_sec: 30
+  refresh_interval_sec: 120
 
   # Kontrola propásnutého vstupu podle minutových svíček podkladu. Platí jen
   # pro dialog načtení pozic ze souboru - tlačítka Přepočítat, Zadat vybrané
