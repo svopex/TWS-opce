@@ -116,14 +116,6 @@ class OrderEfficiency:
         """True, pokud dnešní zprávy přesáhly rozpočet dne (viz allows)."""
         return not self.allows(0)
 
-    def summary(self) -> str:
-        """Stav OER dne slovy - poměr, počty a rozpočet dne (log i hlavička aplikace)."""
-        return (
-            f"OER dne {self.ratio:.1f} ({self.messages} zpráv / {self.executed} "
-            f"vyplněných příkazů + 1), rozpočet dne {self.budget:.0f} zpráv "
-            f"(volný základ {self.free_messages}, limit OER {self.limit:g})"
-        )
-
     def record_message(self, count: int = 1) -> None:
         """Započte odeslanou zprávu - nový příkaz, jeho úpravu nebo zrušení."""
         self._roll()

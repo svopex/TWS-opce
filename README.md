@@ -818,7 +818,8 @@ návratu do rozpočtu (vyplněním příkazu nebo novým dnem) a dalším překr
 
 Aktuální OER dne ukazuje hlavička aplikace za údajem o odezvě TWS a stáří
 dat („OER: 3,4“). Tooltip nese počet zpráv, vyplněných příkazů a rozpočet dne.
-Po překročení rozpočtu se údaj zvýrazní žlutě.
+Po překročení rozpočtu se údaj zvýrazní žlutě. Bez spojení s TWS se skrývá:
+TWS s odpojením zahodí vyplnění dne, takže by poměr vyšel přehnaně vysoký.
 
 Kromě limitu šetří zprávy i samotná logika příkazů: limit čekajícího
 příkazu se upravuje až po spuštění jeho podmínky, prodleva před návratem do

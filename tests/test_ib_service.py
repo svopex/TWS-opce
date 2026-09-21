@@ -19,7 +19,7 @@ from ib_async import OptionComputation, Stock, Ticker
 
 from tws_opce.config import AppConfig
 from tws_opce.ib_service import IBService, valid_price
-from tws_opce.ui import linka_varuje, oer_text, stari_text, stav_linky_text
+from tws_opce.ui import linka_varuje, oer_popis, oer_text, stari_text, stav_linky_text
 
 NAN = float("nan")
 
@@ -381,6 +381,11 @@ class TestPopisuOer(unittest.TestCase):
     def test_jedno_desetinne_misto_s_carkou(self):
         self.assertEqual(oer_text(10.0), "OER: 10,0")
         self.assertEqual(oer_text(175.666), "OER: 175,7")
+
+    def test_tooltip_s_rozpoctem_i_bez_hlidani(self):
+        self.assertIn("30 zpráv do TWS / (2 vyplněných příkazů + 1)", oer_popis(30, 2, 200.0))
+        self.assertIn("Rozpočet dne 200 zpráv", oer_popis(30, 2, 200.0))
+        self.assertIn("Hlídání OER je vypnuté", oer_popis(30, 2, None))
 
 
 class TestVarovaniLinky(unittest.TestCase):

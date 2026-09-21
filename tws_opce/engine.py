@@ -3286,6 +3286,15 @@ class FlowEngine:
         if changed:
             self._notify()
 
+    def _oer_text(self) -> str:
+        """Stav OER dne pro log - poměr, počty a rozpočet dne."""
+        oer = self.ib.oer
+        return (
+            f"OER dne {oer.ratio:.1f} ({oer.messages} zpráv / {oer.executed} "
+            f"vyplněných příkazů + 1), rozpočet dne {oer.budget:.0f} zpráv "
+            f"(volný základ {oer.free_messages}, limit OER {oer.limit:g})"
+        )
+
     def _warn_oer_over_limit(self) -> None:
         """
         Ohlásí, že zprávy dne přesáhly volný základ i limit OER. Hlásí se
@@ -3298,7 +3307,7 @@ class FlowEngine:
         prekroceno = self.ib.oer.over_limit
         if prekroceno and not self._oer_over_warned:
             self.log_event(
-                f"POZOR - {self.ib.oer.summary()} je překročen. Nepovinné úpravy "
+                f"POZOR - {self._oer_text()} je překročen. Nepovinné úpravy "
                 f"příkazů jsou pozastavené, dokud se nevyplní další příkaz."
             )
         self._oer_over_warned = prekroceno
@@ -3328,7 +3337,7 @@ class FlowEngine:
             self._warned.add(klic)
             self.log_event(
                 f"{flow.id}: {akce} odloženo - vyčerpán rozpočet zpráv: "
-                f"{self.ib.oer.summary()}, rezerva na zrušení {rezerva}."
+                f"{self._oer_text()}, rezerva na zrušení {rezerva}."
             )
         return False
 

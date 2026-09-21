@@ -234,6 +234,20 @@ def oer_text(ratio: float) -> str:
     return f"OER: {ratio:.1f}".replace(".", ",")
 
 
+def oer_popis(zpravy: int, vyplnene: int, rozpocet: float | None) -> str:
+    """
+    Tooltip údaje OER v hlavičce: z čeho se poměr počítá a rozpočet dne.
+    rozpocet None znamená vypnuté hlídání (trading.oer_limit: 0).
+    """
+    popis = (
+        f"Order Efficiency Ratio dne = {zpravy} zpráv do TWS / "
+        f"({vyplnene} vyplněných příkazů + 1). IBKR očekává nejvýš kolem 20."
+    )
+    if rozpocet is None:
+        return f"{popis} Hlídání OER je vypnuté."
+    return f"{popis} Rozpočet dne {rozpocet:.0f} zpráv, nad ním se nepovinné úpravy příkazů odkládají."
+
+
 def linka_varuje(
     rtt_ms: float | None, stari_sec: float | None, trh_otevren: bool
 ) -> bool:
@@ -2193,13 +2207,18 @@ class TradingUI:
 
     def _refresh_oer(self) -> None:
         """
-        Order Efficiency Ratio dne v hlavičce. Zvýrazní se, jakmile zprávy
-        dne přesáhnou rozpočet a nepovinné úpravy příkazů se pozastaví.
+        Order Efficiency Ratio dne v hlavičce. Bez spojení se skrývá - TWS
+        s odpojením zahodí vyplnění dne a poměr by vyšel přehnaně vysoký.
+        Zvýrazní se, když zprávy dne přesáhnou rozpočet dne.
         """
+        self.oer_label.set_visibility(self.ib.connected)
+        if not self.ib.connected:
+            return
+
         oer = self.ib.oer
         self.oer_label.set_text(oer_text(oer.ratio))
         self.oer_tip.set_text(
-            f"Order Efficiency Ratio (IBKR očekává nejvýš kolem 20): {oer.summary()}"
+            oer_popis(oer.messages, oer.executed, oer.budget if oer.enabled else None)
         )
         if oer.over_limit:
             self.oer_label.classes(add="oer-varovani")

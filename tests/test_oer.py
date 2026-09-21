@@ -67,17 +67,6 @@ class TestPocitadla(unittest.TestCase):
         # 30 zpráv / (2 vyplněné + 1) = 10
         self.assertAlmostEqual(self.oer.ratio, 10.0)
 
-    def test_souhrn_stavu(self):
-        # Souhrn sdílí log i tooltip OER v hlavičce aplikace
-        oer = self.pocitadlo(free_messages=200)
-        oer.record_message(30)
-        self.vypln(1, 2)
-        self.assertEqual(
-            oer.summary(),
-            "OER dne 10.0 (30 zpráv / 2 vyplněných příkazů + 1), rozpočet dne "
-            "200 zpráv (volný základ 200, limit OER 15)",
-        )
-
     def test_castecne_vyplneni_se_pocita_jednou(self):
         # Tentýž příkaz vyplněný po částech má víc exekucí se stejným permId
         self.vypln(7, 7, 7)
