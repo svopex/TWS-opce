@@ -33,6 +33,13 @@ NAPOVEDA_PRODLEVY = (
     "okamžicích jsou kotace opcí nejširší, proto chvíli počkat. Výchozí "
     "hodnota je import.refresh_after_open_sec z konfigurace."
 )
+# Společný začátek nápovědy tlačítek runneru ve formuláři zadání i v dialogu
+# načtení pozic - {procento} doplní trading.runner_quantity_pct
+NAPOVEDA_RUNNER_VELIKOST = (
+    "Runner je část pozice ({procento:g} % kontraktů podle konfigurace, "
+    "zaokrouhleno dolů, nejméně 1 ks) s vlastním, vzdálenějším cílem "
+    "na zvoleném násobku původní vzdálenosti PT od vstupu."
+)
 NAPOVEDA_RUNNER_MIN = (
     "Runner dostane pozice s alespoň tímto počtem kontraktů (včetně); menší "
     "běží bez něj, dokud na runner přepočtem nedoroste. Výchozí hodnota je "

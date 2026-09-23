@@ -1492,12 +1492,6 @@ class TestRunner(ZakladTestu):
         self.assertEqual(int(hlavni.order.totalQuantity), 3)
         self.assertEqual(int(runner.order.totalQuantity), 2)
 
-    async def test_velikost_runneru_roste_s_pozici(self):
-        # Výchozích 25 % dává z osmi kontraktů runner o 2 ks
-        flow = await self.zaloz_call(quantity=8)
-        await self.engine.set_runner(flow.id, 2.0)
-        self.assertEqual(flow.runner_quantity, 2)
-
     async def test_velikost_runneru_je_nejmene_jeden_kontrakt(self):
         # 25 % ze tří kontraktů je po zaokrouhlení dolů nula - runner
         # přesto dostane jeden kontrakt
@@ -3849,25 +3843,14 @@ class TestPrubeznehoPrepoctu(ZakladPrepoctu):
         self.assertEqual(self.ib.oer.messages, 2)
 
 
-class TestProcentaRunneru(unittest.TestCase):
-    """Přepočet nastaveného procenta na kontrakty runneru a jeho validace."""
+class TestKonfiguraceRunneru(unittest.TestCase):
+    """Meze procentuální velikosti runneru v konfiguraci."""
 
     def setUp(self) -> None:
         self.cfg = AppConfig()
 
-    def test_procento_se_zaokrouhluje_dolu_nejmene_na_kontrakt(self):
-        # Výchozích 25 %: z 8 ks dva runnery, ze 4 ks jeden, z 10 ks dva
-        # (2,5 dolů); z malé pozice vyjde minimum jeden kontrakt
-        for mnozstvi, kusy in ((1, 1), (2, 1), (3, 1), (4, 1), (8, 2), (10, 2), (12, 3)):
-            self.assertEqual(self.cfg.trading.runner_kusy(mnozstvi), kusy, mnozstvi)
-
-    def test_jine_procento_deli_pozici_jinak(self):
-        self.cfg.trading.runner_quantity_pct = 50.0
-        self.assertEqual(self.cfg.trading.runner_kusy(8), 4)
-        self.assertEqual(self.cfg.trading.runner_kusy(3), 1)
-
-    def test_prazdna_pozice_nema_runner(self):
-        self.assertEqual(self.cfg.trading.runner_kusy(0), 0)
+    def test_vychozi_procento(self):
+        self.assertEqual(self.cfg.trading.runner_quantity_pct, 25.0)
 
     def test_procento_mimo_rozsah_neprojde(self):
         # Nula i sto procent runner fakticky vypínají

@@ -310,17 +310,17 @@ projít.
    (výchozí `import.runner_multiple` a `import.runner_min_quantity`).
    Zvolený násobek zapne u založeného obchodu runner (podíl pozice podle
    `trading.runner_quantity_pct`) s cílem na tomto násobku původní
-   vzdálenosti PT od vstupu — přesně
-   jako tlačítka runneru v řádku přehledu — ale jen má-li obchod **alespoň**
-   tolik kontraktů, kolik stojí v poli *Runner od*. Menší obchod běží bez
-   runneru a dostane ho, až na něj přepočtem doroste; naopak obchod, jehož
-   množství přepočtem klesne pod minimum (nebo na runner nestačí), o runner
-   přijde. Volbu i minimum si obchod nese s sebou, takže platí i po zavření
-   stránky a po restartu. Ruční zásah tlačítky runneru v přehledu má
-   přednost: runner zapnutý ručně před nákupem platí bez ohledu na minimum
-   a *Zrušit runner* ho vypne natrvalo — přepočet ho podle původní volby
-   znovu nezapne. *Nepoužít runner* platí i při nahrazení čekajícího obchodu
-   téhož směru: runner z nahrazeného obchodu se nepřebírá.
+   vzdálenosti PT od vstupu — přesně jako tlačítka runneru v řádku přehledu —
+   ale jen má-li obchod **alespoň** tolik kontraktů, kolik stojí v poli
+   *Runner od*. Menší obchod běží bez runneru a dostane ho, až na něj
+   přepočtem doroste; naopak obchod, jehož množství přepočtem klesne pod
+   minimum (nebo na runner nestačí), o runner přijde. Volbu i minimum si
+   obchod nese s sebou, takže platí i po zavření stránky a po restartu.
+   Ruční zásah tlačítky runneru v přehledu má přednost: runner zapnutý ručně
+   před nákupem platí bez ohledu na minimum a *Zrušit runner* ho vypne
+   natrvalo — přepočet ho podle původní volby znovu nezapne.
+   *Nepoužít runner* platí i při nahrazení čekajícího obchodu téhož směru:
+   runner z nahrazeného obchodu se nepřebírá.
 
    TWS model greeks u opcí neposílá spolehlivě — závisí to na účtu
    a předplatném dat. Chybí-li delta, aplikace ji dopočítá z tržní ceny opce

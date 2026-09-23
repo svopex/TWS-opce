@@ -157,6 +157,19 @@ def suggest_quantity(
     )
 
 
+def runner_quantity(quantity: int, runner_pct: float) -> int:
+    """
+    Počet kontraktů runneru z velikosti pozice a procenta z konfigurace
+    (trading.runner_quantity_pct). Zaokrouhluje se dolů, nejméně však
+    na jeden kontrakt: z 8 ks při 25 % vyjdou 2 ks, ze 3 ks jeden.
+    Prázdná pozice runner nemá. Shora se výsledek neomezuje - obchod,
+    kterému by na hlavní část nic nezbylo, runner nedostane (hlídá engine).
+    """
+    if quantity < 1:
+        return 0
+    return max(1, int(math.floor(quantity * runner_pct / 100)))
+
+
 def option_profit_limit(fill_price: float, profit_usd: float, min_tick: float) -> float:
     """
     Limitní cena prodeje opce pro zisk zadaný v USD na jeden kontrakt.

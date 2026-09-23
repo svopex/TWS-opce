@@ -792,17 +792,16 @@ class TradingUI:
                 # kolika kontraktů (včetně) runner náleží
                 with ui.row().classes("skupina-prepinacu blok-runner"):
                     ui.label("Runner:").classes("popisek-volby-runner")
+                    napoveda = widgets.NAPOVEDA_RUNNER_VELIKOST.format(
+                        procento=self.cfg.trading.runner_quantity_pct
+                    ) + (
+                        " Zapne se při založení obchodu, má-li obchod alespoň tolik "
+                        "kontraktů, kolik je v poli Runner od; průběžný přepočet ho pak "
+                        "podle nového množství zapne či vypne. Výchozí volba je "
+                        "import.runner_multiple z konfigurace."
+                    )
                     self.runner_buttons = widgets.tlacitka_runneru(
-                        self._nastav_runner,
-                        "Runner je část pozice "
-                        f"({self.cfg.trading.runner_quantity_pct:g} % kontraktů podle "
-                        "konfigurace, zaokrouhleno dolů, nejméně 1 ks) "
-                        "s vlastním, vzdálenějším cílem na zvoleném násobku původní "
-                        "vzdálenosti PT od vstupu. Zapne se při založení obchodu, má-li "
-                        "obchod alespoň tolik kontraktů, kolik je v poli Runner od; "
-                        "průběžný přepočet ho pak podle nového množství zapne či vypne. "
-                        "Výchozí volba je import.runner_multiple z konfigurace.",
-                        self.runner_value,
+                        self._nastav_runner, napoveda, self.runner_value
                     )
                     self.runner_min_input = widgets.pole_runner_min(
                         self.cfg.import_.runner_min_quantity, "pole-runner-min"
@@ -2415,13 +2414,7 @@ class TradingUI:
                 aktivni_runner_sl = "be"
             elif abs(flow.runner_sl - zaklad_sl) < 0.005:
                 aktivni_runner_sl = "puvodni"
-        # Velikost runneru: u běžícího jeho skutečné kusy, jinak procento
-        # drženého množství podle konfigurace
-        runner_velikost = (
-            flow.runner_quantity
-            if flow.runner_active
-            else self.cfg.trading.runner_kusy(flow.held_quantity)
-        )
+        runner_velikost = self.engine.runner_size(flow)
         # Sekce Runner mizí, jakmile přestane dávat smysl: runner je prodaný,
         # právě se uzavírá, nebo se uzavírá pozice a runner ještě nebyl zapnut
         runner_mozny = (

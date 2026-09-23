@@ -155,6 +155,23 @@ class TestMnozstvi(unittest.TestCase):
         self.assertEqual(calc.suggest_quantity(500.0, 100.0, 100.0, 0.5), 1)
 
 
+class TestVelikostiRunneru(unittest.TestCase):
+    """Počet kontraktů runneru z procenta pozice."""
+
+    def test_procento_se_zaokrouhluje_dolu_nejmene_na_kontrakt(self):
+        # Při 25 %: z 8 ks dva runnery, z 10 ks dva (2,5 dolů), z malé
+        # pozice vyjde minimum jeden kontrakt
+        for mnozstvi, kusy in ((1, 1), (2, 1), (3, 1), (4, 1), (8, 2), (10, 2), (12, 3)):
+            self.assertEqual(calc.runner_quantity(mnozstvi, 25.0), kusy, mnozstvi)
+
+    def test_jine_procento_deli_pozici_jinak(self):
+        self.assertEqual(calc.runner_quantity(8, 50.0), 4)
+        self.assertEqual(calc.runner_quantity(3, 50.0), 1)
+
+    def test_prazdna_pozice_nema_runner(self):
+        self.assertEqual(calc.runner_quantity(0, 25.0), 0)
+
+
 class TestLimitniCeny(unittest.TestCase):
     """Limitní ceny podle typu příkazu."""
 

@@ -544,6 +544,9 @@ class Flow:
     # Runner - část pozice prodávaná samostatným příkazem s vlastním cílem.
     # None v runner_profit_target znamená, že runner není aktivní.
     runner_profit_target: float | None = None
+    # Počet kusů runneru: při zapnutí se spočítá z procenta v konfiguraci
+    # (trading.runner_quantity_pct) a dál už je pevný - obchod si nese kusy,
+    # se kterými má příkazy v trhu, ne procento
     runner_quantity: int = 0
     # Vlastní SL runneru - při zapnutí přebírá SL obchodu a dál se přepíná
     # nezávisle na hlavní části (počáteční SL / break even)

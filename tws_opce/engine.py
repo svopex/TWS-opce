@@ -1550,7 +1550,7 @@ class FlowEngine:
             return
         minimum = flow.auto_runner_min_quantity or 1
         # Velikost runneru je procento pozice, takže se s množstvím obchodu mění
-        runner_q = self.cfg.trading.runner_kusy(flow.quantity)
+        runner_q = calc.runner_quantity(flow.quantity, self.cfg.trading.runner_quantity_pct)
 
         # Proč runner nebude; None znamená zapnout
         if not nasobek:
@@ -2367,6 +2367,16 @@ class FlowEngine:
             f"/ SL {flow.level_text('sl')}."
         )
 
+    def runner_size(self, flow: Flow) -> int:
+        """
+        Kolik kontraktů u obchodu runner zabírá: běžící si drží svůj počet,
+        nový vyjde jako procento drženého množství (trading.runner_quantity_pct).
+        Podle téhož čísla rozhoduje rozhraní, zda sekci Runner vůbec ukázat.
+        """
+        if flow.runner_active:
+            return flow.runner_quantity
+        return calc.runner_quantity(flow.held_quantity, self.cfg.trading.runner_quantity_pct)
+
     async def set_runner(self, flow_id: str, multiple: float) -> Flow:
         """
         Zapne runner, nebo změní jeho cíl.
@@ -2395,11 +2405,7 @@ class FlowEngine:
 
         # Rozhoduje skutečně držené množství - dříve prodané runnery se odečítají
         total = flow.held_quantity
-        # Běžící runner si nechává svůj počet kusů, nový se počítá
-        # jako procento právě drženého množství
-        runner_q = (
-            flow.runner_quantity if flow.runner_active else self.cfg.trading.runner_kusy(total)
-        )
+        runner_q = self.runner_size(flow)
         if total <= runner_q:
             raise ValueError(
                 f"Runner ({runner_q} ks) vyžaduje obchod s větším množstvím než {runner_q} kontrakt(y)."

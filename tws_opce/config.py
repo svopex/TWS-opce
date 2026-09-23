@@ -116,9 +116,10 @@ class TradingConfig:
     rearm_delay_factor: float = 1.5
     # Velikost runneru v procentech pozice - runner je část pozice, která se
     # po aktivaci prodává samostatným příkazem s vlastním (vzdálenějším) cílem.
-    # Počet kontraktů z procenta počítá runner_kusy (z 8 ks při 25 % vyjdou
-    # 2 ks). Runner lze zapnout jen u obchodu, kterému po jeho odečtení zbude
-    # v hlavní části aspoň jeden kontrakt.
+    # Počet kontraktů z procenta počítá calc.runner_quantity (z 8 ks při 25 %
+    # vyjdou 2 ks). Runner lze zapnout jen u obchodu, kterému po jeho odečtení
+    # zbude v hlavní části aspoň jeden kontrakt. Runner se nevypíná nulou -
+    # k tomu slouží volba "Nepoužít runner" (import.runner_multiple: 0).
     runner_quantity_pct: float = 25.0
     # Chování při změně PT u obchodu, který ještě nenakoupil:
     #   keep        = ponechat původní strike, mění se jen cílová úroveň
@@ -176,19 +177,6 @@ class TradingConfig:
     # Čas zavření burzy ve formátu HH:MM (v časové zóně burzy).
     # Zkrácené obchodní dny (např. před svátky) aplikace nezná.
     exchange_close_time: str = "16:00"
-
-    def runner_kusy(self, mnozstvi: int) -> int:
-        """
-        Počet kontraktů runneru pro pozici o daném množství.
-
-        Procento runner_quantity_pct se zaokrouhluje dolů, nejméně však
-        na jeden kontrakt: z 8 ks při 25 % vyjdou 2 ks, ze 3 ks jeden.
-        Shora se výsledek neomezuje - obchod, kterému by na hlavní část
-        nic nezbylo, runner prostě nedostane (rozhoduje o tom engine).
-        """
-        if mnozstvi < 1:
-            return 0
-        return max(1, int(mnozstvi * self.runner_quantity_pct / 100))
 
 
 @dataclass

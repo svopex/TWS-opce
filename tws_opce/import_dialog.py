@@ -483,14 +483,12 @@ class ImportDialog:
             ui.label("Runner:").classes("popisek-volby-runner")
             napoveda = (
                 "Výchozí nastavení runneru pro všechny načtené pozice - přepíše "
-                "volbu ve sloupci Runner, kde ji lze u každé pozice doladit "
-                "zvlášť. Runner je část pozice "
-                f"({self.cfg.trading.runner_quantity_pct:g} % kontraktů podle konfigurace, "
-                "zaokrouhleno dolů, nejméně 1 ks) "
-                "s vlastním, vzdálenějším cílem na zvoleném násobku původní "
-                "vzdálenosti PT od vstupu. Runner dostanou jen pozice s množstvím "
-                "alespoň takovým, jaké je v poli vpravo; menší zůstanou "
-                "na volbě Bez."
+                "volbu ve sloupci Runner, kde ji lze u každé pozice doladit zvlášť. "
+                + widgets.NAPOVEDA_RUNNER_VELIKOST.format(
+                    procento=self.cfg.trading.runner_quantity_pct
+                )
+                + " Runner dostanou jen pozice s množstvím alespoň takovým, jaké je "
+                "v poli vpravo; menší zůstanou na volbě Bez."
             )
             self.runner_buttons = widgets.tlacitka_runneru(
                 self._nastav_runner, napoveda, self.runner_value

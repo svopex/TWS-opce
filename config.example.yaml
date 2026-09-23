@@ -252,7 +252,9 @@ trading:
   # Počet kontraktů se z procenta zaokrouhluje dolů, nejméně však na 1 ks:
   # při 25 % vyjdou z 8 ks dva runnery, ze 4 ks jeden. Tlačítka runneru se
   # zobrazují jen u obchodů, kterým po oddělení runneru zbude v hlavní části
-  # alespoň jeden kontrakt. Povolený rozsah je 0 až 100 (krajní hodnoty ne).
+  # alespoň jeden kontrakt. Povolený rozsah je 0 až 100 (krajní hodnoty ne) -
+  # runner se nevypíná nulou, ale volbou "Nepoužít runner"
+  # (import.runner_multiple: 0).
   runner_quantity_pct: 25.0
 
   # Co se má stát se strikem, když v monitoringu posunete cíl obchodu
