@@ -309,7 +309,7 @@ trading:
   # ukládá se stavem obchodů, takže ho restart během dne nevynuluje;
   # vyplněné příkazy dne pošle TWS po připojení znovu.
   # 0 = hlídání vypnuto
-  oer_limit: 15
+  oer_limit: 20
 
   # Volný denní základ zpráv: do tohoto počtu projdou nepovinné zprávy bez
   # ohledu na OER, nad ním rozhoduje oer_limit. IBKR minimální hranici
@@ -317,7 +317,7 @@ trading:
   # zpráv denně neřeší a varování přicházela až při tisících. Bez základu
   # by pět čekajících obchodů bez vyplnění mělo z limitu 15 po odečtení
   # zadání a rezervy na zrušení jen pět úprav za celý den.
-  oer_free_messages: 200
+  oer_free_messages: 300
 
   # Pásmo necitlivosti průběžného přepočtu (import.refresh_interval) pro
   # zvýšení množství čekajícího příkazu v trhu, v procentech: vyšší množství
@@ -423,7 +423,7 @@ import:
   # otevření, průběžný přepočet běží až po něm. Volba předvyplní přepínač
   # "Přepočítávat každých" v dialogu načtení pozic i ve formuláři zadání.
   refresh_interval: true
-  refresh_interval_sec: 120
+  refresh_interval_sec: 180
 
   # Kontrola propásnutého vstupu podle minutových svíček podkladu. Platí jen
   # pro dialog načtení pozic ze souboru - tlačítka Přepočítat, Zadat vybrané
