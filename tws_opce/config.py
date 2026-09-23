@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
+from . import calc
 from .models import PT_MULTIPLES
 
 log = logging.getLogger(__name__)
@@ -185,6 +186,11 @@ class TradingConfig:
     # Čas zavření burzy ve formátu HH:MM (v časové zóně burzy).
     # Zkrácené obchodní dny (např. před svátky) aplikace nezná.
     exchange_close_time: str = "16:00"
+
+    @property
+    def cheap_option_rule(self) -> calc.CheapOptionRule:
+        """Výjimka z limitu spreadu pro levné opce jako jedno pravidlo."""
+        return calc.CheapOptionRule(self.cheap_option_max_price, self.cheap_option_max_spread_usd)
 
 
 @dataclass

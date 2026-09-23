@@ -2397,6 +2397,23 @@ class TradingUI:
                 if abs(runner_aktualni - nabidnuty) < 0.01:
                     runner_nasobek = nabidnuty
                     break
+        # Povoluje-li nákup jen výjimka pro levné opce, uvádí se k limitu
+        # spreadu i povolená částka v USD a bublina vysvětlí proč
+        limit_spreadu = fmt(flow.max_spread_pct, 2, " %")
+        limit_tip = ""
+        if flow.cheap_spread_allows:
+            pravidlo = flow.cheap_rule
+            povoleno = fmt(pravidlo.max_spread_usd, 2, " USD")
+            # Kotace jsou platné - bez nich by výjimka nákup nepovolila
+            rozdil = fmt(flow.option_ask - flow.option_bid, 2, " USD")
+            limit_spreadu += f" · ≤ {povoleno}"
+            limit_tip = (
+                f"Spread {fmt(flow.option_spread_pct, 2, ' %')} je nad limitem "
+                f"{flow.max_spread_pct:g} %, nákup je přesto povolen: opce stojí "
+                f"nejvýš {fmt(pravidlo.max_price, 2, ' USD')} a rozdíl BID/ASK {rozdil} "
+                f"nepřesahuje povolených {povoleno} (výjimka pro levné opce)."
+            )
+
         # Sekce Cíl mizí, jakmile hlavní část přestane běžet - po jejím prodeji
         # nebo během uzavírání trhem už cíl nemá co řídit
         cil_mozny = (
@@ -2504,24 +2521,9 @@ class TradingUI:
             "underlying": fmt(flow.underlying_price),
             "quote": f"{fmt(flow.option_bid)} / {fmt(flow.option_ask)}",
             "spread": fmt(flow.option_spread_pct, 2, " %"),
-            # Povoluje-li nákup jen výjimka pro levné opce, uvádí se k limitu
-            # i povolený spread v USD a bublina vysvětlí proč
-            "spread_limit": fmt(flow.max_spread_pct, 2, " %")
-            + (
-                f" · ≤ {flow.cheap_option_max_spread_usd:.2f} USD"
-                if flow.cheap_spread_allows
-                else ""
-            ),
-            "spread_limit_class": "vyjimka-spreadu" if flow.cheap_spread_allows else "",
-            "spread_limit_tip": (
-                f"Spread {flow.option_spread_pct:.2f} % je nad limitem "
-                f"{flow.max_spread_pct:g} %, nákup je přesto povolen: opce stojí "
-                f"nejvýš {flow.cheap_option_max_price:.2f} USD a rozdíl BID/ASK "
-                f"{flow.option_ask - flow.option_bid:.2f} USD nepřesahuje povolených "
-                f"{flow.cheap_option_max_spread_usd:.2f} USD (výjimka pro levné opce)."
-                if flow.cheap_spread_allows
-                else ""
-            ),
+            "spread_limit": limit_spreadu,
+            "spread_limit_class": "vyjimka-spreadu" if limit_tip else "",
+            "spread_limit_tip": limit_tip,
             "exp_profit": fmt(flow.expected_profit),
             "exp_loss": fmt(flow.expected_loss),
             "pnl": pnl_text(pnl, pnl_hruby),
@@ -2571,7 +2573,7 @@ class TradingUI:
         prvotni = "SL (PT se dopočítá)" if t.primary_level == "sl" else "PT (SL se dopočítá)"
         # Výjimka z limitu spreadu pro levné opce - uvádí se jen zapnutá
         levne_opce = ""
-        if t.cheap_option_max_price > 0 and t.cheap_option_max_spread_usd > 0:
+        if t.cheap_option_rule.enabled:
             levne_opce = (
                 f" (do ceny {t.cheap_option_max_price:g} USD "
                 f"i spread {t.cheap_option_max_spread_usd:g} USD)"

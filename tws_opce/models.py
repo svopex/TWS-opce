@@ -430,12 +430,10 @@ class Flow:
     # Je základem stropu odhadu spreadu v přehledu, aby Ztráta na SL vycházela
     # ze stejného stropu jako doporučené množství. None = odhad není znám
     expected_fill_price: float | None = None
-    # Výjimka z limitu spreadu pro levné opce (trading.cheap_option_*):
-    # do cheap_option_max_price USD ceny opce vyhoví spread do
-    # cheap_option_max_spread_usd USD i nad procentním limitem. Neukládá se -
-    # engine hodnoty doplní z konfigurace při zadání i po obnově obchodu
-    cheap_option_max_price: float = 0.0
-    cheap_option_max_spread_usd: float = 0.0
+    # Výjimka z limitu spreadu pro levné opce (trading.cheap_option_*).
+    # Neukládá se - engine ji doplní z konfigurace při zadání i po obnově
+    # obchodu; výchozí pravidlo je vypnuté
+    cheap_rule: calc.CheapOptionRule = field(default_factory=calc.CheapOptionRule)
 
     # Jednotka, ve které obchodník úroveň na opci zadal: True = procento
     # zaplacené prémie. Obchod i engine počítají výhradně s USD na kontrakt,
@@ -676,8 +674,7 @@ class Flow:
             self.option_ask,
             self.max_spread_pct if self.sl_spread_capped else None,
             zaklad,
-            self.cheap_option_max_price,
-            self.cheap_option_max_spread_usd,
+            self.cheap_rule,
         )
 
     def sl_with_pending(self, hodnota: float) -> float:
@@ -923,8 +920,7 @@ class Flow:
             self.option_bid,
             self.option_ask,
             self.max_spread_pct if limit_pct is None else limit_pct,
-            self.cheap_option_max_price,
-            self.cheap_option_max_spread_usd,
+            self.cheap_rule,
         )
 
     @property
@@ -934,16 +930,12 @@ class Flow:
         nad procentním limitem obchodu, ale levná opce jej splní v USD.
         Po nákupu se spread už nehlídá, výjimka pak nic nepovoluje.
         """
-        if not self.state.is_before_entry:
-            return False
         procenta = self.option_spread_pct
-        if procenta is None or procenta <= self.max_spread_pct:
-            return False
-        return calc.cheap_spread_ok(
-            self.option_bid,
-            self.option_ask,
-            self.cheap_option_max_price,
-            self.cheap_option_max_spread_usd,
+        return (
+            self.state.is_before_entry
+            and procenta is not None
+            and procenta > self.max_spread_pct
+            and not self.spread_over_limit()
         )
 
     def touch(self, message: str = "") -> None:

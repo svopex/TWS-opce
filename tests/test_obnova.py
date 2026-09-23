@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.fake_ib import OPTION_CONID
 from tests.zaklad import ZakladSeStavem
-from tws_opce import store
+from tws_opce import calc, store
 from tws_opce.engine import FlowEngine
 from tws_opce.ib_service import PositionInfo, order_ref
 from tws_opce.models import FlowRequest, FlowState
@@ -82,9 +82,8 @@ class TestVyjimkySpreaduPoObnove(ZakladObnovy):
         novy = await self.zaloz_a_restartuj(zmen_konfiguraci)
         obnoveny = next(iter(novy.flows.values()))
 
-        self.assertAlmostEqual(obnoveny.cheap_option_max_price, 0.50)
-        self.assertAlmostEqual(obnoveny.cheap_option_max_spread_usd, 0.03)
-        self.assertNotIn("cheap_option_max_price", store.SAVED_FIELDS)
+        self.assertEqual(obnoveny.cheap_rule, calc.CheapOptionRule(0.50, 0.03))
+        self.assertNotIn("cheap_rule", store.SAVED_FIELDS)
 
 
 class TestUklidPriSelhaniZapisu(ZakladObnovy):

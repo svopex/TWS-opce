@@ -666,7 +666,7 @@ class FlowEngine:
                 ask,
                 self._spread_cap(limit_spreadu),
                 preview.expected_fill_price,
-                *self._cheap_spread_rule(),
+                self.cfg.trading.cheap_option_rule,
             )
 
         # SL buď zadaný uživatelem, nebo dopočtený podle poměru z konfigurace;
@@ -707,7 +707,7 @@ class FlowEngine:
 
         # Spread nad limitem se hlásí jen tehdy, když ho nepokryje ani
         # výjimka pro levné opce - jinak by náhled varoval zbytečně
-        if calc.spread_over_limit(bid, ask, limit_spreadu, *self._cheap_spread_rule()):
+        if calc.spread_over_limit(bid, ask, limit_spreadu, self.cfg.trading.cheap_option_rule):
             preview.warnings.append(
                 f"Aktuální spread {preview.spread_pct:.2f} % překračuje limit "
                 f"{limit_spreadu:g} %."
@@ -1123,7 +1123,7 @@ class FlowEngine:
                 preview.option_ask,
                 self._spread_cap(limit_spreadu),
                 cena,
-                *self._cheap_spread_rule(),
+                self.cfg.trading.cheap_option_rule,
             )
             cena += spread / calc.OPTION_MULTIPLIER / 2.0
         return cena
@@ -1137,15 +1137,6 @@ class FlowEngine:
         po rozšíření spreadu zůstává a vyplnit se může za jakýkoliv.
         """
         return limit_spreadu if self.cfg.trading.cancel_on_spread_breach else None
-
-    def _cheap_spread_rule(self) -> tuple[float, float]:
-        """
-        Výjimka z limitu spreadu pro levné opce jako dvojice (nejvyšší cena
-        opce, povolený spread ASK - BID), obojí v USD za kus. Nuly výjimku
-        vypínají (viz calc.cheap_spread_ok).
-        """
-        trading = self.cfg.trading
-        return trading.cheap_option_max_price, trading.cheap_option_max_spread_usd
 
     def _entry_delta(self, preview: Preview, entry_price: float) -> float | None:
         """
@@ -1476,8 +1467,7 @@ class FlowEngine:
                 # množství - přehled z něj stropuje odhad ztráty na SL
                 expected_fill_price=preview.expected_fill_price,
                 # Výjimka z limitu spreadu pro levné opce podle konfigurace
-                cheap_option_max_price=self.cfg.trading.cheap_option_max_price,
-                cheap_option_max_spread_usd=self.cfg.trading.cheap_option_max_spread_usd,
+                cheap_rule=self.cfg.trading.cheap_option_rule,
                 # Jednotka zadání úrovní si jede s obchodem, aby ji formulář
                 # při načtení obchodu nabídl znovu; totéž platí pro prvotní
                 # úroveň a poměr, kterým se ta druhá dopočítala
@@ -3624,7 +3614,7 @@ class FlowEngine:
     async def _restore_flow(self, flow: Flow, prikazy: dict, pozice: dict) -> None:
         """Obnoví jeden obchod - kontrakty, odběry dat a skutečný stav příkazů."""
         # Výjimka z limitu spreadu se neukládá, platí aktuální konfigurace
-        flow.cheap_option_max_price, flow.cheap_option_max_spread_usd = self._cheap_spread_rule()
+        flow.cheap_rule = self.cfg.trading.cheap_option_rule
         # Kontrakty je nutné znovu ověřit, runtime objekty se neukládají
         flow.underlying_contract = await self.ib.qualify_stock(flow.symbol)
         option, details = await self.ib.qualify_option(
@@ -4050,7 +4040,7 @@ class FlowEngine:
         if flow.state == FlowState.SPREAD_BLOCKED:
             if (
                 trading.rearm_on_spread_ok
-                and self._can_rearm(flow, spread)
+                and self._can_rearm(flow)
                 and self._oer_allows(2, flow, "návrat příkazu do trhu")
             ):
                 return self._place_entry(flow)
@@ -4380,7 +4370,7 @@ class FlowEngine:
         )
         return True
 
-    def _can_rearm(self, flow: Flow, spread: float | None) -> bool:
+    def _can_rearm(self, flow: Flow) -> bool:
         """
         Posoudí, zda lze příkaz vrátit do trhu po zablokování spreadem.
         Spread musí klesnout s rezervou pod limit a od odstranění příkazu
@@ -4390,7 +4380,7 @@ class FlowEngine:
         centech rezervu pod hranicí nemá jak splnit, kolísání pak tlumí
         jen prodleva.
         """
-        if spread is None:
+        if flow.option_spread_pct is None:
             return False
 
         trading = self.cfg.trading
