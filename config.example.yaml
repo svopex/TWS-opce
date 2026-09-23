@@ -246,12 +246,14 @@ trading:
   # 2 = zdvojování (30, 60, 120, 240 … s), 1 = prodleva se nemění.
   rearm_delay_factor: 1.4
 
-  # Počet kontraktů runneru. Runner je část pozice, která se po zapnutí
-  # (tlačítky Runner v monitoringu) prodává samostatným příkazem s vlastním,
-  # zpravidla vzdálenějším cílem; SL sdílí se zbytkem pozice. Tlačítka runneru
-  # se zobrazují jen u obchodů s větším množstvím, než je tato hodnota -
-  # po oddělení runneru musí v hlavní části zbýt alespoň jeden kontrakt.
-  runner_quantity: 1
+  # Velikost runneru v procentech pozice. Runner je část pozice, která se
+  # po zapnutí (tlačítky Runner v monitoringu) prodává samostatným příkazem
+  # s vlastním, zpravidla vzdálenějším cílem; SL sdílí se zbytkem pozice.
+  # Počet kontraktů se z procenta zaokrouhluje dolů, nejméně však na 1 ks:
+  # při 25 % vyjdou z 8 ks dva runnery, ze 4 ks jeden. Tlačítka runneru se
+  # zobrazují jen u obchodů, kterým po oddělení runneru zbude v hlavní části
+  # alespoň jeden kontrakt. Povolený rozsah je 0 až 100 (krajní hodnoty ne).
+  runner_quantity_pct: 25.0
 
   # Co se má stát se strikem, když v monitoringu posunete cíl obchodu
   # tlačítky s násobky (1×, 1,5×, 2× …):

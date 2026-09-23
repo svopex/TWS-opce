@@ -308,8 +308,9 @@ projít.
    **Runner.** Řada tlačítek *Nepoužít runner* / *1×* … *3×* s polem
    **Runner od [ks]** — tatáž volba jako nad tabulkou dialogu načtení pozic
    (výchozí `import.runner_multiple` a `import.runner_min_quantity`).
-   Zvolený násobek zapne u založeného obchodu runner (`trading.runner_quantity`
-   kusů) s cílem na tomto násobku původní vzdálenosti PT od vstupu — přesně
+   Zvolený násobek zapne u založeného obchodu runner (podíl pozice podle
+   `trading.runner_quantity_pct`) s cílem na tomto násobku původní
+   vzdálenosti PT od vstupu — přesně
    jako tlačítka runneru v řádku přehledu — ale jen má-li obchod **alespoň**
    tolik kontraktů, kolik stojí v poli *Runner od*. Menší obchod běží bez
    runneru a dostane ho, až na něj přepočtem doroste; naopak obchod, jehož
@@ -496,8 +497,9 @@ projít.
    stop na break even se vypisuje jako `3.00 (BE)`.
 
    U obchodů, které drží více kontraktů, než kolik jich zabírá runner
-   (`trading.runner_quantity`, výchozí 1), je vedle tlačítek cíle i sekce
-   **Runner**. Runner je část pozice prodávaná samostatným příkazem
+   (`trading.runner_quantity_pct` procent pozice, výchozí 25 % — z 8 ks tedy
+   2 ks; zaokrouhluje se dolů, nejméně však na 1 ks), je vedle tlačítek cíle
+   i sekce **Runner**. Runner je část pozice prodávaná samostatným příkazem
    s vlastním cílem — kliknutím na násobek se zapne (nebo se mu cíl změní),
    *Zrušit runner* ho vypne a prodej se sloučí zpět do jednoho příkazu.
    SL přebírá runner při zapnutí od zbytku pozice; vlastní dvojicí tlačítek
@@ -1037,7 +1039,7 @@ pole nebo výchozí volby runneru; v jednotlivém řádku jde runner přesto zap
 ručně. Hodnota v poli platí jen pro otevřený dialog, do konfigurace se nezapisuje.
 
 Zvolený násobek zapne u založeného obchodu runner (počet kusů podle
-`trading.runner_quantity`) s cílem na tomto násobku původní vzdálenosti PT od
+`trading.runner_quantity_pct`) s cílem na tomto násobku původní vzdálenosti PT od
 vstupu — přesně jako tlačítka runneru v řádku přehledu. Zapíná ho engine při
 založení, takže před nákupem si obchod volbu jen zapamatuje a zajišťovací
 příkazy se po nákupu založí rovnou rozdělené. **Volbu i minimum si obchod

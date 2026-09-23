@@ -1540,15 +1540,17 @@ class FlowEngine:
         Srovná runner čekajícího obchodu s automatickou volbou a aktuálním
         množstvím - při založení i po každém přepočtu množství (kdy je slovo
         pro log). Kladný násobek runner zapíná pozici s množstvím alespoň
-        auto_runner_min_quantity a víc kontraktů, než runner sám zabírá; nula
-        ho nechává vypnutý; obchod bez volby se nemění. Důvod nezapnutého
-        chtěného runneru zůstává v runner_skip_reason pro rozhraní.
+        auto_runner_min_quantity a víc kontraktů, než runner sám zabírá
+        (trading.runner_quantity_pct procent pozice); nula ho nechává
+        vypnutý; obchod bez volby se nemění. Důvod nezapnutého chtěného
+        runneru zůstává v runner_skip_reason pro rozhraní.
         """
         nasobek = flow.auto_runner_multiple
         if nasobek is None:
             return
         minimum = flow.auto_runner_min_quantity or 1
-        runner_q = self.cfg.trading.runner_quantity
+        # Velikost runneru je procento pozice, takže se s množstvím obchodu mění
+        runner_q = self.cfg.trading.runner_kusy(flow.quantity)
 
         # Proč runner nebude; None znamená zapnout
         if not nasobek:
@@ -2369,7 +2371,7 @@ class FlowEngine:
         """
         Zapne runner, nebo změní jeho cíl.
 
-        Runner je část pozice (počet kusů podle trading.runner_quantity),
+        Runner je část pozice (procento podle trading.runner_quantity_pct),
         která se prodává samostatným příkazem s vlastním cílem; SL sdílí
         se zbytkem pozice. Cíl runneru se zadává jako násobek původní
         vzdálenosti PT od vstupu.
@@ -2391,9 +2393,13 @@ class FlowEngine:
         if not flow.runner_active and flow.main_close_requested:
             raise ValueError("Probíhá uzavírání pozice, runner teď nelze zapnout.")
 
-        runner_q = flow.runner_quantity if flow.runner_active else self.cfg.trading.runner_quantity
         # Rozhoduje skutečně držené množství - dříve prodané runnery se odečítají
         total = flow.held_quantity
+        # Běžící runner si nechává svůj počet kusů, nový se počítá
+        # jako procento právě drženého množství
+        runner_q = (
+            flow.runner_quantity if flow.runner_active else self.cfg.trading.runner_kusy(total)
+        )
         if total <= runner_q:
             raise ValueError(
                 f"Runner ({runner_q} ks) vyžaduje obchod s větším množstvím než {runner_q} kontrakt(y)."

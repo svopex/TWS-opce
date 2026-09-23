@@ -114,10 +114,12 @@ class TradingConfig:
     # Násobek prodlevy při každém dalším odstranění kvůli spreadu
     # (při 1,5 a základu 30 s: 30, 45, 67,5, 101 … s). 1 = prodleva se nemění
     rearm_delay_factor: float = 1.5
-    # Počet kontraktů runneru - části pozice, která se po aktivaci runneru
-    # prodává samostatným příkazem s vlastním (vzdálenějším) cílem.
-    # Runner lze zapnout jen u obchodu s větším množstvím, než je tato hodnota.
-    runner_quantity: int = 1
+    # Velikost runneru v procentech pozice - runner je část pozice, která se
+    # po aktivaci prodává samostatným příkazem s vlastním (vzdálenějším) cílem.
+    # Počet kontraktů z procenta počítá runner_kusy (z 8 ks při 25 % vyjdou
+    # 2 ks). Runner lze zapnout jen u obchodu, kterému po jeho odečtení zbude
+    # v hlavní části aspoň jeden kontrakt.
+    runner_quantity_pct: float = 25.0
     # Chování při změně PT u obchodu, který ještě nenakoupil:
     #   keep        = ponechat původní strike, mění se jen cílová úroveň
     #   recalculate = přepočítat strike podle nového PT a příkaz přezadat
@@ -174,6 +176,19 @@ class TradingConfig:
     # Čas zavření burzy ve formátu HH:MM (v časové zóně burzy).
     # Zkrácené obchodní dny (např. před svátky) aplikace nezná.
     exchange_close_time: str = "16:00"
+
+    def runner_kusy(self, mnozstvi: int) -> int:
+        """
+        Počet kontraktů runneru pro pozici o daném množství.
+
+        Procento runner_quantity_pct se zaokrouhluje dolů, nejméně však
+        na jeden kontrakt: z 8 ks při 25 % vyjdou 2 ks, ze 3 ks jeden.
+        Shora se výsledek neomezuje - obchod, kterému by na hlavní část
+        nic nezbylo, runner prostě nedostane (rozhoduje o tom engine).
+        """
+        if mnozstvi < 1:
+            return 0
+        return max(1, int(mnozstvi * self.runner_quantity_pct / 100))
 
 
 @dataclass
@@ -445,8 +460,13 @@ def validate_config(cfg: AppConfig) -> None:
             f"trading.exit_order_type musí být jedna z {EXIT_ORDER_TYPES}, "
             f"nalezeno '{cfg.trading.exit_order_type}'"
         )
-    if cfg.trading.runner_quantity < 1:
-        problems.append("trading.runner_quantity musí být alespoň 1")
+    # Nula i sto procent runner fakticky vypínají (hlavní části by nezbyl
+    # žádný kontrakt), záporná hodnota nedává smysl
+    if not 0 < cfg.trading.runner_quantity_pct < 100:
+        problems.append(
+            "trading.runner_quantity_pct musí být v intervalu (0, 100) - "
+            "po odečtení runneru musí hlavní části zbýt aspoň jeden kontrakt"
+        )
     # Záporná prodleva ani záporný limit OER nedávají smysl; nula limitu
     # hlídání OER vypíná
     if cfg.trading.rearm_delay_max_sec < 0:

@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests.fake_ib import UNDERLYING_CONID
 from tests.zaklad import ZakladEnginu
 from tws_opce import calc, store
+from tws_opce.config import AppConfig, validate_config
 from tws_opce.engine import FlowEngine
 from tws_opce.models import FlowRequest, FlowState
 
@@ -1480,7 +1481,8 @@ class TestRunner(ZakladTestu):
         self.assertAlmostEqual(flow.unrealized_pnl, -360.0)
 
     async def test_velikost_runneru_z_konfigurace(self):
-        self.cfg.trading.runner_quantity = 2
+        # 40 % z pěti kontraktů (zaokrouhleno dolů) dává runner o 2 ks
+        self.cfg.trading.runner_quantity_pct = 40.0
         flow = await self.zaloz_call(quantity=5)
         await self.engine.set_runner(flow.id, 2.0)
         await self.nakup(flow, 5)
@@ -1489,6 +1491,25 @@ class TestRunner(ZakladTestu):
         runner = next(t for t in self.ib.placed if t.order.orderRef.endswith(":runner"))
         self.assertEqual(int(hlavni.order.totalQuantity), 3)
         self.assertEqual(int(runner.order.totalQuantity), 2)
+
+    async def test_velikost_runneru_roste_s_pozici(self):
+        # Výchozích 25 % dává z osmi kontraktů runner o 2 ks
+        flow = await self.zaloz_call(quantity=8)
+        await self.engine.set_runner(flow.id, 2.0)
+        self.assertEqual(flow.runner_quantity, 2)
+
+    async def test_velikost_runneru_je_nejmene_jeden_kontrakt(self):
+        # 25 % ze tří kontraktů je po zaokrouhlení dolů nula - runner
+        # přesto dostane jeden kontrakt
+        flow = await self.zaloz_call(quantity=3)
+        await self.engine.set_runner(flow.id, 2.0)
+        self.assertEqual(flow.runner_quantity, 1)
+
+    async def test_runner_nelze_zapnout_na_jediny_kontrakt(self):
+        # Runneru by nezbyl protějšek v hlavní části
+        flow = await self.zaloz_call(quantity=1)
+        with self.assertRaises(ValueError):
+            await self.engine.set_runner(flow.id, 2.0)
 
     async def test_zruseni_flow_rusi_i_runner(self):
         flow = await self.zaloz_call(quantity=3)
@@ -3826,6 +3847,35 @@ class TestPrubeznehoPrepoctu(ZakladPrepoctu):
         self.assertLess(flow.quantity, 5)
         self.assertEqual(self.ib.placed[0].order.totalQuantity, flow.quantity)
         self.assertEqual(self.ib.oer.messages, 2)
+
+
+class TestProcentaRunneru(unittest.TestCase):
+    """Přepočet nastaveného procenta na kontrakty runneru a jeho validace."""
+
+    def setUp(self) -> None:
+        self.cfg = AppConfig()
+
+    def test_procento_se_zaokrouhluje_dolu_nejmene_na_kontrakt(self):
+        # Výchozích 25 %: z 8 ks dva runnery, ze 4 ks jeden, z 10 ks dva
+        # (2,5 dolů); z malé pozice vyjde minimum jeden kontrakt
+        for mnozstvi, kusy in ((1, 1), (2, 1), (3, 1), (4, 1), (8, 2), (10, 2), (12, 3)):
+            self.assertEqual(self.cfg.trading.runner_kusy(mnozstvi), kusy, mnozstvi)
+
+    def test_jine_procento_deli_pozici_jinak(self):
+        self.cfg.trading.runner_quantity_pct = 50.0
+        self.assertEqual(self.cfg.trading.runner_kusy(8), 4)
+        self.assertEqual(self.cfg.trading.runner_kusy(3), 1)
+
+    def test_prazdna_pozice_nema_runner(self):
+        self.assertEqual(self.cfg.trading.runner_kusy(0), 0)
+
+    def test_procento_mimo_rozsah_neprojde(self):
+        # Nula i sto procent runner fakticky vypínají
+        for hodnota in (0, 100, -5, 150):
+            self.cfg.trading.runner_quantity_pct = hodnota
+            with self.assertRaises(ValueError) as chyba:
+                validate_config(self.cfg)
+            self.assertIn("trading.runner_quantity_pct", str(chyba.exception))
 
 
 if __name__ == "__main__":

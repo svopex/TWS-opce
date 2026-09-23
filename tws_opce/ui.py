@@ -795,7 +795,8 @@ class TradingUI:
                     self.runner_buttons = widgets.tlacitka_runneru(
                         self._nastav_runner,
                         "Runner je část pozice "
-                        f"({self.cfg.trading.runner_quantity} ks podle konfigurace) "
+                        f"({self.cfg.trading.runner_quantity_pct:g} % kontraktů podle "
+                        "konfigurace, zaokrouhleno dolů, nejméně 1 ks) "
                         "s vlastním, vzdálenějším cílem na zvoleném násobku původní "
                         "vzdálenosti PT od vstupu. Zapne se při založení obchodu, má-li "
                         "obchod alespoň tolik kontraktů, kolik je v poli Runner od; "
@@ -2414,8 +2415,12 @@ class TradingUI:
                 aktivni_runner_sl = "be"
             elif abs(flow.runner_sl - zaklad_sl) < 0.005:
                 aktivni_runner_sl = "puvodni"
+        # Velikost runneru: u běžícího jeho skutečné kusy, jinak procento
+        # drženého množství podle konfigurace
         runner_velikost = (
-            flow.runner_quantity if flow.runner_active else self.cfg.trading.runner_quantity
+            flow.runner_quantity
+            if flow.runner_active
+            else self.cfg.trading.runner_kusy(flow.held_quantity)
         )
         # Sekce Runner mizí, jakmile přestane dávat smysl: runner je prodaný,
         # právě se uzavírá, nebo se uzavírá pozice a runner ještě nebyl zapnut

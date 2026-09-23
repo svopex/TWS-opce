@@ -1096,7 +1096,8 @@ class TestCastecnehoProdejeNaPt(ZakladRezimu):
     async def test_castecny_prodej_runneru(self):
         flow = await self.zaloz(False, False, 10.0, 10.0, quantity=3)
         await self.nakup(flow, 3, 3.00)
-        self.cfg.trading.runner_quantity = 2
+        # 70 % ze tří kontraktů (zaokrouhleno dolů) dává runner o 2 ks
+        self.cfg.trading.runner_quantity_pct = 70.0
         # Runner o 2 ks lze oddělit jen z pozice 3 ks - zbude 1 ks v hlavní části
         await self.engine.set_runner(flow.id, 2.0)
         self.ib.fill(flow.runner_trade, 1, 3.20, status="Submitted")
@@ -1212,7 +1213,8 @@ class TestCastecnehoVyplneniZaBehu(ZakladRezimu):
     async def test_castecny_prodej_runneru_zmensi_drzene_mnozstvi(self):
         flow = await self.zaloz(False, False, 10.0, 10.0, quantity=4)
         await self.nakup(flow, 4, 3.00)
-        self.cfg.trading.runner_quantity = 2
+        # Polovina ze čtyř kontraktů dává runner o 2 ks
+        self.cfg.trading.runner_quantity_pct = 50.0
         await self.engine.set_runner(flow.id, 2.0)
         # Runner prodal 1 ze 2 ks a dál běží
         self.ib.fill(flow.runner_trade, 1, 3.30, status="Submitted")
@@ -1476,7 +1478,8 @@ class TestSoubehuPriUzavirani(ZakladRezimu):
         """Totéž u runneru - trhem jde jen jeho neprodaný zbytek."""
         flow = await self.zaloz(False, False, 10.0, 10.0, quantity=4)
         await self.nakup(flow, 4, 3.00)
-        self.cfg.trading.runner_quantity = 2
+        # Polovina ze čtyř kontraktů dává runner o 2 ks
+        self.cfg.trading.runner_quantity_pct = 50.0
         await self.engine.set_runner(flow.id, 2.0)
         await self.engine.close_runner(flow.id)
         self.ib.fill(flow.runner_trade, 1, 3.30)
