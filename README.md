@@ -305,12 +305,13 @@ projít.
    a zpět (3 → 4 → 3 ks). Přepočet po otevření burzy pásmem ani limitem
    OER neprochází, proběhne jen jednou.
 
-   **Runner.** Řada tlačítek *Nepoužít runner* / *1×* … *3×* s polem
-   **Runner od [ks]** — tatáž volba jako nad tabulkou dialogu načtení pozic
-   (výchozí `import.runner_multiple` a `import.runner_min_quantity`).
-   Zvolený násobek zapne u založeného obchodu runner (podíl pozice podle
-   `trading.runner_quantity_pct`) s cílem na tomto násobku původní
-   vzdálenosti PT od vstupu — přesně jako tlačítka runneru v řádku přehledu —
+   **Runner.** Řada tlačítek *Nepoužít runner* / *1×* … *3×* s poli
+   **Runner [%]** a **Runner od [ks]** — tatáž volba jako nad tabulkou
+   dialogu načtení pozic (výchozí `import.runner_multiple`,
+   `trading.runner_quantity_pct` a `import.runner_min_quantity`).
+   Zvolený násobek zapne u založeného obchodu runner o velikosti z pole
+   *Runner [%]* s cílem na tomto násobku původní vzdálenosti PT od vstupu
+   — přesně jako tlačítka runneru v řádku přehledu —
    ale jen má-li obchod **alespoň** tolik kontraktů, kolik stojí v poli
    *Runner od*. Menší obchod běží bez runneru a dostane ho, až na něj
    přepočtem doroste; naopak obchod, jehož množství přepočtem klesne pod
@@ -348,7 +349,8 @@ projít.
    kliknutý. Vrací se **celé zadání**: ticker, vstup, obě úrovně, množství,
    limit spreadu, oba přepínače režimu PT a SL (včetně jednotky *% prémie*),
    kompenzace spreadu, volba prvotní úrovně *Zadává se SL / PT*, pole
-   *RRR (PT:SL)*, volba runneru s minimem i přepínač průběžného přepočtu
+   *RRR (PT:SL)*, volba runneru s procentem i minimem a přepínač
+   průběžného přepočtu
    s odstupem. Prvotní úroveň a poměr se z uložených čísel dopočítat nedají
    — obě úrovně se ukládají stejně a poměr by po posunu cíle násobkem vyšel
    jinak —, proto si je obchod pamatuje ze zadání. Obchody z verzí, které je
@@ -497,9 +499,9 @@ projít.
    stop na break even se vypisuje jako `3.00 (BE)`.
 
    U obchodů, které drží více kontraktů, než kolik jich zabírá runner
-   (`trading.runner_quantity_pct` procent pozice, výchozí 25 % — z 8 ks tedy
-   2 ks; zaokrouhluje se dolů, nejméně však na 1 ks), je vedle tlačítek cíle
-   i sekce **Runner**. Runner je část pozice prodávaná samostatným příkazem
+   (procento z pole *Runner [%]* při zadání, výchozí `trading.runner_quantity_pct`
+   = 25 % — z 8 ks tedy 2 ks; zaokrouhluje se dolů, nejméně však na 1 ks),
+   je vedle tlačítek cíle i sekce **Runner**. Runner je část pozice prodávaná samostatným příkazem
    s vlastním cílem — kliknutím na násobek se zapne (nebo se mu cíl změní),
    *Zrušit runner* ho vypne a prodej se sloučí zpět do jednoho příkazu.
    SL přebírá runner při zapnutí od zbytku pozice; vlastní dvojicí tlačítek
@@ -1030,16 +1032,19 @@ teprve čeká před nákupem nebo už skončil), takže stačí nastavit ji glob
 a jednotlivé pozice pak jen doladit. Výchozí stav určuje
 `import.runner_multiple` (0 = *Nepoužít runner*).
 
-Runner ale dostanou jen dost velké pozice: pole **Runner od [ks]** vpravo od
-tlačítek říká, kolik kontraktů musí řádek mít *alespoň*, aby se mu volba
+Jak velká část pozice runnerem poběží, říká pole **Runner [%]** vpravo od
+tlačítek (výchozí `trading.runner_quantity_pct`): platí pro celou dávku
+a počet kusů z něj vyjde až při zapnutí runneru — zaokrouhleně dolů, nejméně
+1 ks. Runner ale dostanou jen dost velké pozice: pole **Runner od [ks]**
+říká, kolik kontraktů musí řádek mít *alespoň*, aby se mu volba
 zapsala — s výchozí trojkou (`import.runner_min_quantity`) tedy runner
 připadne pozicím se 3 a více kontrakty, menší zůstanou na *Bez*. Rozdělení se
 srovná při každém přepočtu, po ruční změně množství v řádku i po změně tohoto
 pole nebo výchozí volby runneru; v jednotlivém řádku jde runner přesto zapnout
 ručně. Hodnota v poli platí jen pro otevřený dialog, do konfigurace se nezapisuje.
 
-Zvolený násobek zapne u založeného obchodu runner (počet kusů podle
-`trading.runner_quantity_pct`) s cílem na tomto násobku původní vzdálenosti PT od
+Zvolený násobek zapne u založeného obchodu runner (počet kusů podle pole
+*Runner [%]*) s cílem na tomto násobku původní vzdálenosti PT od
 vstupu — přesně jako tlačítka runneru v řádku přehledu. Zapíná ho engine při
 založení, takže před nákupem si obchod volbu jen zapamatuje a zajišťovací
 příkazy se po nákupu založí rovnou rozdělené. **Volbu i minimum si obchod

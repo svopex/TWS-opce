@@ -733,6 +733,18 @@ body.body--dark .log-radek {
   width: 120px;
 }
 
+/* Dvojice polí runneru (procento a minimum) stojí vedle sebe u pravého
+   okraje - k okraji je odsune první z nich, druhé si drží jen odstup */
+.prepinace .pole-runner-pct {
+  margin-left: auto;
+  width: 92px;
+}
+
+.prepinace .blok-runner .pole-runner-pct + .pole-runner-min {
+  margin-left: 0;
+  width: 108px;
+}
+
 /* Bloky přepočtu jdou za sebou - druhý (průběžný) už linku nad sebou
    nepotřebuje, patří k témuž tématu jako první */
 .prepinace .blok-prepoctu + .blok-prepoctu {
@@ -892,6 +904,12 @@ body.body--dark .popisek-volby-runner {
 .dialog-import .pole-runner-min {
   margin-left: 10px;
   width: 110px;
+}
+
+/* Pole s velikostí runneru v procentech stojí hned před ním */
+.dialog-import .pole-runner-pct {
+  margin-left: 10px;
+  width: 100px;
 }
 
 /* Pole s prodlevou přepočtu po otevření - stejně úzké jako pole runneru */

@@ -254,7 +254,9 @@ trading:
   # zobrazují jen u obchodů, kterým po oddělení runneru zbude v hlavní části
   # alespoň jeden kontrakt. Povolený rozsah je 0 až 100 (krajní hodnoty ne) -
   # runner se nevypíná nulou, ale volbou "Nepoužít runner"
-  # (import.runner_multiple: 0).
+  # (import.runner_multiple: 0). Hodnota předvyplňuje pole "Runner [%]"
+  # ve formuláři zadání i v dialogu načtení pozic, kde ji lze pro jednotlivé
+  # zadání přepsat; obchod si zvolené procento odnáší s sebou.
   runner_quantity_pct: 25.0
 
   # Co se má stát se strikem, když v monitoringu posunete cíl obchodu

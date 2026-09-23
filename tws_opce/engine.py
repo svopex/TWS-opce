@@ -1471,6 +1471,7 @@ class FlowEngine:
                 # teď i po každém přepočtu množství
                 auto_runner_multiple=request.runner_multiple,
                 auto_runner_min_quantity=request.runner_min_quantity,
+                runner_quantity_pct=request.runner_quantity_pct,
                 # Z náhledu, ne ze zadání - ten už má doplněnou hodnotu
                 # z konfigurace pro případ nevyplněného pole RRR
                 sl_to_pt_ratio=preview.sl_to_pt_ratio,
@@ -1535,13 +1536,22 @@ class FlowEngine:
             self._notify()
             return flow
 
+    def _runner_pct(self, flow: Flow) -> float:
+        """
+        Procento pozice pro velikost runneru: přednost má volba ze zadání
+        obchodu (pole Runner [%]), jinak platí trading.runner_quantity_pct.
+        """
+        if flow.runner_quantity_pct is not None:
+            return flow.runner_quantity_pct
+        return self.cfg.trading.runner_quantity_pct
+
     def _sync_runner(self, flow: Flow, kdy: str) -> None:
         """
         Srovná runner čekajícího obchodu s automatickou volbou a aktuálním
         množstvím - při založení i po každém přepočtu množství (kdy je slovo
         pro log). Kladný násobek runner zapíná pozici s množstvím alespoň
         auto_runner_min_quantity a víc kontraktů, než runner sám zabírá
-        (trading.runner_quantity_pct procent pozice); nula ho nechává
+        (procento pozice ze zadání, jinak z konfigurace); nula ho nechává
         vypnutý; obchod bez volby se nemění. Důvod nezapnutého chtěného
         runneru zůstává v runner_skip_reason pro rozhraní.
         """
@@ -1550,7 +1560,7 @@ class FlowEngine:
             return
         minimum = flow.auto_runner_min_quantity or 1
         # Velikost runneru je procento pozice, takže se s množstvím obchodu mění
-        runner_q = calc.runner_quantity(flow.quantity, self.cfg.trading.runner_quantity_pct)
+        runner_q = calc.runner_quantity(flow.quantity, self._runner_pct(flow))
 
         # Proč runner nebude; None znamená zapnout
         if not nasobek:
@@ -2370,12 +2380,13 @@ class FlowEngine:
     def runner_size(self, flow: Flow) -> int:
         """
         Kolik kontraktů u obchodu runner zabírá: běžící si drží svůj počet,
-        nový vyjde jako procento drženého množství (trading.runner_quantity_pct).
-        Podle téhož čísla rozhoduje rozhraní, zda sekci Runner vůbec ukázat.
+        nový vyjde jako procento drženého množství (pole Runner [%] ze zadání,
+        jinak trading.runner_quantity_pct). Podle téhož čísla rozhoduje
+        rozhraní, zda sekci Runner vůbec ukázat.
         """
         if flow.runner_active:
             return flow.runner_quantity
-        return calc.runner_quantity(flow.held_quantity, self.cfg.trading.runner_quantity_pct)
+        return calc.runner_quantity(flow.held_quantity, self._runner_pct(flow))
 
     async def set_runner(self, flow_id: str, multiple: float) -> Flow:
         """

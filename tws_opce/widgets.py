@@ -34,11 +34,16 @@ NAPOVEDA_PRODLEVY = (
     "hodnota je import.refresh_after_open_sec z konfigurace."
 )
 # Společný začátek nápovědy tlačítek runneru ve formuláři zadání i v dialogu
-# načtení pozic - {procento} doplní trading.runner_quantity_pct
+# načtení pozic
 NAPOVEDA_RUNNER_VELIKOST = (
-    "Runner je část pozice ({procento:g} % kontraktů podle konfigurace, "
-    "zaokrouhleno dolů, nejméně 1 ks) s vlastním, vzdálenějším cílem "
-    "na zvoleném násobku původní vzdálenosti PT od vstupu."
+    "Runner je část pozice (podíl kontraktů z pole Runner [%], zaokrouhleno "
+    "dolů, nejméně 1 ks) s vlastním, vzdálenějším cílem na zvoleném násobku "
+    "původní vzdálenosti PT od vstupu."
+)
+NAPOVEDA_RUNNER_PCT = (
+    "Kolik procent kontraktů pozice připadne runnerovi - zaokrouhluje se "
+    "dolů, nejméně na 1 ks (z 8 ks při 25 % vyjdou 2 ks). Prázdné pole "
+    "platí jako výchozí hodnota trading.runner_quantity_pct z konfigurace."
 )
 NAPOVEDA_RUNNER_MIN = (
     "Runner dostane pozice s alespoň tímto počtem kontraktů (včetně); menší "
@@ -113,6 +118,16 @@ def zvyrazni_tlacitka(tlacitka: dict[str, Any], vybrane: str) -> None:
             tlacitko.props(add="color=orange-8", remove="outline")
         else:
             tlacitko.props(add="outline color=grey-7")
+
+
+def pole_runner_pct(hodnota: float, trida: str) -> Any:
+    """Pole „Runner [%]" - jak velká část pozice připadne runnerovi."""
+    return (
+        ui.number("Runner [%]", value=hodnota, format="%.0f", step=5, min=1, max=99)
+        .classes(trida)
+        .props("outlined dense")
+        .tooltip(NAPOVEDA_RUNNER_PCT)
+    )
 
 
 def pole_runner_min(hodnota: int, trida: str) -> Any:

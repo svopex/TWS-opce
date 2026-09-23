@@ -1499,6 +1499,26 @@ class TestRunner(ZakladTestu):
         await self.engine.set_runner(flow.id, 2.0)
         self.assertEqual(flow.runner_quantity, 1)
 
+    async def test_procento_ze_zadani_prebiji_konfiguraci(self):
+        # Pole Runner [%] v zadání: 50 % z 8 ks dává runner o 4 ks,
+        # ačkoli konfigurace drží výchozích 25 %
+        flow = await self.zaloz_call(quantity=8, runner_quantity_pct=50.0)
+        await self.engine.set_runner(flow.id, 2.0)
+        self.assertEqual(flow.runner_quantity, 4)
+
+    async def test_procento_ze_zadani_plati_i_pro_automaticky_runner(self):
+        flow = await self.zaloz_call(
+            quantity=8,
+            runner_multiple=2.0,
+            runner_min_quantity=3,
+            runner_quantity_pct=50.0,
+        )
+        self.assertTrue(flow.runner_active)
+        self.assertEqual(flow.runner_quantity, 4)
+        # Volbu si obchod nese s sebou i do uloženého stavu
+        obnoveny = store.dict_to_flow(store.flow_to_dict(flow))
+        self.assertEqual(obnoveny.runner_quantity_pct, 50.0)
+
     async def test_runner_nelze_zapnout_na_jediny_kontrakt(self):
         # Runneru by nezbyl protějšek v hlavní části
         flow = await self.zaloz_call(quantity=1)

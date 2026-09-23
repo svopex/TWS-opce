@@ -120,6 +120,8 @@ class TradingConfig:
     # vyjdou 2 ks). Runner lze zapnout jen u obchodu, kterému po jeho odečtení
     # zbude v hlavní části aspoň jeden kontrakt. Runner se nevypíná nulou -
     # k tomu slouží volba "Nepoužít runner" (import.runner_multiple: 0).
+    # Předvyplňuje pole "Runner [%]" ve formuláři zadání i v dialogu načtení
+    # pozic; obchod si procento z pole odnáší s sebou pro pozdější přepočty
     runner_quantity_pct: float = 25.0
     # Chování při změně PT u obchodu, který ještě nenakoupil:
     #   keep        = ponechat původní strike, mění se jen cílová úroveň

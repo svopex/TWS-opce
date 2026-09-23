@@ -369,6 +369,9 @@ class FlowRequest:
     # Nejmenší množství (včetně), od kterého obchod runner dostane; menší
     # pozice běží bez něj. None = bez omezení - viz Flow.auto_runner_min_quantity
     runner_min_quantity: int | None = None
+    # Velikost runneru v procentech pozice. None = převzít výchozí hodnotu
+    # trading.runner_quantity_pct - viz Flow.runner_quantity_pct
+    runner_quantity_pct: float | None = None
     # Zamýšlený směr obchodu ('C' = long, 'P' = short), zná-li jej zadavatel
     # nezávisle na úrovních - hromadný import jej čte ze souboru (cíl pod
     # vstupem = short). Jsou-li PT i SL zadané na opci, z čísel se směr
@@ -465,6 +468,10 @@ class Flow:
     # ji dostane při načtení ze zapnutého runneru
     auto_runner_multiple: float | None = None
     auto_runner_min_quantity: int | None = None
+    # Velikost runneru v procentech pozice ze zadání (pole Runner [%]).
+    # Podle ní se počítá počet kusů při zapnutí runneru i po každém přepočtu
+    # množství. None = použít trading.runner_quantity_pct z konfigurace
+    runner_quantity_pct: float | None = None
     # Proč chtěný runner zapnutý není (málo kontraktů) - živý údaj pro
     # rozhraní, který engine přepisuje při každém srovnání runneru. None,
     # když runner běží nebo není chtěný. Neukládá se, dopočítá se znovu
@@ -544,9 +551,9 @@ class Flow:
     # Runner - část pozice prodávaná samostatným příkazem s vlastním cílem.
     # None v runner_profit_target znamená, že runner není aktivní.
     runner_profit_target: float | None = None
-    # Počet kusů runneru: při zapnutí se spočítá z procenta v konfiguraci
-    # (trading.runner_quantity_pct) a dál už je pevný - obchod si nese kusy,
-    # se kterými má příkazy v trhu, ne procento
+    # Počet kusů runneru: při zapnutí se spočítá z procenta obchodu
+    # (runner_quantity_pct, jinak trading.runner_quantity_pct) a dál už je
+    # pevný - obchod si nese kusy, se kterými má příkazy v trhu, ne procento
     runner_quantity: int = 0
     # Vlastní SL runneru - při zapnutí přebírá SL obchodu a dál se přepíná
     # nezávisle na hlavní části (počáteční SL / break even)

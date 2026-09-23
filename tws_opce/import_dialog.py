@@ -197,6 +197,7 @@ class ImportDialog:
         # Pole s nejmenším množstvím, od kterého se runner nastavuje. Vzniká
         # až s vykresleným dialogem, do té doby platí hodnota z konfigurace
         self.runner_min_input: Any = None
+        self.runner_pct_input: Any = None
         # Přepínač a prodleva přepočtu po otevření burzy - také vznikají až
         # s vykresleným dialogem, do té doby platí konfigurace
         self.refresh_checkbox: Any = None
@@ -484,14 +485,18 @@ class ImportDialog:
             napoveda = (
                 "Výchozí nastavení runneru pro všechny načtené pozice - přepíše "
                 "volbu ve sloupci Runner, kde ji lze u každé pozice doladit zvlášť. "
-                + widgets.NAPOVEDA_RUNNER_VELIKOST.format(
-                    procento=self.cfg.trading.runner_quantity_pct
-                )
+                + widgets.NAPOVEDA_RUNNER_VELIKOST
                 + " Runner dostanou jen pozice s množstvím alespoň takovým, jaké je "
                 "v poli vpravo; menší zůstanou na volbě Bez."
             )
             self.runner_buttons = widgets.tlacitka_runneru(
                 self._nastav_runner, napoveda, self.runner_value
+            )
+            # Velikost runneru pro celou dávku; výchozí hodnota je
+            # z konfigurace. Počet kusů z procenta vyjde až při zapnutí
+            # runneru, takže se řádky přepočítávat nemusí
+            self.runner_pct_input = widgets.pole_runner_pct(
+                self.cfg.trading.runner_quantity_pct, "pole pole-runner-pct"
             )
             # Nejmenší velikost pozice, které se runner nastaví. Výchozí
             # hodnota je z konfigurace, změna přerozdělí runnery ve všech
@@ -838,6 +843,20 @@ class ImportDialog:
         if hodnota is None or hodnota < 1:
             return self.cfg.import_.runner_min_quantity
         return int(hodnota)
+
+    def _runner_pct(self) -> float | None:
+        """
+        Velikost runneru v procentech pozice pro celou dávku. Prázdné nebo
+        nesmyslné pole vrací None - obchod si pak vezme výchozí
+        trading.runner_quantity_pct. Stoprocentní runner by hlavní části
+        nenechal jediný kontrakt.
+        """
+        hodnota = self._cislo(
+            self.runner_pct_input.value if self.runner_pct_input is not None else None
+        )
+        if hodnota is None or not 0 < hodnota < 100:
+            return None
+        return float(hodnota)
 
     def _runner_pro_radek(self, radek: RadekPozice) -> str:
         """
@@ -1729,6 +1748,8 @@ class ImportDialog:
         # Průběžný přepočet platí i pro naplánované zadání - běží až od
         # dalšího odstupu po založení, čísla dialogu tedy nepřepisuje hned
         interval_sec = self._refresh_interval_sec()
+        # Velikost runneru platí pro celou dávku stejně jako volba a minimum
+        runner_pct = self._runner_pct()
         # Od kdy engine při zadání prochází svíčky podkladu, zda už
         # nepřekročil vstup (import.entry_cross_check); None = nekontrolovat
         svicky_od = self.engine.entry_cross_start()
@@ -1782,6 +1803,7 @@ class ImportDialog:
                     # přepočtu množství, podle volby a minima z dialogu
                     runner_multiple=nasobek_runneru,
                     runner_min_quantity=minimum_runneru,
+                    runner_quantity_pct=runner_pct,
                     entry_cross_since=svicky_od,
                     # Jediná volba cíle určuje režim PT i SL a na příznaky
                     # zadání se rozbaluje jedním voláním, takže se úrovně

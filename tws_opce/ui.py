@@ -792,9 +792,7 @@ class TradingUI:
                 # kolika kontraktů (včetně) runner náleží
                 with ui.row().classes("skupina-prepinacu blok-runner"):
                     ui.label("Runner:").classes("popisek-volby-runner")
-                    napoveda = widgets.NAPOVEDA_RUNNER_VELIKOST.format(
-                        procento=self.cfg.trading.runner_quantity_pct
-                    ) + (
+                    napoveda = widgets.NAPOVEDA_RUNNER_VELIKOST + (
                         " Zapne se při založení obchodu, má-li obchod alespoň tolik "
                         "kontraktů, kolik je v poli Runner od; průběžný přepočet ho pak "
                         "podle nového množství zapne či vypne. Výchozí volba je "
@@ -802,6 +800,9 @@ class TradingUI:
                     )
                     self.runner_buttons = widgets.tlacitka_runneru(
                         self._nastav_runner, napoveda, self.runner_value
+                    )
+                    self.runner_pct_input = widgets.pole_runner_pct(
+                        self.cfg.trading.runner_quantity_pct, "pole-runner-pct"
                     )
                     self.runner_min_input = widgets.pole_runner_min(
                         self.cfg.import_.runner_min_quantity, "pole-runner-min"
@@ -1086,6 +1087,18 @@ class TradingUI:
             return self.cfg.import_.runner_min_quantity
         return int(hodnota)
 
+    def _form_runner_pct(self) -> float | None:
+        """
+        Velikost runneru v procentech pozice. Prázdné nebo nesmyslné pole
+        vrací None - obchod si pak vezme výchozí trading.runner_quantity_pct.
+        Stoprocentní runner by hlavní části nenechal jediný kontrakt,
+        proto je mimo rozsah.
+        """
+        hodnota = cislo_z_pole(self.runner_pct_input.value)
+        if hodnota is None or not 0 < hodnota < 100:
+            return None
+        return float(hodnota)
+
     def _nastav_runner(self, hodnota: str) -> None:
         """Přepne zvolené tlačítko runneru - platí pro další zadání obchodu."""
         self.runner_value = hodnota
@@ -1281,6 +1294,8 @@ class TradingUI:
             self._nastav_runner(runner_klic(flow.auto_runner_multiple))
         if flow.auto_runner_min_quantity is not None:
             self.runner_min_input.set_value(flow.auto_runner_min_quantity)
+        if flow.runner_quantity_pct is not None:
+            self.runner_pct_input.set_value(flow.runner_quantity_pct)
 
     def _prevezmi_premii(self, flow: Flow) -> tuple[bool, bool]:
         """
@@ -1901,6 +1916,7 @@ class TradingUI:
             # množství, podle zvoleného násobku a minima
             runner_multiple=runner_nasobek(self.runner_value),
             runner_min_quantity=self._form_runner_min(),
+            runner_quantity_pct=self._form_runner_pct(),
         )
 
         # Založení obchodu si znovu načítá data z TWS, indikace platí i zde

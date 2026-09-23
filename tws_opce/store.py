@@ -55,6 +55,7 @@ SAVED_FIELDS = (
     "refresh_interval_sec",
     "auto_runner_multiple",
     "auto_runner_min_quantity",
+    "runner_quantity_pct",
     "primary_level",
     "sl_to_pt_ratio",
     "expiration",
