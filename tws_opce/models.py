@@ -89,6 +89,18 @@ def cislo_text(hodnota: float, desetin: int = 2) -> str:
     return f"{hodnota:,.{desetin}f}".replace(",", " ")
 
 
+def sklonuj(pocet: int, jednotne: str, mnozne: str, genitiv: str) -> str:
+    """
+    Počet se správným tvarem: 1 obchod, 2-4 obchody, 5 a víc obchodů.
+    Tvary se předávají celé včetně přívlastku ('otevřená pozice').
+    """
+    if pocet == 1:
+        return f"{pocet} {jednotne}"
+    if 2 <= pocet <= 4:
+        return f"{pocet} {mnozne}"
+    return f"{pocet} {genitiv}"
+
+
 def format_countdown(sekundy: float) -> str:
     """
     Zbývající čas pro odpočty v hlavičce. Pod hodinu vyjde MM:SS, do dne

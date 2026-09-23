@@ -22,7 +22,7 @@ from nicegui import ui
 from . import report
 from .config import AppConfig
 from .engine import FlowEngine
-from .models import Flow, FlowState, cislo_text
+from .models import Flow, FlowState, cislo_text, sklonuj
 
 # Popisky přepínače rozsahu přehledu
 ROZSAHY = {report.ROZSAH_DNES: "Dnes", report.ROZSAH_VSE: "Vše"}
@@ -99,18 +99,6 @@ def trida_vysledku(hodnota: float | None) -> str:
     if hodnota is None or abs(hodnota) < 0.005:
         return ""
     return "zisk" if hodnota > 0 else "ztrata"
-
-
-def sklonuj(pocet: int, jednotne: str, mnozne: str, genitiv: str) -> str:
-    """
-    Počet se správným tvarem: 1 obchod, 2-4 obchody, 5 a víc obchodů.
-    Tvary se předávají celé včetně přívlastku ('otevřená pozice').
-    """
-    if pocet == 1:
-        return f"{pocet} {jednotne}"
-    if 2 <= pocet <= 4:
-        return f"{pocet} {mnozne}"
-    return f"{pocet} {genitiv}"
 
 
 def datum_cas(hodnota: datetime | None) -> str:

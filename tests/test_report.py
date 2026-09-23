@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tws_opce import report
-from tws_opce.models import Flow, FlowState
+from tws_opce.models import Flow, FlowState, sklonuj
 from tws_opce.report_dialog import (
     doba_drzeni,
     mez_osy,
@@ -21,7 +21,6 @@ from tws_opce.report_dialog import (
     penize_s_provizi,
     procenta,
     procenta_s_provizi,
-    sklonuj,
     trida_vysledku,
 )
 from tws_opce.ui import pnl_text

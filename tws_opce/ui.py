@@ -34,6 +34,7 @@ from .models import (
     runner_klic,
     runner_nasobek,
     sekundy_prepoctu,
+    sklonuj,
 )
 from .report_dialog import ReportDialog
 
@@ -233,9 +234,16 @@ def stav_linky_text(rtt_ms: float | None, stari_sec: float | None) -> str:
     return f"TWS {odezva} · data {stari_text(stari_sec)}"
 
 
-def oer_text(ratio: float) -> str:
-    """Order Efficiency Ratio dne do hlavičky, například 'OER: 3,4'."""
-    return f"OER: {ratio:.1f}".replace(".", ",")
+def oer_text(ratio: float, zpravy: int) -> str:
+    """
+    Order Efficiency Ratio dne do hlavičky i s počtem zpráv dne, například
+    'OER: 3,4 · 57 zpráv'.
+
+    ratio  - OER dne podle vzorce IBKR
+    zpravy - počet dnes odeslaných zpráv (nové příkazy, úpravy, zrušení)
+    """
+    pomer = f"{ratio:.1f}".replace(".", ",")
+    return f"OER: {pomer} · {sklonuj(zpravy, 'zpráva', 'zprávy', 'zpráv')}"
 
 
 def oer_popis(zpravy: int, vyplnene: int, rozpocet: float | None) -> str:
@@ -2236,7 +2244,7 @@ class TradingUI:
             return
 
         oer = self.ib.oer
-        self.oer_label.set_text(oer_text(oer.ratio))
+        self.oer_label.set_text(oer_text(oer.ratio, oer.messages))
         self.oer_tip.set_text(
             oer_popis(oer.messages, oer.executed, oer.budget if oer.enabled else None)
         )

@@ -833,7 +833,9 @@ návratu do rozpočtu (vyplněním příkazu nebo novým dnem) a dalším překr
 `trading.oer_limit: 0` hlídání vypíná.
 
 Aktuální OER dne ukazuje hlavička aplikace za údajem o odezvě TWS a stáří
-dat („OER: 3,4“). Tooltip nese počet zpráv, vyplněných příkazů a rozpočet dne.
+dat spolu s počtem zpráv dne („OER: 3,4 · 57 zpráv“). Počet zpráv je vidět
+proto, že IBKR poměr posuzuje až nad určitým objemem zpráv za den. Tooltip
+nese počet zpráv, vyplněných příkazů a rozpočet dne.
 Po překročení rozpočtu se údaj zvýrazní žlutě. Bez spojení s TWS se skrývá:
 TWS s odpojením zahodí vyplnění dne, takže by poměr vyšel přehnaně vysoký.
 

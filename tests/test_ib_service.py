@@ -379,8 +379,10 @@ class TestPopisuOer(unittest.TestCase):
     """Order Efficiency Ratio dne v hlavičce."""
 
     def test_jedno_desetinne_misto_s_carkou(self):
-        self.assertEqual(oer_text(10.0), "OER: 10,0")
-        self.assertEqual(oer_text(175.666), "OER: 175,7")
+        self.assertEqual(oer_text(10.0, 30), "OER: 10,0 · 30 zpráv")
+        self.assertEqual(oer_text(175.666, 527), "OER: 175,7 · 527 zpráv")
+        # Počet zpráv se skloňuje (větve pokrývá test sklonuj v test_report)
+        self.assertEqual(oer_text(0.5, 1), "OER: 0,5 · 1 zpráva")
 
     def test_tooltip_s_rozpoctem_i_bez_hlidani(self):
         self.assertIn("30 zpráv do TWS / (2 vyplněných příkazů + 1)", oer_popis(30, 2, 200.0))
