@@ -53,6 +53,63 @@ def spread_pct(bid: float | None, ask: float | None) -> float | None:
     return (ask - bid) / mid * 100.0
 
 
+# Tolerance pro porovnání cen v USD - rozdíl kotací v plovoucí čárce
+# (0.16 - 0.14 = 0.020000000000000018) by jinak těsně přelezl hranici
+PRICE_EPSILON = 1e-9
+
+
+def cheap_spread_ok(
+    bid: float | None,
+    ask: float | None,
+    cheap_max_price: float = 0.0,
+    cheap_max_spread_usd: float = 0.0,
+) -> bool:
+    """
+    Výjimka z procentního limitu spreadu pro levné opce.
+
+    U opce za pár centů znamená jediný tik spreadu desítky procent, takže
+    procentní limit by ji nepustil nikdy. Leží-li střed kotace nejvýš na
+    cheap_max_price (USD za kus) a rozdíl ASK - BID nepřesahuje
+    cheap_max_spread_usd (USD za kus), spread vyhovuje bez ohledu na
+    procenta. Nulová hodnota kteréhokoliv parametru výjimku vypíná, bez
+    platných kotací výjimka neplatí.
+    """
+    if cheap_max_price <= 0 or cheap_max_spread_usd <= 0:
+        return False
+    if bid is None or ask is None:
+        return False
+    if not (math.isfinite(bid) and math.isfinite(ask)):
+        return False
+    if bid <= 0 or ask < bid:
+        return False
+    mid = (ask + bid) / 2.0
+    return (
+        mid <= cheap_max_price + PRICE_EPSILON
+        and ask - bid <= cheap_max_spread_usd + PRICE_EPSILON
+    )
+
+
+def spread_over_limit(
+    bid: float | None,
+    ask: float | None,
+    max_spread_pct: float,
+    cheap_max_price: float = 0.0,
+    cheap_max_spread_usd: float = 0.0,
+) -> bool:
+    """
+    True, pokud spread opce překračuje povolený limit.
+
+    Spread nad max_spread_pct (v % ze středu trhu) limit překračuje, ledaže
+    jde o levnou opci s malým spreadem v USD (viz cheap_spread_ok). Neznámý
+    spread (chybějící kotace) limit nepřekračuje - o čekání na kotace se
+    stará volající.
+    """
+    procenta = spread_pct(bid, ask)
+    if procenta is None or procenta <= max_spread_pct:
+        return False
+    return not cheap_spread_ok(bid, ask, cheap_max_price, cheap_max_spread_usd)
+
+
 def spread_usd(bid: float | None, ask: float | None) -> float:
     """
     Spread opce v USD na jeden kontrakt: (ASK - BID) krát multiplikátor.
@@ -90,6 +147,8 @@ def capped_spread_usd(
     ask: float | None,
     max_spread_pct: float | None = None,
     price: float | None = None,
+    cheap_max_price: float = 0.0,
+    cheap_max_spread_usd: float = 0.0,
 ) -> float:
     """
     Spread opce v USD na kontrakt, omezený limitem, který obchod musí splnit.
@@ -103,6 +162,11 @@ def capped_spread_usd(
     Základem procenta je odhad nákupní ceny (limit se měří proti kotaci
     v okamžiku nákupu, ne proti dnešní); bez něj poslouží střed trhu.
     Bez limitu i bez použitelné ceny se vrací celý spread.
+
+    cheap_max_price a cheap_max_spread_usd popisují výjimku pro levné opce
+    (viz cheap_spread_ok): leží-li základ nejvýš na cheap_max_price, smí
+    spread dosáhnout až cheap_max_spread_usd za kus, i když procentní strop
+    vychází nižší.
     """
     spread = spread_usd(bid, ask)
     if spread <= 0 or max_spread_pct is None or max_spread_pct <= 0:
@@ -114,7 +178,17 @@ def capped_spread_usd(
     if zaklad is None or zaklad <= 0:
         return spread
 
-    return min(spread, round(max_spread_pct * zaklad, 2))
+    strop = max_spread_pct * zaklad
+    # Levná opce smí mít spread až do absolutní částky, i když procentní
+    # strop vychází nižší - nákup ji s takovým spreadem pustí do trhu
+    if (
+        cheap_max_price > 0
+        and cheap_max_spread_usd > 0
+        and zaklad <= cheap_max_price + PRICE_EPSILON
+    ):
+        strop = max(strop, cheap_max_spread_usd * OPTION_MULTIPLIER)
+
+    return min(spread, round(strop, 2))
 
 
 def suggest_quantity_for_loss(

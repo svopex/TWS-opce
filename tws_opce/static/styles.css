@@ -540,6 +540,12 @@ body .tabulka tbody td::before {
   font-weight: 600;
 }
 
+/* Limit spreadu, u kterého nákup povoluje jen výjimka pro levné opce -
+   barva zůstává běžná, kurzor jen napoví, že nad buňkou je vysvětlení */
+.vyjimka-spreadu {
+  cursor: help;
+}
+
 /* --- Provozní log --- */
 .karta-log .log-obsah {
   gap: 1px;

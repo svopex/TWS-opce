@@ -146,6 +146,15 @@ trading:
   # obchod přepsat přímo ve formuláři.
   max_spread_pct: 10.0
 
+  # Výjimka z procentního limitu spreadu pro levné opce. U opce za pár centů
+  # znamená jediný tik spreadu desítky procent (0.14 / 0.16 = 13,3 %), takže
+  # procentní limit by ji do trhu nepustil. Je-li cena opce (střed kotace)
+  # nejvýš cheap_option_max_price USD, vyhoví spread i nad max_spread_pct,
+  # pokud rozdíl ASK - BID nepřesáhne cheap_option_max_spread_usd USD.
+  # Dražší opce se řídí jen procentním limitem. Hodnota 0 výjimku vypíná.
+  cheap_option_max_price: 0.30
+  cheap_option_max_spread_usd: 0.02
+
   # Typ nákupního příkazu, který se použije po splnění cenové podmínky
   # na podkladovém aktivu:
   #   LMT_ASK = limitní příkaz na ASK navýšený o ask_tolerance_pct (výchozí)
@@ -239,12 +248,12 @@ trading:
   # oer_limit). Po dosažení stropu zůstává prodleva na něm - počet odstranění
   # se u obchodu nenuluje, od začátku začíná až nový obchod.
   # Hodnota nejvýš rearm_delay_sec prodlužování vypíná.
-  rearm_delay_max_sec: 240.0
+  rearm_delay_max_sec: 180.0
 
   # Násobek prodlevy při každém dalším odstranění kvůli spreadu. Při 1.5
   # a základu 30 s: 30, 45, 67.5, 101, 152, 228 … s až po strop.
   # 2 = zdvojování (30, 60, 120, 240 … s), 1 = prodleva se nemění.
-  rearm_delay_factor: 1.4
+  rearm_delay_factor: 1.2
 
   # Velikost runneru v procentech pozice. Runner je část pozice, která se
   # po zapnutí (tlačítky Runner v monitoringu) prodává samostatným příkazem

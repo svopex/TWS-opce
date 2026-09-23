@@ -83,6 +83,10 @@ BODY_SLOT = """
       <span v-else-if="col.name === 'pnl'" :class="props.row.pnl_class">{{ col.value }}</span>
       <span v-else-if="col.name === 'exp_profit'" class="zisk">{{ col.value }}</span>
       <span v-else-if="col.name === 'exp_loss'" class="ztrata">{{ col.value }}</span>
+      <span v-else-if="col.name === 'spread_limit'" :class="props.row.spread_limit_class">
+        {{ col.value }}
+        <q-tooltip v-if="props.row.spread_limit_tip">{{ props.row.spread_limit_tip }}</q-tooltip>
+      </span>
       <span v-else-if="col.name === 'contract'">
         {{ col.value }}
         <span :class="'odznak-smer ' + props.row.smer_class">{{ props.row.smer }}</span>
@@ -2500,7 +2504,24 @@ class TradingUI:
             "underlying": fmt(flow.underlying_price),
             "quote": f"{fmt(flow.option_bid)} / {fmt(flow.option_ask)}",
             "spread": fmt(flow.option_spread_pct, 2, " %"),
-            "spread_limit": fmt(flow.max_spread_pct, 2, " %"),
+            # Povoluje-li nákup jen výjimka pro levné opce, uvádí se k limitu
+            # i povolený spread v USD a bublina vysvětlí proč
+            "spread_limit": fmt(flow.max_spread_pct, 2, " %")
+            + (
+                f" · ≤ {flow.cheap_option_max_spread_usd:.2f} USD"
+                if flow.cheap_spread_allows
+                else ""
+            ),
+            "spread_limit_class": "vyjimka-spreadu" if flow.cheap_spread_allows else "",
+            "spread_limit_tip": (
+                f"Spread {flow.option_spread_pct:.2f} % je nad limitem "
+                f"{flow.max_spread_pct:g} %, nákup je přesto povolen: opce stojí "
+                f"nejvýš {flow.cheap_option_max_price:.2f} USD a rozdíl BID/ASK "
+                f"{flow.option_ask - flow.option_bid:.2f} USD nepřesahuje povolených "
+                f"{flow.cheap_option_max_spread_usd:.2f} USD (výjimka pro levné opce)."
+                if flow.cheap_spread_allows
+                else ""
+            ),
             "exp_profit": fmt(flow.expected_profit),
             "exp_loss": fmt(flow.expected_loss),
             "pnl": pnl_text(pnl, pnl_hruby),
@@ -2548,12 +2569,19 @@ class TradingUI:
         rezim_pt = "podklad" if t.pt_on_underlying else "opce (USD/ks)"
         rezim_sl = "podklad" if t.sl_on_underlying else "opce (USD/ks)"
         prvotni = "SL (PT se dopočítá)" if t.primary_level == "sl" else "PT (SL se dopočítá)"
+        # Výjimka z limitu spreadu pro levné opce - uvádí se jen zapnutá
+        levne_opce = ""
+        if t.cheap_option_max_price > 0 and t.cheap_option_max_spread_usd > 0:
+            levne_opce = (
+                f" (do ceny {t.cheap_option_max_price:g} USD "
+                f"i spread {t.cheap_option_max_spread_usd:g} USD)"
+            )
         self.config_label.set_text(
             f"Účet {ucet} | risk {self.cfg.account.risk_pct:g} % "
             f"= {fmt(self.engine.risk_amount)} USD\n"
             f"Nákup: {t.entry_order_type} (tolerance {t.ask_tolerance_pct:g} %) | "
             f"prodej: {t.exit_order_type}\n"
-            f"Max. spread {t.max_spread_pct:g} % | "
+            f"Max. spread {t.max_spread_pct:g} %{levne_opce} | "
             f"SL:PT {t.sl_to_pt_ratio:g} (RRR {rrr_z_pomeru(t.sl_to_pt_ratio):g}) | "
             f"expirace {expiration_text}\n"
             f"Výchozí PT: {rezim_pt} | výchozí SL: {rezim_sl} | prvotní: {prvotni}"

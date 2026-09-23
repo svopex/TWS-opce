@@ -70,6 +70,23 @@ class TestUlozeniStavu(ZakladObnovy):
         self.assertEqual(self.ib.placed[0].order.orderRef, order_ref(flow.id, "entry"))
 
 
+class TestVyjimkySpreaduPoObnove(ZakladObnovy):
+    """Výjimka z limitu spreadu pro levné opce se neukládá, bere se z konfigurace."""
+
+    async def test_obnoveny_obchod_prevezme_vyjimku_z_konfigurace(self):
+        # Mezi uložením a restartem se konfigurace změní - platit má ta nová
+        async def zmen_konfiguraci(flow):
+            self.cfg.trading.cheap_option_max_price = 0.50
+            self.cfg.trading.cheap_option_max_spread_usd = 0.03
+
+        novy = await self.zaloz_a_restartuj(zmen_konfiguraci)
+        obnoveny = next(iter(novy.flows.values()))
+
+        self.assertAlmostEqual(obnoveny.cheap_option_max_price, 0.50)
+        self.assertAlmostEqual(obnoveny.cheap_option_max_spread_usd, 0.03)
+        self.assertNotIn("cheap_option_max_price", store.SAVED_FIELDS)
+
+
 class TestUklidPriSelhaniZapisu(ZakladObnovy):
     """Neúspěšný zápis stavu nesmí zanechat rozepsaný dočasný soubor."""
 

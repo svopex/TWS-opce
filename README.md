@@ -396,7 +396,19 @@ projít.
    příkaz ručně v TWS, obchod skončí ve stavu *Zrušeno*.
 3. **Spread** — překročí-li nastavené procento (`trading.max_spread_pct`,
    ve formuláři pole *Max. spread*), nevyplněný příkaz se odstraní
-   z trhu; jakmile se spread vrátí do limitu, příkaz se zadá znovu (obojí
+   z trhu. Výjimkou jsou levné opce: je-li cena opce (střed kotace) nejvýš
+   `trading.cheap_option_max_price` (výchozí 0,30 USD), vyhoví i spread nad
+   limitem, pokud rozdíl ASK − BID nepřesáhne
+   `trading.cheap_option_max_spread_usd` (výchozí 0,02 USD). U opce
+   za 0,15 USD totiž jediný tik spreadu znamená přes 13 % a procentní limit
+   by ji do trhu nepustil nikdy. Hodnota 0 výjimku vypíná. Povoluje-li
+   nákup právě výjimka, sloupec *Max. spread* v monitoringu ukáže vedle
+   limitu i povolenou částku (např. `10.00 % · ≤ 0.02 USD`)
+   a bublina nad ním vysvětlí proč. Výjimka platí
+   i pro strop odhadu zaplaceného spreadu (viz výše) a pro návrat příkazu
+   do trhu, kde se u ní nevyžaduje rezerva pod limitem — spread v celých
+   centech ji nemá jak splnit. Jakmile se spread vrátí do limitu, příkaz
+   se zadá znovu (obojí
    lze vypnout přes `trading.cancel_on_spread_breach`, resp.
    `trading.rearm_on_spread_ok`). Aby se
    příkaz při kolísání kolem limitu nezadával a nerušil stále dokola, musí
@@ -1250,8 +1262,8 @@ Vše podstatné je v `config.yaml` (podrobné komentáře u každé položky):
   dat `market_data_type`, automatické znovupřipojení `auto_reconnect`),
 * `account` — velikost účtu a riskované procento `risk_pct`,
 * `trading` — typ nákupního příkazu (`LMT_ASK` / `MKT` / `LMT_MID`) a jeho
-  průběžný přepočet, typ prodejního příkazu, limit spreadu a jeho
-  hlídání, poměr SL:PT, výchozí režimy PT a SL, prvotní úroveň, kompenzace
+  průběžný přepočet, typ prodejního příkazu, limit spreadu, jeho výjimka
+  pro levné opce a jeho hlídání, poměr SL:PT, výchozí režimy PT a SL, prvotní úroveň, kompenzace
   spreadu, meze množství, runner, chování strike při posunu cíle, doba
   platnosti příkazů, automatické uzavírání před koncem seance a hlídání
   Order Efficiency Ratio (`oer_limit`),

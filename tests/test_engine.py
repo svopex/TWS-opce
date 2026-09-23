@@ -811,6 +811,73 @@ class TestSpread(ZakladTestu):
         flow = await self.zaloz_call(max_spread_pct=2.0)
         self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
 
+    async def test_levna_opce_s_uzkym_spreadem_se_zada(self):
+        # 0,14 / 0,16 = 13,3 % nad limitem 5 %, ale rozdíl 0,02 USD u opce
+        # pod 0,30 USD vyhoví výjimce
+        self.ib.price_bid, self.ib.price_ask = 0.14, 0.16
+        flow = await self.zaloz_call()
+
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(len(self.ib.placed), 1)
+
+    async def test_priznak_vyjimky_pro_sloupec_max_spread(self):
+        # Nákup povolený jen výjimkou se v přehledu zvýrazní
+        self.ib.price_bid, self.ib.price_ask = 0.14, 0.16
+        flow = await self.zaloz_call()
+        self.assertTrue(flow.cheap_spread_allows)
+
+        # Spread v procentním limitu výjimku nepotřebuje
+        self.ib.price_bid, self.ib.price_ask = 3.00, 3.10
+        await self.engine._tick()
+        self.assertFalse(flow.cheap_spread_allows)
+
+        # Po nákupu se spread nehlídá a výjimka nic nepovoluje
+        self.ib.price_bid, self.ib.price_ask = 0.14, 0.16
+        await self.engine._tick()
+        self.assertTrue(flow.cheap_spread_allows)
+        flow.set_state(FlowState.FILLED, "Vyplněno.")
+        self.assertFalse(flow.cheap_spread_allows)
+
+    async def test_levna_opce_se_sirsim_spreadem_se_nezada(self):
+        # Rozdíl 0,03 USD výjimku nesplní
+        self.ib.price_bid, self.ib.price_ask = 0.14, 0.17
+        flow = await self.zaloz_call()
+
+        self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
+        self.assertEqual(self.ib.placed, [])
+
+    async def test_drazsi_opce_s_uzkym_spreadem_se_nezada(self):
+        # Střed 0,35 je nad hranicí 0,30 - rozdíl 0,02 = 5,9 % > limit 5 %
+        self.ib.price_bid, self.ib.price_ask = 0.34, 0.36
+        flow = await self.zaloz_call()
+
+        self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
+
+    async def test_vypnuta_vyjimka_levnou_opci_zablokuje(self):
+        self.cfg.trading.cheap_option_max_price = 0.0
+        self.ib.price_bid, self.ib.price_ask = 0.14, 0.16
+        flow = await self.zaloz_call()
+
+        self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
+
+    async def test_levna_opce_zustane_v_trhu_a_vrati_se_do_nej(self):
+        self.ib.price_bid, self.ib.price_ask = 0.14, 0.16
+        flow = await self.zaloz_call()
+
+        # Rozšíření na 0,04 USD příkaz odstraní z trhu
+        self.ib.price_bid, self.ib.price_ask = 0.14, 0.18
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.SPREAD_BLOCKED)
+        self.assertEqual(len(self.ib.cancelled), 1)
+
+        # Po zúžení na 0,02 USD a uplynutí prodlevy se vrátí, i když procenta
+        # rezervu pod limitem nesplní
+        self.ib.price_bid, self.ib.price_ask = 0.14, 0.16
+        flow.blocked_since = datetime.now() - timedelta(seconds=30)
+        await self.engine._tick()
+        self.assertEqual(flow.state, FlowState.ARMED)
+        self.assertEqual(len(self.ib.placed), 2)
+
     async def test_vypnute_ruseni_ponecha_prikaz_v_trhu(self):
         self.cfg.trading.cancel_on_spread_breach = False
         flow = await self.zaloz_call()

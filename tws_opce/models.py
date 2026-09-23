@@ -430,6 +430,12 @@ class Flow:
     # Je základem stropu odhadu spreadu v přehledu, aby Ztráta na SL vycházela
     # ze stejného stropu jako doporučené množství. None = odhad není znám
     expected_fill_price: float | None = None
+    # Výjimka z limitu spreadu pro levné opce (trading.cheap_option_*):
+    # do cheap_option_max_price USD ceny opce vyhoví spread do
+    # cheap_option_max_spread_usd USD i nad procentním limitem. Neukládá se -
+    # engine hodnoty doplní z konfigurace při zadání i po obnově obchodu
+    cheap_option_max_price: float = 0.0
+    cheap_option_max_spread_usd: float = 0.0
 
     # Jednotka, ve které obchodník úroveň na opci zadal: True = procento
     # zaplacené prémie. Obchod i engine počítají výhradně s USD na kontrakt,
@@ -670,6 +676,8 @@ class Flow:
             self.option_ask,
             self.max_spread_pct if self.sl_spread_capped else None,
             zaklad,
+            self.cheap_option_max_price,
+            self.cheap_option_max_spread_usd,
         )
 
     def sl_with_pending(self, hodnota: float) -> float:
@@ -903,12 +911,40 @@ class Flow:
             return None
         return abs(self.expected_profit / self.expected_loss)
 
+    def spread_over_limit(self, limit_pct: float | None = None) -> bool:
+        """
+        True, pokud aktuální spread opce překračuje limit obchodu.
+
+        limit_pct nahradí procentní limit obchodu (max_spread_pct) - návrat
+        do trhu jej chce s rezervou pod limitem. Výjimka pro levné opce platí
+        vždy, neznámý spread (bez kotací) limit nepřekračuje.
+        """
+        return calc.spread_over_limit(
+            self.option_bid,
+            self.option_ask,
+            self.max_spread_pct if limit_pct is None else limit_pct,
+            self.cheap_option_max_price,
+            self.cheap_option_max_spread_usd,
+        )
+
     @property
-    def spread_ok(self) -> bool:
-        """True, pokud je aktuální spread v povoleném limitu."""
-        if self.option_spread_pct is None:
+    def cheap_spread_allows(self) -> bool:
+        """
+        True, pokud nákup povoluje jen výjimka pro levné opce - spread je
+        nad procentním limitem obchodu, ale levná opce jej splní v USD.
+        Po nákupu se spread už nehlídá, výjimka pak nic nepovoluje.
+        """
+        if not self.state.is_before_entry:
             return False
-        return self.option_spread_pct <= self.max_spread_pct
+        procenta = self.option_spread_pct
+        if procenta is None or procenta <= self.max_spread_pct:
+            return False
+        return calc.cheap_spread_ok(
+            self.option_bid,
+            self.option_ask,
+            self.cheap_option_max_price,
+            self.cheap_option_max_spread_usd,
+        )
 
     def touch(self, message: str = "") -> None:
         """Aktualizuje čas poslední změny a volitelně poznámku ke stavu."""

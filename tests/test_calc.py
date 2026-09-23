@@ -134,6 +134,57 @@ class TestStropuSpreadu(unittest.TestCase):
         )
 
 
+class TestVyjimkyLevnychOpci(unittest.TestCase):
+    """
+    Výjimka z procentního limitu spreadu pro levné opce: do ceny 0,30 USD
+    vyhoví spread ASK - BID do 0,02 USD bez ohledu na procenta.
+    """
+
+    def test_levna_opce_s_uzkym_spreadem_limit_neprekroci(self):
+        # 0,14 / 0,16 = 13,3 % nad limitem 10 %, ale rozdíl je jen 0,02 USD
+        self.assertTrue(calc.cheap_spread_ok(0.14, 0.16, 0.30, 0.02))
+        self.assertFalse(calc.spread_over_limit(0.14, 0.16, 10.0, 0.30, 0.02))
+
+    def test_sirsi_spread_levne_opce_limit_prekroci(self):
+        # Rozdíl 0,03 USD už výjimku nesplní
+        self.assertFalse(calc.cheap_spread_ok(0.14, 0.17, 0.30, 0.02))
+        self.assertTrue(calc.spread_over_limit(0.14, 0.17, 10.0, 0.30, 0.02))
+
+    def test_drazsi_opce_se_ridi_jen_procenty(self):
+        # Střed 0,35 leží nad hranicí 0,30 - rozdíl 0,02 = 5,9 % nad limitem 5 %
+        self.assertFalse(calc.cheap_spread_ok(0.34, 0.36, 0.30, 0.02))
+        self.assertTrue(calc.spread_over_limit(0.34, 0.36, 5.0, 0.30, 0.02))
+
+    def test_hranice_ceny_i_spreadu_se_zapocita(self):
+        # Střed přesně 0,30 a rozdíl přesně 0,02 (v plovoucí čárce těsně nad)
+        self.assertTrue(calc.cheap_spread_ok(0.29, 0.31, 0.30, 0.02))
+
+    def test_nulova_hodnota_vyjimku_vypne(self):
+        self.assertTrue(calc.spread_over_limit(0.14, 0.16, 10.0, 0.0, 0.02))
+        self.assertTrue(calc.spread_over_limit(0.14, 0.16, 10.0, 0.30, 0.0))
+
+    def test_spread_v_limitu_i_bez_vyjimky(self):
+        self.assertFalse(calc.spread_over_limit(3.00, 3.10, 5.0))
+
+    def test_bez_kotaci_limit_neprekroci(self):
+        # O čekání na kotace se stará volající, spread není znám
+        self.assertFalse(calc.spread_over_limit(None, 0.16, 10.0, 0.30, 0.02))
+        self.assertFalse(calc.cheap_spread_ok(None, 0.16, 0.30, 0.02))
+
+    def test_strop_odhadu_spreadu_u_levne_opce(self):
+        # Procentní strop 5 % z 0,15 dává 0,75 USD/kontrakt, výjimka pustí
+        # celý spread 0,02 = 2 USD/kontrakt
+        self.assertAlmostEqual(
+            calc.capped_spread_usd(0.14, 0.16, 5.0, 0.15, 0.30, 0.02), 2.00, places=2
+        )
+
+    def test_strop_odhadu_spreadu_u_drazsi_opce(self):
+        # Základ 0,40 je nad hranicí - platí jen procentní strop 3 % = 1,20 USD
+        self.assertAlmostEqual(
+            calc.capped_spread_usd(0.39, 0.41, 3.0, 0.40, 0.30, 0.02), 1.20, places=2
+        )
+
+
 class TestMnozstvi(unittest.TestCase):
     """Doporučené množství kontraktů podle rizika."""
 

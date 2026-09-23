@@ -78,6 +78,12 @@ class TradingConfig:
     # "pt" = zadává se PT a SL se dopočte. Určuje výchozí stav dvojice voleb.
     primary_level: str = "sl"
     max_spread_pct: float = 7.0
+    # Výjimka z procentního limitu pro levné opce: je-li cena opce (střed
+    # kotace) nejvýš cheap_option_max_price USD, vyhoví i spread nad
+    # max_spread_pct, pokud ASK - BID nepřesáhne cheap_option_max_spread_usd.
+    # Nula v kterékoliv z hodnot výjimku vypíná
+    cheap_option_max_price: float = 0.30
+    cheap_option_max_spread_usd: float = 0.02
     entry_order_type: str = "LMT_ASK"
     # Tolerance nad ASK v procentech pro typ příkazu LMT_ASK
     ask_tolerance_pct: float = 2.0
@@ -550,6 +556,10 @@ def validate_config(cfg: AppConfig) -> None:
         )
     if cfg.trading.max_spread_pct <= 0:
         problems.append("trading.max_spread_pct musí být kladné číslo")
+    # Výjimka pro levné opce - nula ji vypíná, záporná hodnota nedává smysl
+    for nazev in ("cheap_option_max_price", "cheap_option_max_spread_usd"):
+        if getattr(cfg.trading, nazev) < 0:
+            problems.append(f"trading.{nazev} nesmí být záporné")
     if cfg.trading.risk_free_rate_pct < 0:
         problems.append("trading.risk_free_rate_pct nesmí být záporné")
     if not 0 <= cfg.trading.rearm_spread_margin_pct < 100:
