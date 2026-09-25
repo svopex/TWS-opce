@@ -5245,9 +5245,12 @@ class FlowEngine:
                     f"trhem se neprodává."
                 )
             else:
+                # Částečné vyplnění před zrušením - stejný formát prodáno/celkem
+                # jako u běžného částečného prodeje hlavní části
                 self.log_event(
-                    f"{flow.id}: {ks} ks hlavní části se prodalo ({duvod}) za {cena:g} "
-                    f"ještě před zrušením příkazů, trhem se prodá jen zbytek."
+                    f"{flow.id}: částečně vyplněno {flow.main_sold_quantity}/{flow.main_quantity} ks "
+                    f"hlavní části ({duvod}) za {cena:g} ještě před zrušením příkazů, "
+                    f"trhem se prodá zbylých {flow.main_quantity - flow.main_sold_quantity} ks."
                 )
             return ks
 
