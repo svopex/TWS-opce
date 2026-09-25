@@ -5302,9 +5302,12 @@ class FlowEngine:
                     f"za {flow.exit_fill_price:g}."
                 )
             else:
+                # Částečné vyplnění - hláška ukazuje celkový stav prodeje
+                # hlavní části (prodáno/celkem), aby nevypadala jako prodej celé části
                 self.log_event(
-                    f"{flow.id}: {ks} ks hlavní části prodáno ({duvod}) za {cena:g}, "
-                    f"zbývá prodat {flow.main_quantity - flow.main_sold_quantity} ks."
+                    f"{flow.id}: částečně vyplněno {flow.main_sold_quantity}/{flow.main_quantity} ks "
+                    f"hlavní části ({duvod}) za {cena:g}, "
+                    f"zbývá {flow.main_quantity - flow.main_sold_quantity} ks."
                 )
             return True
 
