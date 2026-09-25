@@ -18,7 +18,14 @@ from zoneinfo import ZoneInfo
 from . import calc, store
 from .config import AppConfig
 from .ib_service import IBService, PositionInfo, order_ref, parse_order_ref, valid_price
-from .models import RIGHT_LABELS, EntryMissedError, Flow, FlowRequest, FlowState
+from .models import (
+    RIGHT_LABELS,
+    EntryMissedError,
+    Flow,
+    FlowRequest,
+    FlowState,
+    format_countdown,
+)
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +52,11 @@ MAX_STRIKE_ATTEMPTS = 8
 # zruší a zadá znovu a kolik pokusů se nejvýše provede
 MARKET_SELL_RETRY_SEC = 30.0
 MARKET_SELL_MAX_ATTEMPTS = 5
+
+# Po jaké době bez dokončeného průchodu monitorovací smyčkou se hlásí, že
+# smyčka stojí. Běžný průchod trvá zlomky sekundy, delší dotazy do TWS mají
+# limit REQUEST_TIMEOUT_SEC - půl minuty už znamená, že něco uvázlo
+STALL_ALARM_SEC = 30.0
 
 
 @dataclass
@@ -172,11 +184,20 @@ class FlowEngine:
         # Čas posledního dokončeného průchodu smyčkou - podle něj se pozná,
         # že monitoring opravdu běží a nikde neuvázl
         self._last_tick: float = 0.0
+        # Spuštění smyčky - výchozí bod měření, když se žádný průchod ještě
+        # nedokončil (například uvázla hned první obnova)
+        self._started_at: float = 0.0
+        # Co smyčka právě dělá, pro hlášení, na čem uvázla
+        self._loop_step: str = ""
+        # Hlídač smyčky a to, zda už ohlásil, že smyčka stojí
+        self._watchdog: asyncio.Task | None = None
+        self._stall_warned: bool = False
         # Už ohlášená varování, která se nemají opakovat každý průchod smyčkou,
         # s klíčem "flow_id:...": část pozice, z jejíž dvojice prodejních
         # příkazů zmizel jeden ("flow_id:part"), a nepovinná akce odložená
         # kvůli rozpočtu OER ("flow_id:oer:akce"). Předpona id obchodu
-        # dovoluje uklidit varování odebraného obchodu najednou
+        # dovoluje uklidit varování odebraného obchodu najednou. Bez předpony
+        # je jen "restore" - obnova, které TWS nevydal příkazy ani pozice
         self._warned: set[str] = set()
         # Překročení rozpočtu OER už bylo ohlášeno - hlásí se změna stavu
         self._oer_over_warned: bool = False
@@ -248,16 +269,22 @@ class FlowEngine:
         být navázané a poslední průchod proběhnout nedávno. Zasekne-li se
         smyčka nebo spadne spojení, hlídání fakticky neprobíhá.
         """
-        if self._task is None or self._task.done():
-            return False
-        if not self.ib.connected:
-            return False
-        if not self._last_tick:
+        stari = self._tick_age()
+        if stari is None or not self.ib.connected or not self._last_tick:
             return False
 
         # Tolerance několika period; delší prodleva znamená, že smyčka vázne
         limit = max(3 * self.cfg.engine.poll_interval_sec, 5.0)
-        return (time.monotonic() - self._last_tick) < limit
+        return stari < limit
+
+    def _tick_age(self) -> float | None:
+        """
+        Sekundy od posledního dokončeného průchodu smyčkou (před prvním od
+        jejího spuštění), nebo None, pokud smyčka neběží.
+        """
+        if self._task is None or self._task.done():
+            return None
+        return time.monotonic() - (self._last_tick or self._started_at)
 
     def active_flows_for(self, symbol: str) -> list[Flow]:
         """Aktivní flow daného tickeru - nejvýše jedno pro každý směr (CALL a PUT)."""
@@ -3015,31 +3042,74 @@ class FlowEngine:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Spustí periodickou monitorovací smyčku."""
+        """Spustí periodickou monitorovací smyčku a jejího hlídače."""
         if self._task is None or self._task.done():
+            self._started_at = time.monotonic()
             self._task = asyncio.create_task(self._run())
+        if self._watchdog is None or self._watchdog.done():
+            self._watchdog = asyncio.create_task(self._watch())
 
     async def stop(self) -> None:
-        """Zastaví monitorovací smyčku."""
-        if self._task is not None:
-            self._task.cancel()
+        """Zastaví monitorovací smyčku i jejího hlídače."""
+        for task in (self._task, self._watchdog):
+            if task is None:
+                continue
+            task.cancel()
             try:
-                await self._task
+                await task
             except asyncio.CancelledError:
                 pass
-            self._task = None
+        self._task = None
+        self._watchdog = None
 
     async def _run(self) -> None:
         """Hlavní smyčka - periodicky prochází aktivní flow a hlídá spojení."""
         while True:
             try:
-                await self._tick()
-                self._last_tick = time.monotonic()
+                # Za hlídání se počítá jen skutečně provedený průchod
+                if await self._tick():
+                    self._last_tick = time.monotonic()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("Chyba v monitorovací smyčce.")
             await asyncio.sleep(self.cfg.engine.poll_interval_sec)
+
+    def monitoring_stall(self) -> tuple[float, str] | None:
+        """
+        Jak dlouho monitorovací smyčka nedokončila průchod a na čem stojí,
+        nebo None, pokud běží normálně (či vůbec nebyla spuštěna).
+
+        Uvázne-li smyčka na dotazu do TWS nebo na obnově, aplikace dál
+        vypadá připojená, ale obchody nehlídá - to musí být vidět.
+        """
+        stoji = self._tick_age()
+        if stoji is None or stoji < STALL_ALARM_SEC:
+            return None
+        return stoji, self._loop_step or "neznámý krok"
+
+    async def _watch(self) -> None:
+        """
+        Hlídač monitorovací smyčky - běží jako samostatná úloha, aby ohlásil
+        i smyčku uvázlou uvnitř průchodu. Do průběhu zapíše začátek i konec
+        zastavení, každé jen jednou.
+        """
+        while True:
+            await asyncio.sleep(max(self.cfg.engine.poll_interval_sec, 1.0))
+            self._report_stall()
+
+    def _report_stall(self) -> None:
+        """Zapíše do průběhu změnu stavu uvázlé smyčky (začátek či konec)."""
+        stall = self.monitoring_stall()
+        if stall is not None and not self._stall_warned:
+            stoji, krok = stall
+            self.log_event(
+                f"POZOR: monitorovací smyčka stojí {format_countdown(stoji)} (krok: {krok}) - "
+                f"obchody nejsou hlídány."
+            )
+        elif stall is None and self._stall_warned:
+            self.log_event("Monitorovací smyčka znovu běží, obchody jsou hlídány.")
+        self._stall_warned = stall is not None
 
     def _exchange_now(self) -> datetime:
         """Aktuální čas v časové zóně burzy (řeší letní/zimní čas)."""
@@ -3278,29 +3348,49 @@ class FlowEngine:
                 zmena = True
         return zmena
 
-    async def _tick(self) -> None:
-        """Jeden průchod monitoringem všech aktivních flow."""
+    async def _tick(self) -> bool:
+        """
+        Jeden průchod monitoringem všech aktivních flow.
+
+        Vrací False, pokud se průchod vynechal kvůli obnově (běží, nebo se
+        nedokončila) - takový průchod se nepočítá za hlídání (_last_tick).
+        Před každým krokem, který čeká na TWS, se zapíše _loop_step, aby
+        hlídač smyčky uměl říct, kde uvázla.
+        """
         # Během obnovy se nemonitoruje - příkazy z minulého spojení nejsou platné
         if self._restore_lock.locked():
-            return
+            return False
 
         if not self.ib.connected:
             # Po obnovení spojení se obchody musí znovu spárovat s příkazy v TWS
             self._synced = False
             if self.reconnects_automatically:
+                self._loop_step = "obnova spojení s TWS"
                 await self._try_reconnect()
-            return
+            return True
+
+        # Připojené, ale nespárované obchody (obnově TWS nevydal pozice nebo
+        # příkazy) smyčka obnovuje, dokud obnova neproběhne celá. Hlídat je
+        # do té doby podle neověřených příkazů by bylo nebezpečné
+        if not self._synced:
+            await self.restore()
+            if not self._synced:
+                return False
 
         # Velikost účtu z TWS se obnovuje, jen když ji konfigurace přebírá (size = 0)
+        self._loop_step = "velikost účtu z TWS"
         await self._refresh_account_size()
 
         # Pozice bez dozoru aplikace se kontrolují v delším intervalu
+        self._loop_step = "kontrola pozic bez dozoru"
         await self._check_unmanaged()
 
         # V nastavený čas dne se ruší obchody, které ještě nenakoupily
+        self._loop_step = "rušení čekajících obchodů"
         await self._cancel_pending_flows()
 
         # Krátce před zavřením burzy se běžící obchody automaticky uzavírají
+        self._loop_step = "automatické uzavírání pozic"
         await self._auto_close_flows()
 
         # Provize dorazí z TWS až po vyplnění příkazu, proto se dobírají průběžně
@@ -3309,6 +3399,7 @@ class FlowEngine:
         for flow in list(self.flows.values()):
             if not flow.state.is_active:
                 continue
+            self._loop_step = f"obchod {flow.id}"
             try:
                 changed |= await self._monitor(flow)
             except Exception as exc:
@@ -3320,6 +3411,7 @@ class FlowEngine:
 
         if changed:
             self._notify()
+        return True
 
     def _oer_text(self) -> str:
         """Stav OER dne pro log - poměr, počty a rozpočet dne."""
@@ -3392,10 +3484,23 @@ class FlowEngine:
         """Vlastní obnova; volá se pod zámkem, aby neběžela souběžně se smyčkou."""
         if self._synced:
             return
-        self._synced = True
+        self._loop_step = "obnova obchodů"
 
-        prikazy = await self.ib.app_trades()
-        pozice = await self.ib.positions()
+        # Bez úplného seznamu příkazů a pozic z TWS se obnova odkládá - obchody
+        # by se jinak vyhodnotily jako bez příkazů, resp. s pozicí uzavřenou
+        # během výpadku. Zopakuje ji další průchod monitorovací smyčky.
+        # Pozice se zjišťují první: bez spojení s IBKR se vrátí hned
+        # a stahování všech příkazů dne se ušetří
+        if (pozice := await self.ib.positions()) is None or (
+            prikazy := await self.ib.app_trades()
+        ) is None:
+            # Hlásí se jen první neúspěch, opakování by zaplavila průběh
+            if "restore" not in self._warned:
+                self._warned.add("restore")
+                self.log_event("TWS nevydal příkazy nebo pozice, obnova obchodů se zopakuje.")
+            return
+        self._warned.discard("restore")
+        self._synced = True
 
         # Ze souboru se čte jen při prvním spuštění; při dalším připojení
         # je stav v paměti aktuálnější než ten uložený
@@ -3801,11 +3906,10 @@ class FlowEngine:
         if self.cfg.account.size > 0:
             return
 
+        # Interval platí i pro neúspěšný pokus - nezodpovězený dotaz trvá
+        # až REQUEST_TIMEOUT_SEC a opakovat jej každý průchod by smyčku brzdilo
         loop = asyncio.get_running_loop()
-        if (
-            self._live_account_size is not None
-            and loop.time() - self._account_checked < self.cfg.engine.account_refresh_sec
-        ):
+        if loop.time() - self._account_checked < self.cfg.engine.account_refresh_sec:
             return
         self._account_checked = loop.time()
 
@@ -3830,7 +3934,11 @@ class FlowEngine:
             return
         self._unmanaged_checked = loop.time()
 
+        # Neznámé pozice (TWS bez spojení s IBKR, bez odpovědi) nic nemění -
+        # dosavadní upozornění platí, dokud se pozice nepodaří načíst
         pozice = await self.ib.positions()
+        if pozice is None:
+            return
         rizene = {
             flow.option_conid
             for flow in self.flows.values()

@@ -12,6 +12,7 @@ import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -352,6 +353,54 @@ class TestOdezvyTws(unittest.IsolatedAsyncioTestCase):
         self.sluzba.rtt_ms = 12.0
         self.assertIsNone(await self.sluzba.measure_rtt())
         self.assertIsNone(self.sluzba.rtt_ms)
+
+
+class TestDotazuDoTws(unittest.IsolatedAsyncioTestCase):
+    """
+    Dotazy do TWS, na které ib_async čeká bez časového limitu. Nesmí
+    uváznout - jinak s nimi stojí i monitorovací smyčka.
+    """
+
+    def setUp(self) -> None:
+        self.sluzba = IBService(AppConfig())
+
+    def nikdy_neodpovi(self):
+        """Dotaz, na který TWS nepošle závěrečnou zprávu (například po 2151)."""
+        return asyncio.get_running_loop().create_future()
+
+    def test_chyby_1100_a_1102_sleduji_spojeni_s_ibkr(self):
+        with self.assertLogs("tws_opce.ib_service", level="ERROR"):
+            self.sluzba._on_error(-1, 1100, "Connectivity ... has been lost.", None)
+        self.assertFalse(self.sluzba.ibkr_connected)
+        with self.assertLogs("tws_opce.ib_service", level="ERROR"):
+            self.sluzba._on_error(-1, 1102, "Connectivity ... has been restored", None)
+        self.assertTrue(self.sluzba.ibkr_connected)
+
+    async def test_bez_spojeni_s_ibkr_se_pozice_nezjistuji(self):
+        # Dotaz se vůbec neodešle - TWS by na něj stejně neodpověděl
+        dotazy = []
+        self.sluzba.ib.reqPositionsAsync = lambda: dotazy.append(1)
+        self.sluzba.ibkr_connected = False
+        self.assertIsNone(await self.sluzba.positions())
+        self.assertEqual(dotazy, [])
+
+    async def test_nezodpovezeny_dotaz_na_pozice_vyprsi(self):
+        self.sluzba.ib.reqPositionsAsync = self.nikdy_neodpovi
+        with patch("tws_opce.ib_service.REQUEST_TIMEOUT_SEC", 0.05):
+            with self.assertLogs("tws_opce.ib_service", level="WARNING"):
+                self.assertIsNone(await self.sluzba.positions())
+
+    async def test_nezodpovezene_prikazy_vrati_none(self):
+        # Neúplný seznam příkazů by obnova vyložila jako chybějící příkazy -
+        # dokončené dorazí, otevřené ne
+        async def zadne_prikazy(_api_only):
+            return []
+
+        self.sluzba.ib.reqAllOpenOrdersAsync = self.nikdy_neodpovi
+        self.sluzba.ib.reqCompletedOrdersAsync = zadne_prikazy
+        with patch("tws_opce.ib_service.REQUEST_TIMEOUT_SEC", 0.05):
+            with self.assertLogs("tws_opce.ib_service", level="WARNING"):
+                self.assertIsNone(await self.sluzba.app_trades())
 
 
 class TestPopisuLinky(unittest.TestCase):

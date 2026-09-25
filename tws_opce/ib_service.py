@@ -11,7 +11,7 @@ import math
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from ib_async import (
@@ -50,6 +50,18 @@ OCA_TYPE_REDUCE_WITH_BLOCK = 2
 # Jak dlouho se čeká na odpověď při měření odezvy TWS. Delší čekání už nemá
 # co změřit - nedostavší se odpověď v této lhůtě znamená, že TWS nestíhá
 RTT_TIMEOUT_SEC = 3.0
+
+# Nejdelší čekání na odpověď dotazu do TWS (kontrakty, pozice, příkazy,
+# souhrn účtu). ib_async u těchto dotazů čeká na závěrečnou zprávu bez
+# časového limitu; když ji TWS nepošle (například při výpadku spojení
+# s IBKR odpoví jen informací 2151 bez reqId), čekalo by se navždy a s tím
+# by stála i monitorovací smyčka
+REQUEST_TIMEOUT_SEC = 10.0
+
+# Kódy TWS o spojení mezi TWS a servery IBKR: 1100 ztraceno, 1101 obnoveno
+# se ztrátou dat, 1102 obnoveno s daty zachovanými
+IBKR_LINK_LOST = 1100
+IBKR_LINK_RESTORED = frozenset({1101, 1102})
 
 
 # Jak dlouho se drží stažené minutové svíčky - viz IBService.minute_bars
@@ -127,6 +139,10 @@ class IBService:
         # zatím neměřilo, nebo že poslední pokus neuspěl. Drží se tady, aby
         # ji synchronní obnova hlavičky mohla jen přečíst
         self.rtt_ms: float | None = None
+        # Spojení TWS se servery IBKR. Aplikace může být k TWS připojená, i
+        # když TWS sám spojení s IBKR ztratil (chyba 1100) - dotazy na účet
+        # pak TWS neumí zodpovědět a nemá smysl je posílat
+        self.ibkr_connected: bool = True
         # Denní Order Efficiency Ratio - každé odeslání, úprava i zrušení
         # příkazu prochází place() a cancel(), kde se započítá; vyplněné
         # příkazy si počítadlo čte ze seznamu vyplnění spojení
@@ -168,6 +184,9 @@ class IBService:
                 readonly=conn.readonly,
                 account=conn.account,
             )
+            # Nové spojení vychází z funkční linky k IBKR - případný výpadek
+            # TWS ohlásí znovu chybou 1100
+            self.ibkr_connected = True
             # Typ tržních dat - live / frozen / delayed podle konfigurace
             self.ib.reqMarketDataType(conn.market_data_type)
 
@@ -210,7 +229,14 @@ class IBService:
         """
         Logování chyb z TWS. Kódy 2100-2199 jsou pouze informativní hlášení
         (například stav datového spojení), proto se logují jen jako info.
+
+        Zároveň sleduje spojení TWS se servery IBKR (viz ibkr_connected).
         """
+        if errorCode == IBKR_LINK_LOST:
+            self.ibkr_connected = False
+        elif errorCode in IBKR_LINK_RESTORED:
+            self.ibkr_connected = True
+
         if 2100 <= errorCode < 2200:
             log.info("TWS info %s: %s", errorCode, errorString)
         else:
@@ -276,14 +302,42 @@ class IBService:
     # Účet
     # ------------------------------------------------------------------
 
+    async def _request(self, request: Awaitable[Any], popis: str) -> Any | None:
+        """
+        Počká na odpověď dotazu do TWS nejvýš REQUEST_TIMEOUT_SEC.
+
+        request - čekatelný dotaz ib_async (například reqPositionsAsync())
+        popis   - co se načítá, pro hlášku v logu ("Pozice", ...)
+
+        Vrací odpověď dotazu (seznam, i prázdný), nebo None, pokud nedorazila;
+        chybu i vypršení lhůty zaloguje.
+        """
+        try:
+            return await asyncio.wait_for(request, REQUEST_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            log.warning("%s: TWS neodpověděl do %g s.", popis, REQUEST_TIMEOUT_SEC)
+        except Exception:
+            log.exception("%s se nepodařilo z TWS načíst.", popis)
+        return None
+
+    async def _required(self, request: Awaitable[Any], popis: str) -> Any:
+        """
+        Jako _request, ale bez odpovědi nelze pokračovat: vypršení lhůty
+        vyhodí TimeoutError se srozumitelným textem (volající hlášky
+        zobrazují obchodníkovi) a ostatní chyby projdou beze změny.
+        """
+        try:
+            return await asyncio.wait_for(request, REQUEST_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"{popis}: TWS neodpověděl do {REQUEST_TIMEOUT_SEC:g} s.") from None
+
     async def net_liquidation(self) -> float | None:
         """Vrátí aktuální NetLiquidation účtu z TWS, nebo None při nedostupnosti."""
-        if not self.connected:
+        # Bez spojení s IBKR by TWS souhrn účtu nevydal a dotaz by jen čekal
+        if not self.connected or not self.ibkr_connected:
             return None
-        try:
-            values = await self.ib.accountSummaryAsync(self.account)
-        except Exception:
-            log.exception("Nepodařilo se načíst souhrn účtu.")
+        values = await self._request(self.ib.accountSummaryAsync(self.account), "Souhrn účtu")
+        if values is None:
             return None
 
         for v in values:
@@ -301,7 +355,9 @@ class IBService:
     async def qualify_stock(self, symbol: str) -> Contract:
         """Doplní identifikátory akciového kontraktu podle tickeru."""
         stock = Stock(symbol.upper().strip(), self.cfg.trading.exchange, self.cfg.trading.currency)
-        qualified = await self.ib.qualifyContractsAsync(stock)
+        qualified = await self._required(
+            self.ib.qualifyContractsAsync(stock), f"Ověření tickeru {symbol}"
+        )
         if not qualified or qualified[0] is None:
             raise ValueError(f"Ticker '{symbol}' se nepodařilo najít v TWS.")
         return qualified[0]
@@ -315,8 +371,11 @@ class IBService:
         if cache_key in self._chain_cache:
             return self._chain_cache[cache_key]
 
-        chains = await self.ib.reqSecDefOptParamsAsync(
-            underlying.symbol, "", underlying.secType, underlying.conId
+        chains = await self._required(
+            self.ib.reqSecDefOptParamsAsync(
+                underlying.symbol, "", underlying.secType, underlying.conId
+            ),
+            f"Opční řetězec {underlying.symbol}",
         )
         if not chains:
             raise ValueError(f"Pro ticker '{underlying.symbol}' nejsou dostupné opce.")
@@ -350,7 +409,9 @@ class IBService:
         if trading_class:
             option.tradingClass = trading_class
 
-        details = await self.ib.reqContractDetailsAsync(option)
+        details = await self._required(
+            self.ib.reqContractDetailsAsync(option), f"Ověření opce {symbol}"
+        )
         if not details:
             raise ValueError(
                 f"Opční kontrakt {symbol} {expiration} {right} {strike:g} není v TWS dostupný."
@@ -686,23 +747,26 @@ class IBService:
         order = StopOrder("SELL", quantity, stop_price)
         return self._finish_sell_order(order, ref, oca_group)
 
-    async def app_trades(self) -> dict[str, Trade]:
+    async def app_trades(self) -> dict[str, Trade] | None:
         """
         Vrátí příkazy založené touto aplikací, klíčované značkou z orderRef.
         Používá se po restartu k dohledání příkazů, které v TWS zůstaly.
 
         Načítají se i dokončené příkazy - podle vyplněného nákupu aplikace pozná,
         že jí patří otevřená pozice, ke které se má doplnit zajištění.
+
+        None znamená, že TWS příkazy nevydal. Neúplný seznam by obnova
+        vyložila jako chybějící příkazy, proto se nevrací ani jeho část.
         """
-        try:
-            await self.ib.reqAllOpenOrdersAsync()
-        except Exception:
-            log.exception("Otevřené příkazy se nepodařilo z TWS načíst.")
-        try:
-            # apiOnly=False vrací i příkazy zadané ručně v TWS; filtruje se dále podle značky
-            await self.ib.reqCompletedOrdersAsync(False)
-        except Exception:
-            log.exception("Dokončené příkazy se nepodařilo z TWS načíst.")
+        # Oba seznamy mají v ib_async vlastní klíč požadavku, takže se mohou
+        # stahovat souběžně. apiOnly=False vrací i příkazy zadané ručně
+        # v TWS; filtruje se dále podle značky
+        otevrene, dokoncene = await asyncio.gather(
+            self._request(self.ib.reqAllOpenOrdersAsync(), "Otevřené příkazy"),
+            self._request(self.ib.reqCompletedOrdersAsync(False), "Dokončené příkazy"),
+        )
+        if otevrene is None or dokoncene is None:
+            return None
 
         nalezene: dict[str, Trade] = {}
         for trade in self.ib.trades():
@@ -755,13 +819,19 @@ class IBService:
             nalezene.setdefault(flow_id, {})[fill.execution.execId] = (druh, float(castka))
         return nalezene
 
-    async def positions(self) -> dict[int, PositionInfo]:
-        """Vrátí držené opční pozice podle conId kontraktu."""
-        try:
-            await self.ib.reqPositionsAsync()
-        except Exception:
-            log.exception("Pozice se nepodařilo z TWS načíst.")
-            return {}
+    async def positions(self) -> dict[int, PositionInfo] | None:
+        """
+        Vrátí držené opční pozice podle conId kontraktu.
+
+        None znamená, že pozice nejsou známé - TWS nemá spojení s IBKR,
+        neodpověděl včas, nebo dotaz selhal. Prázdný slovník by naopak
+        tvrdil, že účet nic nedrží.
+        """
+        # Bez spojení s IBKR TWS pozice nevydá (odpoví jen informací 2151)
+        if not self.ibkr_connected:
+            return None
+        if await self._request(self.ib.reqPositionsAsync(), "Pozice") is None:
+            return None
         return {
             p.contract.conId: PositionInfo(
                 conid=p.contract.conId,

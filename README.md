@@ -578,6 +578,11 @@ projít.
    aplikace. Objeví se jen u rozpracovaných obchodů a jen tehdy, když hlídání
    skutečně běží — vyžaduje spuštěnou monitorovací smyčku, navázané spojení
    s TWS a čerstvý průchod. Zhasne tedy i v případě, že se smyčka zasekne.
+   Stojí-li smyčka déle než půl minuty, objeví se navíc pod hlavičkou
+   blikající červený pruh s dobou zastavení a krokem, na kterém uvázla
+   (například *kontrola pozic bez dozoru* nebo *obchod NVDA-47*), a do
+   průběhu se zapíše „POZOR: monitorovací smyčka stojí…" a po rozběhnutí
+   „Monitorovací smyčka znovu běží". Nerozběhne-li se, aplikaci restartujte.
    Každý řádek má ve sloupci *Stav*, pod odznakem stavu, akci celého
    obchodu: běžící obchod tlačítko **Zrušit** (drží-li pozici, aplikace se
    nejprve zeptá, co s ní), ukončený obchod **Odstranit z přehledu**.
@@ -884,6 +889,13 @@ pod dozorem, přestože obchod míří na jiný strike nebo expiraci. Sama k nim
 nic nezadává — nezná jejich PT ani SL. Interval kontroly
 je `engine.unmanaged_check_sec` (výchozí 30 s); `0` vypne průběžnou kontrolu,
 při startu a po každém připojení k TWS však proběhne vždy.
+
+Každý dotaz do TWS (pozice, příkazy, souhrn účtu, ověření kontraktů) čeká
+na odpověď nejvýš 10 s. Ztratí-li TWS spojení se servery IBKR (chyba 1100),
+pozice ani souhrn účtu se až do jeho obnovení (1101/1102) vůbec nezjišťují —
+TWS by na dotaz odpověděl jen informací 2151 *Positions info is not available
+yet* a pozice nikdy neposlal. Neznámé pozice nic nemění: dosavadní upozornění
+zůstávají a nová se nehlásí.
 
 ## Přehled výsledků
 
@@ -1386,6 +1398,13 @@ sama k ní nic nezadává, protože nezná původní PT ani SL.
 Totéž proběhne po **každém obnovení spojení** — po ručním odpojení a připojení
 tlačítkem i po výpadku sítě. Objekty příkazů z minulého spojení už nejsou platné,
 takže se obchody pokaždé znovu spárují s tím, co je skutečně v TWS.
+
+Nevydá-li TWS při obnově seznam příkazů nebo pozic (výpadek spojení s IBKR,
+odpověď nedorazí do 10 s), obnova se **odloží** — z chybějící odpovědi by
+jinak vyšly obchody bez příkazů nebo pozice „uzavřené během výpadku".
+Monitorovací smyčka ji pak zkouší znovu při každém průchodu a obchody
+do jejího dokončení nehlídá; v průběhu se to ohlásí hláškou „TWS nevydal
+příkazy nebo pozice, obnova obchodů se zopakuje".
 
 Podmínkou je, aby aplikace používala **stejné `connection.client_id`** —
 s jiným by své dřívější příkazy nemohla rušit ani měnit. Ukládání lze vypnout

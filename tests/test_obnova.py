@@ -716,5 +716,51 @@ class TestObnovaStavu(ZakladObnovy):
         self.assertEqual(novy.flows, {})
 
 
+class TestNedostupnychPozic(ZakladObnovy):
+    """
+    TWS pozice nevydá (výpadek spojení s IBKR, vypršení lhůty). Z chybějící
+    odpovědi se nesmí vyvozovat, že účet nic nedrží.
+    """
+
+    async def test_obnova_bez_pozic_se_odlozi_a_zopakuje(self):
+        async def priprav(flow):
+            # Nakoupená a zajištěná pozice, restart ale přijde během výpadku
+            self.ib.fill(flow.entry_trade, 2, 3.00)
+            await self.engine._tick()
+            await self.engine._tick()
+            self.ib.held_positions[OPTION_CONID] = 2
+            self.ib.positions_unavailable = True
+
+        # Obnova nesmí obchod prohlásit za uzavřený - neobnoví nic
+        novy = await self.zaloz_a_restartuj(priprav)
+        self.assertEqual(novy.flows, {})
+        self.assertFalse(novy._synced)
+
+        # Smyčka obnovu zkouší znovu a do té doby obchody nemonitoruje;
+        # neúspěch se do průběhu hlásí jen jednou
+        self.assertFalse(await novy._tick())
+        hlaseni = [z for _, z in novy.events if "obnova obchodů se zopakuje" in z]
+        self.assertEqual(len(hlaseni), 1)
+
+        # Pozice jsou zpět - smyčka obnovu dokončí sama
+        self.ib.positions_unavailable = False
+        self.assertTrue(await novy._tick())
+        self.assertTrue(novy._synced)
+        self.assertEqual(list(novy.flows.values())[0].state, FlowState.EXIT_ARMED)
+
+    async def test_nedostupne_pozice_nezrusi_upozorneni(self):
+        novy = FlowEngine(self.cfg, self.ib)
+        await novy.restore()
+        self.ib.held_positions[555555] = 2
+        await novy._tick()
+        self.assertIn(555555, novy.unmanaged)
+
+        # Neznámé pozice nejsou důkaz, že cizí pozice zmizela
+        self.ib.positions_unavailable = True
+        novy._unmanaged_checked = 0.0
+        await novy._tick()
+        self.assertIn(555555, novy.unmanaged)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

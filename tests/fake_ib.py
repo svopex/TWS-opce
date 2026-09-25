@@ -60,6 +60,8 @@ class FakeIBService(IBService):
         self.fills: list[Fill] = []
         # Opční pozice na účtu podle conId - test je nastavuje pro scénáře obnovy
         self.held_positions: dict[int, float] = {}
+        # TWS pozice nevydá (výpadek spojení s IBKR, vypršení lhůty)
+        self.positions_unavailable: bool = False
         # Strike ceny, které řetězec nabízí, ale kontrakt pro ně v TWS neexistuje
         self.unavailable_strikes: set[float] = set()
         # Počet odběratelů tržních dat podle conId - testy tak odhalí odběr,
@@ -241,8 +243,10 @@ class FakeIBService(IBService):
         """Vyplnění zaznamenaná testem místo těch, která by přišla z TWS."""
         return list(self.fills)
 
-    async def positions(self) -> dict[int, PositionInfo]:
-        """Držené opční pozice nastavené testem."""
+    async def positions(self) -> dict[int, PositionInfo] | None:
+        """Držené opční pozice nastavené testem, None při jejich nedostupnosti."""
+        if self.positions_unavailable:
+            return None
         return {
             conid: PositionInfo(
                 conid=conid,

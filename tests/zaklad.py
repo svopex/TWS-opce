@@ -62,6 +62,9 @@ class ZakladEnginu(unittest.IsolatedAsyncioTestCase):
         self.cfg = vychozi_config()
         self.ib = FakeIBService(self.cfg)
         self.engine = FlowEngine(self.cfg, self.ib)
+        # Obchody jsou spárované s náhradou TWS, jako po obnově při startu -
+        # jinak by si obnovu vynutil první průchod smyčkou
+        self.engine._synced = True
 
     def podvrhni_cas_burzy(self, hodina: int, minuta: int, den: int = 19) -> None:
         """

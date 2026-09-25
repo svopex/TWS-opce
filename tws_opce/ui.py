@@ -480,6 +480,11 @@ class TradingUI:
             # stránce, takže pruh nejde přehlédnout
             self.plan_alarm_label = ui.label().classes("poplach")
             self.plan_alarm_label.set_visibility(False)
+            # Poplach uvázlé monitorovací smyčky: aplikace vypadá připojená,
+            # ale obchody nehlídá - bez výrazného pruhu by to prozradil jen
+            # chybějící puntík hlídání v tabulce
+            self.stall_alarm_label = ui.label().classes("poplach")
+            self.stall_alarm_label.set_visibility(False)
 
     def _toggle_dark(self) -> None:
         """Přepne světlý/tmavý vzhled a volbu si zapamatuje."""
@@ -2222,6 +2227,19 @@ class TradingUI:
         self.report_dialog.refresh()
         self.import_dialog.refresh()
         self._refresh_plan()
+        self._refresh_stall()
+
+    def _refresh_stall(self) -> None:
+        """Poplach v hlavičce, když monitorovací smyčka stojí (viz monitoring_stall)."""
+        stall = self.engine.monitoring_stall()
+        self.stall_alarm_label.set_visibility(stall is not None)
+        if stall is None:
+            return
+        stoji, krok = stall
+        self.stall_alarm_label.set_text(
+            f"Monitoring obchodů stojí {format_countdown(stoji)} (krok: {krok}) - "
+            f"obchody nejsou hlídány. Pokud se nerozběhne, restartujte aplikaci."
+        )
 
     def _refresh_market_open(self) -> None:
         """Odpočet do otevření burzy v hlavičce - během seance se skrývá."""
