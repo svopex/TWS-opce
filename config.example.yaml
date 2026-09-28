@@ -248,7 +248,7 @@ trading:
   # oer_limit). Po dosažení stropu zůstává prodleva na něm - počet odstranění
   # se u obchodu nenuluje, od začátku začíná až nový obchod.
   # Hodnota nejvýš rearm_delay_sec prodlužování vypíná.
-  rearm_delay_max_sec: 180.0
+  rearm_delay_max_sec: 120.0
 
   # Násobek prodlevy při každém dalším odstranění kvůli spreadu. Při 1.5
   # a základu 30 s: 30, 45, 67.5, 101, 152, 228 … s až po strop.
