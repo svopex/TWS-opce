@@ -105,7 +105,7 @@ trading:
   # i pro úrovně zadané na opci (SL v USD = PT v USD × poměr); při smíšeném
   # režimu se zisk na PT převádí mezi podkladem a cenou opce modelem
   # z implikované volatility (stejně jako sloupec "Zisk na PT").
-  sl_to_pt_ratio: 1.0
+  sl_to_pt_ratio: 0.5
 
   # Výchozí stav voleb "na podkladu" v blocích režimu PT a SL ve formuláři
   # (pro každý obchod je lze přepnout):
@@ -128,7 +128,7 @@ trading:
   # při nákupu k SL připočte skutečně zaplacený spread (nákupní cena minus
   # BID), takže zadaná hodnota odpovídá pohybu trhu; ztráta na kontrakt
   # o tento spread naroste a doporučené množství úměrně klesne.
-  sl_spread_compensated: false
+  sl_spread_compensated: true
 
   # Která úroveň se ve formuláři zadává jako prvotní; druhá se dopočítá podle
   # sl_to_pt_ratio a lze ji ručně přepsat. Určuje výchozí stav dvojice voleb
@@ -376,7 +376,7 @@ import:
   # vidět, proto má každé vlastní hodnotu; prázdná (null) nechá pole prázdné.
   pt_pct: null
   pt_usd: null
-  pt_premium_pct: 3.0
+  pt_premium_pct: 10.0
 
   # Výchozí volba runneru - násobek původní vzdálenosti PT od vstupu.
   # Povolené jsou násobky nabízené tlačítky (1, 1.5, 2, 2.5, 3),
