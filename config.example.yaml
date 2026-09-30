@@ -325,7 +325,7 @@ trading:
   # procent. Brání přehazování množství tam a zpět (3 -> 4 -> 3 ks) při
   # drobném pohybu prémie - každá taková úprava zvyšuje OER. Snížení
   # množství se posílá vždy, chrání riziko na obchod. 0 = bez pásma.
-  refresh_increase_margin_pct: 5.0
+  refresh_increase_margin_pct: 5
 
   # Automatické uzavření obchodů krátce před koncem obchodování burzy.
   # Čekající obchody se zruší (nákupní příkaz se odstraní z trhu),
