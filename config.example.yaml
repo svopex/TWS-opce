@@ -382,7 +382,7 @@ import:
   # Povolené jsou násobky nabízené tlačítky (1, 1.5, 2, 2.5, 3),
   # 0 znamená runner nepoužít. Předvyplňuje tlačítka Runner v dialogu
   # i ve formuláři Zadání obchodu.
-  runner_multiple: 2.5
+  runner_multiple: 1.5
 
   # Nejmenší velikost pozice, které se runner nastaví (včetně). Vyplní se do
   # pole "Runner od [ks]" vedle tlačítek Runner (v dialogu i ve formuláři);
