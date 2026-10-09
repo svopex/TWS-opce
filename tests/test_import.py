@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -19,6 +22,7 @@ from tws_opce.import_dialog import (
     REZIM_PREMIUM,
     REZIM_USD,
     RUNNER_VYPNUTO,
+    TOLERANCE_PLANU_SEC,
     ImportDialog,
     RadekPozice,
     runner_klic,
@@ -26,6 +30,7 @@ from tws_opce.import_dialog import (
     vychozi,
 )
 from tws_opce.importer import ImportedPosition
+from tws_opce.sdileni import SdilenyPrvek
 from tws_opce.models import (
     MODE_PREMIUM,
     EntryMissedError,
@@ -376,7 +381,7 @@ class TestZamekRadku(unittest.TestCase):
         cfg.state.enabled = False
         self.engine = FlowEngine(cfg, FakeIBService(cfg))
         # Dialog se nevykresluje - zámek se ptá jen na engine a id obchodu
-        self.dialog = ImportDialog(cfg, self.engine, self.engine.ib, None)
+        self.dialog = ImportDialog(cfg, self.engine, self.engine.ib)
         self.pozice = importer.ImportedPosition(
             key="AMZN Long+", symbol="AMZN", entry_price=266.4, target_price=269.33
         )
@@ -533,7 +538,7 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         cfg.state.enabled = False
         self.engine = FlowEngine(cfg, FakeIBService(cfg))
         self.engine._live_account_size = 6000.0
-        self.dialog = ImportDialog(cfg, self.engine, self.engine.ib, None)
+        self.dialog = ImportDialog(cfg, self.engine, self.engine.ib)
         self.pozice = ImportedPosition(
             key="AMZN Long+", symbol="AMZN", entry_price=266.4, target_price=269.33
         )
@@ -776,10 +781,10 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("nezapnut", radek.stav_label.text)
 
     async def test_prubezny_prepocet_jde_do_zadani_z_konfigurace(self):
-        # Bez vykreslených prvků platí konfigurace: zapnuto, 30 s
+        # Výchozí stav prvků je z konfigurace: zapnuto, 30 s
         await self.zadej(self.radek())
         self.assertEqual(self.zadani[0].refresh_interval_sec, 30.0)
-        self.dialog.cfg.import_.refresh_interval = False
+        self.dialog.interval_checkbox.set_value(False)
         await self.zadej(self.radek())
         self.assertIsNone(self.zadani[1].refresh_interval_sec)
 
@@ -919,7 +924,7 @@ class TestKontrolySvicekVDialogu(ZakladEnginu):
         # Středa 19. 8. 2026, 9:45 čas burzy; podklad na 230, vstup 232 = long
         self.podvrhni_cas_burzy(9, 45)
         self.ib.price_underlying = 230.0
-        self.dialog = ImportDialog(self.cfg, self.engine, self.ib, None)
+        self.dialog = ImportDialog(self.cfg, self.engine, self.ib)
 
         # Prvky dialogu, na které příprava sahá; rozhraní se nevykresluje
         self.dialog.rezim = Prepinac(REZIM_USD)
@@ -983,8 +988,7 @@ class TestMinimumProRunner(unittest.TestCase):
         self.cfg.state.enabled = False
         self.engine = FlowEngine(self.cfg, FakeIBService(self.cfg))
         # Dialog se nevykresluje, ovládací prvky nahrazují jednoduché atrapy
-        self.dialog = ImportDialog(self.cfg, self.engine, self.engine.ib, None)
-        self.dialog.runner_buttons = {}
+        self.dialog = ImportDialog(self.cfg, self.engine, self.engine.ib)
         self.dialog.runner_min_input = Pole(3)
         self.pozice = importer.ImportedPosition(
             key="AMZN Long+", symbol="AMZN", entry_price=266.4, target_price=269.33
@@ -1078,7 +1082,7 @@ class TestPrepoctuNaVyzadani(unittest.TestCase):
         cfg = AppConfig()
         cfg.state.enabled = False
         self.engine = FlowEngine(cfg, FakeIBService(cfg))
-        self.dialog = ImportDialog(cfg, self.engine, self.engine.ib, None)
+        self.dialog = ImportDialog(cfg, self.engine, self.engine.ib)
         # Prvky, na které přepnutí režimu sahá; rozhraní se nevykresluje
         self.dialog.rezim = Prepinac(REZIM_PCT)
         self.dialog.pct_input = Pole()
@@ -1142,7 +1146,7 @@ class TestVychozihoNastaveniImportu(unittest.TestCase):
 
     def dialog(self) -> ImportDialog:
         """Dialog nad aktuální konfigurací; rozhraní se nevykresluje."""
-        return ImportDialog(self.cfg, self.engine, self.engine.ib, None)
+        return ImportDialog(self.cfg, self.engine, self.engine.ib)
 
     def test_nasobek_runneru_z_konfigurace(self):
         self.cfg.import_.runner_multiple = 1.5
@@ -1160,7 +1164,6 @@ class TestVychozihoNastaveniImportu(unittest.TestCase):
     def test_minimum_pro_runner_je_ze_sekce_import(self):
         self.cfg.import_.runner_min_quantity = 5
         dialog = self.dialog()
-        dialog.runner_min_input = None
         self.assertEqual(dialog._runner_min(), 5)
 
     def test_prazdna_volba_prebira_nastaveni_z_tradingu(self):
@@ -1184,7 +1187,7 @@ class TestVarovaniNaSpojeni(unittest.TestCase):
         self.cfg.state.enabled = False
         self.ib = FakeIBService(self.cfg)
         self.engine = FlowEngine(self.cfg, self.ib)
-        self.dialog = ImportDialog(self.cfg, self.engine, self.ib, None)
+        self.dialog = ImportDialog(self.cfg, self.engine, self.ib)
         # Varování nad tlačítky; rozhraní se nevykresluje
         self.dialog.spojeni_label = Popisek()
 
@@ -1232,7 +1235,7 @@ class TestVarovaniNaSpojeni(unittest.TestCase):
         self.dialog._zamceno = lambda radek: False
         self.engine.market_open_elapsed = lambda: None
         self.engine.market_open_seconds = lambda: 3600.0
-        with mock.patch.object(import_dialog.ui, "notify") as hlaska:
+        with mock.patch.object(self.dialog, "_oznam") as hlaska:
             self.dialog._prepni_plan()
         self.assertTrue(self.dialog.plan_aktivni)
         # Místo potvrzení, že zadání proběhne, jen hláška o chybějícím
@@ -1241,6 +1244,281 @@ class TestVarovaniNaSpojeni(unittest.TestCase):
         self.assertEqual(len(hlasky), 1)
         self.assertEqual(hlasky[0].kwargs.get("type"), "negative")
         self.assertEqual(hlasky[0].kwargs.get("timeout"), 0)
+
+
+class TestSdilenyPrvek(unittest.TestCase):
+    """Sdílený stav prvku - náhrada prvku NiceGUI nezávislá na okně prohlížeče."""
+
+    def test_obsluhy_bezi_jen_pri_zmene_hodnoty(self):
+        prvek = SdilenyPrvek(1)
+        zmeny: list = []
+        prvek.on_value_change(lambda e: zmeny.append(e.value))
+        prvek.set_value(1)
+        prvek.set_value(2)
+        self.assertEqual(zmeny, [2])
+        self.assertEqual(prvek.value, 2)
+
+    def test_stav_si_pamatuje_i_bez_okna(self):
+        # Bez připojeného okna se nic nevykresluje, stav ale platí dál
+        prvek = SdilenyPrvek(text="a")
+        prvek.set_text("b")
+        prvek.set_visibility(False)
+        prvek.set_enabled(False)
+        prvek.classes(add="x").props(add="outline color=orange-8")
+        self.assertEqual(prvek.text, "b")
+        self.assertFalse(prvek.visible)
+        self.assertFalse(prvek.enabled)
+
+
+class PrvekOkna:
+    """
+    Náhrada prvku NiceGUI v okně prohlížeče. Skrytí modeluje stejně jako
+    NiceGUI - třídou "hidden", kterou mění jen skutečná změna viditelnosti.
+    """
+
+    def __init__(self, tridy: str) -> None:
+        self.trida: list[str] = tridy.split()
+        self.visible = True
+        self.text = ""
+        self.is_deleted = False
+
+    def set_text(self, text: str) -> None:
+        self.text = text
+
+    def set_visibility(self, visible: bool) -> None:
+        if visible == self.visible:
+            return
+        self.visible = visible
+        if visible and "hidden" in self.trida:
+            self.trida.remove("hidden")
+        if not visible and "hidden" not in self.trida:
+            self.trida.append("hidden")
+
+    def classes(self, add=None, *, remove=None) -> None:
+        for trida in (remove or "").split():
+            if trida in self.trida:
+                self.trida.remove(trida)
+        for trida in (add or "").split():
+            if trida not in self.trida:
+                self.trida.append(trida)
+
+    def props(self, add=None, *, remove=None) -> None:
+        pass
+
+    @property
+    def zobrazeny(self) -> bool:
+        """Co skutečně vidí obchodník - rozhoduje třída, ne příznak."""
+        return "hidden" not in self.trida
+
+
+class TestViditelnostSdilenehoPrvku(unittest.TestCase):
+    """
+    Skrytý prvek se změněnými třídami (varování na spojení) se nesmí
+    odkrýt - ani v nově otevřeném okně, ani další změnou tříd.
+    """
+
+    def varovani(self) -> SdilenyPrvek:
+        """Varování, které se ukázalo bez spojení a po připojení skrylo."""
+        prvek = SdilenyPrvek(text="")
+        prvek.set_visibility(True)
+        prvek.set_text("TWS není připojen")
+        prvek.classes(add="poplach", remove="varovani-spojeni-klid")
+        prvek.set_visibility(False)
+        return prvek
+
+    def test_nove_okno_skryte_varovani_neodkryje(self):
+        okno = PrvekOkna("varovani-spojeni varovani-spojeni-klid")
+        self.varovani().pripoj(okno)
+        self.assertFalse(okno.zobrazeny)
+
+    def test_zmena_trid_skryti_zachova(self):
+        prvek = self.varovani()
+        okno = prvek.pripoj(PrvekOkna("varovani-spojeni"))
+        prvek.classes(add="varovani-spojeni-klid", remove="poplach")
+        self.assertFalse(okno.zobrazeny)
+        # Odkrytí a znovuskrytí se do okna propíše
+        prvek.set_visibility(True)
+        self.assertTrue(okno.zobrazeny)
+        prvek.set_visibility(False)
+        self.assertFalse(okno.zobrazeny)
+
+
+class TestPlanBezOkna(ZakladEnginu):
+    """
+    Naplánované zadání žije ve sdíleném stavu na serveru - doběhne i bez
+    otevřeného dialogu či prohlížeče a znovuotevření dialogu ho nezmění.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Sdílený stav bez jediného vykresleného okna
+        self.dialog = ImportDialog(self.cfg, self.engine, self.ib)
+        self.dialog._vykresli_tabulku(
+            [
+                ImportedPosition(
+                    key="AMZN Long+", symbol="AMZN", entry_price=266.4, target_price=269.33
+                )
+            ]
+        )
+        # Hlášky bez okna jen spolkne
+        self.dialog._oznam = mock.Mock()
+        # Úlohy na pozadí běží v testovací smyčce místo smyčky NiceGUI
+        uloha = mock.patch.object(
+            import_dialog.background_tasks,
+            "create",
+            lambda coro, name="": asyncio.get_running_loop().create_task(coro),
+        )
+        uloha.start()
+        self.addCleanup(uloha.stop)
+
+    async def test_plan_se_spusti_ze_serverove_obnovy(self):
+        kroky: list[str] = []
+
+        async def priprav() -> None:
+            kroky.append("priprava")
+
+        async def zadej() -> None:
+            kroky.append("zadani")
+
+        self.dialog._priprav_vse = priprav
+        self.dialog._zadej = zadej
+        self.dialog.plan_aktivni = True
+        self.dialog.plan_prodleva = 15.0
+        # Trh je otevřený déle než prodleva - okamžik spuštění nastal
+        self.engine.market_open_seconds = lambda: None
+        self.engine.market_open_elapsed = lambda: 20.0
+
+        self.dialog.refresh()
+        self.assertTrue(self.dialog.plan_bezi)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        self.assertEqual(kroky, ["priprava", "zadani"])
+        self.assertFalse(self.dialog.plan_bezi)
+        self.assertFalse(self.dialog.plan_aktivni)
+
+    def test_znovuotevreni_dialogu_nemeni_vyber_planu(self):
+        radek = self.dialog.radky[0]
+        radek.vybrano.set_value(True)
+        self.dialog.plan_aktivni = True
+        self.dialog.pri_otevreni()
+        # Řádek bez přípravy by jinak otevření dialogu odškrtlo
+        self.assertTrue(radek.vybrano.value)
+
+        self.dialog.plan_aktivni = False
+        self.dialog.pri_otevreni()
+        self.assertFalse(radek.vybrano.value)
+
+
+class TestObnovaPoRestartu(unittest.TestCase):
+    """
+    Stav dialogu se ukládá na disk vedle stavu obchodů a restart aplikace
+    vrátí tabulku i naplánované zadání - ne však plán, který okamžik
+    spuštění propásl, ani plán přerušený uprostřed běhu.
+    """
+
+    def setUp(self) -> None:
+        adresar = tempfile.TemporaryDirectory()
+        self.addCleanup(adresar.cleanup)
+        self.cfg = AppConfig()
+        self.cfg.state.enabled = True
+        self.cfg.state.file = str(Path(adresar.name) / "state.json")
+        self.ted = datetime(2026, 10, 9, 13, 0, tzinfo=timezone.utc)
+
+    def dialog(self) -> ImportDialog:
+        """Sdílený stav dialogu nad novým enginem - jako po startu aplikace."""
+        engine = FlowEngine(self.cfg, FakeIBService(self.cfg))
+        # Do otevření trhu zbývá hodina, obchody z TWS jsou obnovené
+        engine.market_open_seconds = lambda: 3600.0
+        engine.market_open_elapsed = lambda: None
+        engine._restored = True
+        dialog = ImportDialog(self.cfg, engine, engine.ib)
+        dialog._ted = lambda: self.ted
+        dialog._oznam = mock.Mock()
+        return dialog
+
+    def zapnuty_plan(self) -> ImportDialog:
+        """Dialog s načtenou pozicí, ručně vyplněnými čísly a zapnutým plánem."""
+        dialog = self.dialog()
+        dialog._vykresli_tabulku(
+            [
+                ImportedPosition(
+                    key="AMZN Long+", symbol="AMZN", entry_price=266.4, target_price=269.33
+                )
+            ]
+        )
+        radek = dialog.radky[0]
+        radek.pt_input.set_value(90.0)
+        radek.sl_input.set_value(45.0)
+        radek.qty_input.set_value(4)
+        dialog.spread_input.set_value(7.5)
+        # Plán jde zapnout jen s vyplněným cílem zvoleného režimu
+        for pole in (dialog.pct_input, dialog.usd_input, dialog.premium_input):
+            pole.set_value(30.0)
+        dialog._prepni_plan()
+        self.assertTrue(dialog.plan_aktivni)
+        return dialog
+
+    def test_restart_obnovi_tabulku_i_plan(self):
+        puvodni = self.zapnuty_plan()
+        self.assertTrue(puvodni.cesta_stavu().exists())
+
+        obnoveny = self.dialog()
+        obnoveny.obnov()
+        self.assertTrue(obnoveny.plan_aktivni)
+        self.assertEqual(obnoveny.plan_okamzik, puvodni.plan_okamzik)
+        self.assertEqual(obnoveny.spread_input.value, 7.5)
+        radek = obnoveny.radky[0]
+        self.assertEqual(radek.pozice.symbol, "AMZN")
+        self.assertEqual(
+            (radek.pt_input.value, radek.sl_input.value, radek.qty_input.value),
+            (90.0, 45.0, 4),
+        )
+        self.assertTrue(radek.vybrano.value)
+        self.assertTrue(obnoveny._pripraveno(radek))
+
+    def test_plan_ktery_okamzik_propasl_se_zrusi(self):
+        self.zapnuty_plan()
+        # Aplikace neběžela přes okamžik spuštění (otevření trhu za hodinu
+        # plus prodleva) i lhůtu po něm
+        self.ted += timedelta(hours=1, seconds=TOLERANCE_PLANU_SEC + 600)
+        obnoveny = self.dialog()
+        obnoveny.engine.market_open_seconds = lambda: None
+        obnoveny.engine.market_open_elapsed = lambda: 3600.0
+        obnoveny.obnov()
+        obnoveny._spust_plan = mock.Mock()
+        obnoveny.refresh()
+        self.assertFalse(obnoveny.plan_aktivni)
+        obnoveny._spust_plan.assert_not_called()
+        # Zrušení se uloží - další restart už plán nevrátí
+        znovu = self.dialog()
+        znovu.obnov()
+        self.assertFalse(znovu.plan_aktivni)
+
+    def test_plan_pocka_na_obnovu_obchodu(self):
+        self.zapnuty_plan()
+        self.ted += timedelta(hours=1, seconds=30)
+        obnoveny = self.dialog()
+        obnoveny.engine._restored = False
+        obnoveny.engine.market_open_seconds = lambda: None
+        obnoveny.engine.market_open_elapsed = lambda: 3630.0
+        obnoveny.obnov()
+        obnoveny._spust_plan = mock.Mock()
+        obnoveny.refresh()
+        # Okamžik nastal, ale obchody z předchozího běhu engine ještě nezná
+        self.assertTrue(obnoveny.plan_aktivni)
+        self.assertFalse(obnoveny.plan_bezi)
+        self.assertIn("čeká na obnovu", obnoveny.plan_popis())
+
+    def test_preruseny_beh_planu_se_neopakuje(self):
+        dialog = self.zapnuty_plan()
+        dialog.plan_aktivni = False
+        dialog.plan_bezi = True
+        dialog._uloz()
+        obnoveny = self.dialog()
+        obnoveny.obnov()
+        self.assertFalse(obnoveny.plan_aktivni)
+        self.assertFalse(obnoveny.plan_bezi)
+        self.assertIn("přerušil restart", obnoveny.engine.events[0][1])
 
 
 class TestKonfiguraceImportu(unittest.TestCase):

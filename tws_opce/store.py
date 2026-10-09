@@ -164,7 +164,6 @@ def save(
     bez uložení by ho restart během dne vynuloval a aplikace by rozpočet
     zpráv přečerpala
     """
-    cesta = Path(path)
     obsah: dict[str, Any] = {
         "version": FORMAT_VERSION,
         "saved_at": datetime.now().isoformat(),
@@ -172,7 +171,18 @@ def save(
     }
     if order_stats is not None:
         obsah["order_stats"] = order_stats
+    save_json(obsah, path)
 
+
+def save_json(obsah: Any, path: str | Path) -> None:
+    """
+    Zapíše data jako JSON. Zápis probíhá přes dočasný soubor a přejmenování,
+    aby při pádu aplikace nezůstal soubor rozepsaný; chyba se jen zaloguje.
+
+    obsah - data k uložení (serializovatelná do JSON)
+    path - cílový soubor
+    """
+    cesta = Path(path)
     docasny: str | None = None
     try:
         cesta.parent.mkdir(parents=True, exist_ok=True)
@@ -190,7 +200,7 @@ def save(
         os.replace(docasny, cesta)
         docasny = None
     except Exception:
-        log.exception("Stav obchodů se nepodařilo uložit do %s.", cesta)
+        log.exception("Stav se nepodařilo uložit do %s.", cesta)
     finally:
         # Po úspěšném přejmenování už dočasný soubor neexistuje; zbyde jen
         # tehdy, když zápis nebo přejmenování selhalo
@@ -201,6 +211,29 @@ def save(
                 log.warning("Dočasný soubor %s se nepodařilo odstranit.", docasny)
 
 
+def load_json(path: str | Path, verze: int) -> dict[str, Any] | None:
+    """
+    Načte uložený stav zapsaný přes save_json. Chybějící, poškozený nebo
+    jinou verzí formátu zapsaný soubor vrací None - stav se pak ignoruje.
+
+    path - soubor se stavem
+    verze - očekávaná hodnota klíče "version"
+    """
+    cesta = Path(path)
+    if not cesta.exists():
+        return None
+    try:
+        with cesta.open("r", encoding="utf-8") as fh:
+            obsah = json.load(fh)
+    except Exception:
+        log.exception("Uložený stav v %s se nepodařilo načíst.", cesta)
+        return None
+    if not isinstance(obsah, dict) or obsah.get("version") != verze:
+        log.warning("Uložený stav v %s má neznámou verzi formátu - ignoruji jej.", cesta)
+        return None
+    return obsah
+
+
 def load_state(path: str | Path) -> tuple[list[Flow], Any]:
     """
     Načte uložený stav jedním čtením souboru: obchody a počítadlo zpráv
@@ -208,19 +241,8 @@ def load_state(path: str | Path) -> tuple[list[Flow], Any]:
     Chybějící, poškozený nebo neznámou verzí zapsaný soubor vrací prázdný
     seznam a None.
     """
-    cesta = Path(path)
-    if not cesta.exists():
-        return [], None
-
-    try:
-        with cesta.open("r", encoding="utf-8") as fh:
-            obsah = json.load(fh)
-    except Exception:
-        log.exception("Uložený stav v %s se nepodařilo načíst.", cesta)
-        return [], None
-
-    if not isinstance(obsah, dict) or obsah.get("version") != FORMAT_VERSION:
-        log.warning("Uložený stav v %s má neznámou verzi formátu - ignoruji jej.", cesta)
+    obsah = load_json(path, FORMAT_VERSION)
+    if obsah is None:
         return [], None
 
     flows: list[Flow] = []

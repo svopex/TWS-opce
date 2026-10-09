@@ -3984,6 +3984,20 @@ class FlowEngine:
         return popis
 
     @property
+    def flows_restored(self) -> bool:
+        """
+        Jsou obchody z uloženého stavu načtené a ověřené v TWS?
+
+        Do té doby engine neví o obchodech z předchozího běhu - nové zadání
+        téhož tickeru by čekající obchod nenahradilo, ale založilo vedle něj
+        druhý. Naplánované zadání po restartu proto čeká na tuto chvíli.
+        Bez ukládání stavu není co obnovovat.
+        """
+        if not self.cfg.state.enabled:
+            return True
+        return self._restored and not self._restore_lock.locked()
+
+    @property
     def reconnects_automatically(self) -> bool:
         """
         Obnovuje se spojení s TWS samo? Musí to povolit konfigurace

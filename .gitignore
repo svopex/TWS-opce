@@ -6,3 +6,4 @@ logs/
 .playwright-mcp/
 state.json
 .nicegui/
+state-import.json

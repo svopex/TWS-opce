@@ -1116,6 +1116,26 @@ pruh s počtem pozic a odpočtem a titulek záložky prohlížeče začíná
 „⚠ TWS NEPŘIPOJEN“. Zapnutí plánu bez spojení navíc ohlásí hláška, která
 sama nezmizí.
 
+Plán běží v aplikaci, ne v okně prohlížeče: zavření dialogu ani celého
+prohlížeče ho nezastaví a pozice se po otevření trhu zadají i bez otevřené
+stránky. Stav dialogu (načtený soubor, nastavení, tabulka i plán) je jeden
+pro celou aplikaci a sdílí ho všechna okna. Znovu otevřená stránka dialog
+se zapnutým plánem rovnou ukáže; stejně tak ho po stisku **Načíst ze
+souboru** najdete se stisknutým tlačítkem a odpočtem. Plán ukončí opětovný
+stisk tlačítka, ruční **Přepočítat** či **Zadat vybrané pozice do trhu**
+a načtení jiného souboru.
+
+Stav dialogu se ukládá na disk do souboru vedle stavu obchodů
+(`state.json` → `state-import.json`, jen se zapnutým `state.enabled`),
+takže restart aplikace vrátí tabulku, nastavení i zapnutý plán a v *Průběhu*
+to ohlásí. Po restartu plán počká, než aplikace obnoví a v TWS ověří obchody
+z předchozího běhu — jinak by vedle čekajícího obchodu téhož tickeru založil
+druhý. Plán, který okamžik spuštění propásne o víc než 5 minut (aplikace
+v tu chvíli neběžela, nebo se nestihla připojit k TWS), se už nespustí:
+zruší se s trvalou hláškou a záznamem v *Průběhu* a pozice je třeba zadat
+ručně. Stejně tak se neopakuje plán, který restart přerušil uprostřed
+zadávání — část pozic už může být v trhu.
+
 **Přepočítávat každých [s]** zapíná průběžný přepočet čekajících obchodů
 za otevřené burzy — tatáž volba, jakou má formulář zadání (podrobně
 v jeho popisu výše). Každý obchod z dávky, který ještě čeká na vstup, si

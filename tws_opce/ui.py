@@ -15,7 +15,7 @@ from . import calc, widgets
 from .config import AppConfig
 from .engine import FlowEngine, Preview
 from .ib_service import IBService
-from .import_dialog import ImportDialog
+from .import_dialog import ImportDialog, PohledImportu
 from .models import (
     MODE_PREMIUM,
     MODE_UNDERLYING,
@@ -335,10 +335,19 @@ class CasovaneOkno:
 class TradingUI:
     """Sestavuje a obsluhuje uživatelské rozhraní nad obchodním enginem."""
 
-    def __init__(self, cfg: AppConfig, engine: FlowEngine, ib: IBService) -> None:
+    def __init__(
+        self,
+        cfg: AppConfig,
+        engine: FlowEngine,
+        ib: IBService,
+        import_dialog: ImportDialog,
+    ) -> None:
         self.cfg = cfg
         self.engine = engine
         self.ib = ib
+        # Stav dialogu načtení pozic ze souboru je jeden pro celou aplikaci,
+        # aby naplánované zadání přežilo zavření okna prohlížeče
+        self.import_dialog = import_dialog
 
     # ------------------------------------------------------------------
     # Sestavení stránky
@@ -382,10 +391,11 @@ class TradingUI:
 
         self._build_header()
 
-        # Popup formulář pro hromadné načtení pozic ze souboru. Vzniká už teď,
-        # aby jeho prvky patřily tomuto klientovi; otevírá jej tlačítko ve formuláři
-        self.import_dialog = ImportDialog(self.cfg, self.engine, self.ib, self._refresh)
-        self.import_dialog.build()
+        # Popup formulář pro hromadné načtení pozic ze souboru. Jeho stav je
+        # sdílený, tady vzniká jen vykreslení pro tohoto klienta - už teď, aby
+        # prvky patřily tomuto oknu; otevírá jej tlačítko ve formuláři
+        self.import_pohled = PohledImportu(self.import_dialog)
+        self.import_pohled.build()
 
         # Popup s přehledem výsledků dne; grafy v něm se řídí zvoleným
         # vzhledem a přepnout se dá i zevnitř - přehled je přes celou
@@ -552,7 +562,7 @@ class TradingUI:
                 ui.space()
                 # Hromadné zadání ze souboru se zadáním obchodního dne
                 ui.button(
-                    "Načíst ze souboru", on_click=self.import_dialog.open
+                    "Načíst ze souboru", on_click=self.import_pohled.open
                 ).props("outline dense").classes("tlacitko-import").tooltip(
                     "Načte vstupní pozice ze souboru se zadáním dne a nabídne "
                     "jejich hromadné zadání do trhu."
@@ -2222,10 +2232,10 @@ class TradingUI:
         self._refresh_table()
         self._refresh_log()
         self._refresh_config()
-        # Otevřené popupy tikají živě spolu s tabulkou: přehled výsledků
-        # i importní dialog, kterému se tím obnovují zámky zadaných řádků
+        # Otevřený přehled výsledků tiká živě spolu s tabulkou. Importní
+        # dialog má vlastní serverový časovač (viz create_ui), aby jeho
+        # naplánované zadání běželo i bez otevřeného okna
         self.report_dialog.refresh()
-        self.import_dialog.refresh()
         self._refresh_plan()
         self._refresh_stall()
 
@@ -2640,7 +2650,17 @@ def create_ui(cfg: AppConfig, engine: FlowEngine, ib: IBService) -> None:
 
     app.on_disconnect(uvolni_nahled)
 
+    # Stav dialogu načtení pozic ze souboru je jeden pro celou aplikaci
+    # a obnovuje se serverovým časovačem, nezávislým na oknech prohlížeče -
+    # naplánované zadání po otevření trhu tak proběhne, i když je prohlížeč
+    # zavřený, a znovu otevřená stránka ukáže dialog v témž stavu. Stav se
+    # ukládá na disk, takže přežije i restart aplikace
+    import_dialog = ImportDialog(cfg, engine, ib)
+    # Po restartu se vrátí načtený soubor, tabulka i naplánované zadání
+    import_dialog.obnov()
+    app.timer(cfg.ui.refresh_interval_sec, import_dialog.refresh)
+
     @ui.page("/")
     def index() -> None:
         """Hlavní stránka - každý klient dostane vlastní instanci ovládacích prvků."""
-        TradingUI(cfg, engine, ib).build()
+        TradingUI(cfg, engine, ib, import_dialog).build()

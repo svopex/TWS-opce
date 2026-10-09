@@ -557,7 +557,8 @@ state:
   enabled: true
 
   # Soubor se stavem. Relativní cesta se vztahuje k adresáři, odkud je
-  # aplikace spuštěna.
+  # aplikace spuštěna. Vedle něj se ukládá i stav dialogu Načíst ze souboru
+  # včetně naplánovaného zadání (state.json -> state-import.json).
   file: state.json
 
 

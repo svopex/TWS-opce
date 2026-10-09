@@ -6,17 +6,24 @@ zpracuje celý seznam: společně se zvolí režim cíle, limit spreadu a příp
 kompenzace SL o zaplacený spread. Každá pozice se pak připraví toutéž cestou
 jako jednotlivé zadání (FlowEngine.prepare) a po odsouhlasení založí stejným
 voláním (FlowEngine.start_flow), takže se chová přesně jako ruční zadání.
+
+Stav dialogu (ImportDialog) je jeden pro celou aplikaci a žije na serveru:
+načtené pozice, nastavení i naplánované zadání přežijí zavření dialogu
+i okna prohlížeče. Každé okno si jej jen vykreslí (PohledImportu) a se
+stavem se sdílenými prvky (viz sdileni.py) průběžně synchronizuje.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Any, Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
 
-from nicegui import ui
+from nicegui import background_tasks, ui
 
-from . import importer, widgets
+from . import importer, store, widgets
 from .config import AppConfig
 from .engine import FlowEngine, Preview
 from .ib_service import IBService
@@ -41,6 +48,7 @@ from .models import (
     sekundy_prepoctu,
     urovne_z_rezimu,
 )
+from .sdileni import SdileneOkno, SdilenyPrvek, zive
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +85,43 @@ JEDNOTKY_UROVNI = {
 # Popisek tlačítka naplánovaného zadání ve vypnutém stavu; zapnutý stav
 # ukazuje odpočet, proto se skládá až za běhu
 POPIS_PLANU_VYPNUTO = "Zadat po otevření trhu"
+
+# Verze formátu uloženého stavu dialogu - při nekompatibilní změně se
+# uložený stav ignoruje
+FORMAT_STAVU = 1
+
+# Jak dlouho po okamžiku spuštění ještě smí naplánované zadání proběhnout.
+# Plán, který okamžik propásl (aplikace v tu chvíli neběžela, nebo po
+# restartu ještě neobnovila obchody z TWS), by jinak zadal pozice do trhu
+# kdykoliv později - třeba až další den. Po uplynutí lhůty se proto zruší
+TOLERANCE_PLANU_SEC = 300.0
+
+# Sdílené prvky nastavení nad tabulkou, jejichž hodnota se ukládá na disk
+NASTAVENI = (
+    "rezim",
+    "sl_spread_compensated",
+    "refresh_checkbox",
+    "refresh_sec_input",
+    "interval_checkbox",
+    "interval_sec_input",
+    "pct_input",
+    "usd_input",
+    "premium_input",
+    "spread_input",
+    "rrr_input",
+    "runner_pct_input",
+    "runner_min_input",
+)
+
+# Nápověda k hlavičkám PT a SL tabulky
+NAPOVEDA_UROVNI = (
+    "Úrovně se v tabulce ukazují v jednotce, se kterou počítá "
+    "aplikace: v režimu na podkladu je to cena podkladu, v obou "
+    "opčních režimech USD na kontrakt. Cíl zadaný v procentech "
+    "prémie je do USD už přepočtený - jednotku zadání si pamatuje "
+    "založený obchod, takže ji běžný formulář ukáže zase "
+    "v procentech."
+)
 
 
 def uroven_cile(rezim: str) -> str:
@@ -125,6 +170,9 @@ class RadekPozice:
     Jedna načtená pozice v tabulce dialogu - data ze souboru i ovládací
     prvky jejího řádku. Hodnoty PT, SL a množství jsou editovatelné, proto
     se čtou až při zadávání do trhu, ne v okamžiku přípravy.
+
+    Ovládací prvky jsou sdílené (SdilenyPrvek) - řádek tak drží svůj stav
+    na serveru a každé okno prohlížeče si k němu vykreslí vlastní buňky.
     """
 
     pozice: ImportedPosition
@@ -159,52 +207,43 @@ class RadekPozice:
     # Stav řádku právě popisuje založený obchod a obnovovací smyčka jej drží
     # aktuální; jakýkoliv jiný zápis do stavu tuto značku sundá
     stav_z_obchodu: bool = False
+    # Barva stavu (třída CSS) - ukládá se s řádkem, aby ji obnova vrátila
+    stav_trida: str = ""
+    # Bublina se stavem - delší hlášky se do sloupce nevejdou, celé znění
+    # nabídne bublina. Okna ji vykreslí jako samostatný prvek
+    stav_bublina: Any = field(default_factory=SdilenyPrvek)
 
     def stav(self, text: str, trida: str = "") -> None:
         """Zapíše stav řádku a obarví jej podle druhu sdělení."""
         self.stav_z_obchodu = False
+        self.stav_trida = trida
         self.stav_label.set_text(text)
         self.stav_label.classes(
             remove="stav-import-ok stav-import-chyba stav-import-varovani",
             add=trida,
         )
-        # Delší hlášky se do sloupce nevejdou, celé znění nabídne bublina
-        self.stav_label.tooltip(text)
+        self.stav_bublina.set_text(text)
 
 
 class ImportDialog:
     """
-    Popup formulář pro načtení pozic ze souboru a jejich hromadné zadání.
+    Stav a logika popup formuláře pro načtení pozic ze souboru a jejich
+    hromadné zadání.
 
-    Drží vlastní sadu ovládacích prvků a s aplikací komunikuje jen přes
-    engine; do běžného formuláře zadání nijak nezasahuje. Po založení
-    obchodů zavolá on_created, aby se překreslil přehled.
+    Instance je jedna pro celou aplikaci: drží sdílené ovládací prvky,
+    načtené řádky i naplánované zadání, takže nic z toho nezávisí na
+    otevřeném okně prohlížeče. Vykreslení v jednotlivých oknech obstarává
+    PohledImportu. S aplikací komunikuje jen přes engine; do běžného
+    formuláře zadání nijak nezasahuje. Přehled obchodů si každé okno
+    obnovuje samo vlastním časovačem.
     """
 
-    def __init__(
-        self,
-        cfg: AppConfig,
-        engine: FlowEngine,
-        ib: IBService,
-        on_created: Callable[[], None] | None = None,
-    ) -> None:
+    def __init__(self, cfg: AppConfig, engine: FlowEngine, ib: IBService) -> None:
         self.cfg = cfg
         self.engine = engine
         self.ib = ib
-        self.on_created = on_created
         # Zvolené nastavení runneru pro zakládané pozice (klíč tlačítka)
         self.runner_value: str = runner_klic(cfg.import_.runner_multiple)
-        # Pole s nejmenším množstvím, od kterého se runner nastavuje. Vzniká
-        # až s vykresleným dialogem, do té doby platí hodnota z konfigurace
-        self.runner_min_input: Any = None
-        self.runner_pct_input: Any = None
-        # Přepínač a prodleva přepočtu po otevření burzy - také vznikají až
-        # s vykresleným dialogem, do té doby platí konfigurace
-        self.refresh_checkbox: Any = None
-        self.refresh_sec_input: Any = None
-        # Průběžný přepočet čekajících obchodů - stejný režim jako výše
-        self.interval_checkbox: Any = None
-        self.interval_sec_input: Any = None
         # Načtené pozice v pořadí ze souboru
         self.radky: list[RadekPozice] = []
         # Jméno naposledy načteného souboru - ukazuje se nad tabulkou
@@ -226,305 +265,147 @@ class ImportDialog:
         self.plan_aktivni: bool = False
         self.plan_bezi: bool = False
         self.plan_prodleva: float = 0.0
-        # Tlačítko plánu vzniká až s vykresleným dialogem
-        self.plan_button: Any = None
-        # Varování na chybějící spojení s TWS nad tlačítky; také vzniká až
-        # s vykresleným dialogem
-        self.spojeni_label: Any = None
+        # Okamžik spuštění plánu (UTC) určený při zapnutí. Hlídá, aby plán,
+        # který okamžik propásl (aplikace neběžela), nezadal pozice později
+        self.plan_okamzik: datetime | None = None
+        # Naposledy uložený stav dialogu - beze změny se nezapisuje
+        self._ulozeny_stav: dict[str, Any] | None = None
+        # Vykreslení dialogu v jednotlivých oknech prohlížeče
+        self.pohledy: list[PohledImportu] = []
+        self._vytvor_stav()
 
     # ------------------------------------------------------------------
-    # Sestavení dialogu
+    # Sestavení sdíleného stavu
     # ------------------------------------------------------------------
 
-    def build(self) -> None:
+    def _vytvor_stav(self) -> None:
         """
-        Vykreslí dialog. Volá se jednou při stavbě stránky, aby prvky
-        vznikly v kontextu klienta; otevírá se pak metodou open().
+        Založí sdílené ovládací prvky dialogu. Jde o čistý serverový stav
+        bez vazby na okno; jednotlivá okna prohlížeče si ho vykreslí přes
+        PohledImportu a připojí se k němu.
         """
-        with ui.dialog().classes("dialog-import-obal") as self.dialog, ui.card().classes(
-            "dialog-import"
-        ):
-            # Zavřený dialog ukončí naplánované zadání, ať se ven dostane
-            # jakkoliv - tlačítkem, klávesou i kliknutím mimo kartu
-            self.dialog.on_value_change(self._na_zavreni_dialogu)
-            ui.label("Načtení pozic ze souboru").classes("dialog-nadpis")
-            ui.label(
-                "Čerpá se z položek s klíčem končícím plusem - ticker, vstupní "
-                "a cílová cena podkladu."
-            ).classes("dialog-popis")
-
-            with ui.row().classes("radek radek-import-soubor"):
-                self.upload = (
-                    ui.upload(
-                        label="Soubor se zadáním (YAML)",
-                        on_upload=self._on_upload,
-                        auto_upload=True,
-                        max_files=1,
-                    )
-                    .props('accept=".yaml,.yml" flat dense')
-                    .classes("nahrani-souboru")
-                )
-                self.soubor_label = ui.label("").classes("popis-souboru")
-
-            self._build_parametry()
-
-            # Indikace přípravy - stejná nenásilná pulzující hláška jako ve formuláři
-            self.loading_label = ui.label("").classes("indikace-nacitani")
-            self.loading_label.set_visibility(False)
-
-            # Varování z načtení souboru (přeskočené položky)
-            self.warning_label = ui.label("").classes("nahled-varovani")
-            self.warning_label.set_visibility(False)
-
-            # Tabulka načtených pozic; hlavička vzniká až s prvním souborem
-            self.tabulka = ui.grid().classes("tabulka-import")
-            self.tabulka.set_visibility(False)
-
-            self.souhrn_label = ui.label("").classes("souhrn-import")
-
-            # Varování na chybějící spojení s TWS. Stojí těsně nad tlačítky,
-            # aby ho obchodník viděl ve chvíli, kdy zadání do trhu spouští
-            self.spojeni_label = ui.label("").classes(
-                "varovani-spojeni varovani-spojeni-klid"
-            )
-            self.spojeni_label.set_visibility(False)
-
-            with ui.row().classes("radek radek-tlacitka"):
-                self.zadat_button = (
-                    ui.button("Zadat vybrané pozice do trhu", on_click=self._zadej)
-                    .props("color=green-8")
-                    .classes("tlacitko-import-akce")
-                )
-                self.zadat_button.set_enabled(False)
-                # Naplánované zadání: po otevření trhu a uplynulé prodlevě se
-                # samo provede přepočet a hned po něm zadání vybraných pozic
-                self.plan_button = (
-                    ui.button(POPIS_PLANU_VYPNUTO, on_click=self._prepni_plan)
-                    .props("outline color=orange-8")
-                    .classes("tlacitko-import-akce tlacitko-plan")
-                )
-                self.plan_button.set_enabled(False)
-                self.plan_button.tooltip(
-                    "Zapne jednorázový režim: po otevření trhu a uplynutí "
-                    "prodlevy vpravo nahoře se samo provede přepočet všech "
-                    "nezadaných řádků a hned po něm zadání vybraných pozic "
-                    "do trhu - tytéž dva kroky jako tlačítka Přepočítat "
-                    "a Zadat vybrané pozice do trhu, včetně kontroly, zda "
-                    "podklad od nastaveného času nepřekročil vstup (takový "
-                    "řádek se označí Vstup propásnut a odškrtne). Použitelné i pro pozice, "
-                    "které v trhu ještě vůbec nejsou. Proběhne jediný přepočet: "
-                    "zadané obchody už nedostanou Po otevření trhu přepočítat, "
-                    "takže v přehledu mají stejná čísla i runner jako v dialogu. "
-                    "Režim ukončí opětovný "
-                    "stisk, kterékoliv z obou tlačítek, zavření dialogu "
-                    "i načtení jiného souboru. Zapnout jde jen dokud okamžik "
-                    "přepočtu teprve nastane."
-                )
-                ui.button("Zavřít", on_click=self.dialog.close).props("flat").classes(
-                    "tlacitko-import-akce"
-                )
+        # Okna dialogu ve všech oknech prohlížeče - logika je umí zavřít naráz
+        self.dialog = SdileneOkno()
+        self.soubor_label = SdilenyPrvek(text="")
+        # Indikace přípravy, varování ze souboru, tabulka a varování na
+        # spojení začínají skryté
+        self.loading_label = SdilenyPrvek(text="")
+        self.loading_label.set_visibility(False)
+        self.warning_label = SdilenyPrvek(text="")
+        self.warning_label.set_visibility(False)
+        self.tabulka = SdilenyPrvek()
+        self.tabulka.set_visibility(False)
+        self.souhrn_label = SdilenyPrvek(text="")
+        self.spojeni_label = SdilenyPrvek(text="")
+        self.spojeni_label.set_visibility(False)
+        # Obě tlačítka zadání jsou dostupná až s načteným souborem
+        self.zadat_button = SdilenyPrvek()
+        self.zadat_button.set_enabled(False)
+        self.plan_button = SdilenyPrvek(text=POPIS_PLANU_VYPNUTO)
+        self.plan_button.set_enabled(False)
+        # Tlačítka volby runneru podle klíče volby
+        self.runner_tlacitka = {klic: SdilenyPrvek() for klic in runner_volby()}
+        self._zvyrazni_runner()
+        self._build_parametry()
 
     def _build_parametry(self) -> None:
         """Společné parametry pro všechny načtené pozice - režim cíle a spread."""
         # Výchozí obsah formuláře je z konfigurace; klíče režimů se shodují
         # s hodnotami import.pt_mode, takže se přebírají přímo
         imp = self.cfg.import_
-        # Přepínače režimu cíle vlevo; vpravo od nich, v jinak prázdném místě,
-        # stojí blok přepočtu po otevření burzy
-        with ui.row().classes("radek radek-rezim"):
-            with ui.column().classes("prepinace prepinace-import"):
-                with ui.column().classes("skupina-prepinacu"):
-                    self.rezim = (
-                        ui.radio(
-                            {
-                                REZIM_PCT: "PT na podkladu v % dráhy k cíli",
-                                REZIM_USD: "PT na opci v USD/ks",
-                                REZIM_PREMIUM: "PT na opci v % prémie",
-                            },
-                            value=imp.pt_mode,
-                        )
-                        .props("dense")
-                        .classes("prepinac")
-                        .tooltip(
-                            "% dráhy k cíli: PT je cena podkladu, 100 % je přesně cílová "
-                            "cena ze souboru; SL se dopočítá také na podkladu podle poměru "
-                            "SL:PT z konfigurace. USD/ks: PT je zisk na jedné opci a SL "
-                            "ztráta na opci, obojí podle téhož poměru. % prémie: totéž, "
-                            "ale zadané podílem z ceny opce - 30 % z opce za 3,00 je "
-                            "90 USD na kontrakt, takže levná i drahá opce riskuje stejný "
-                            "díl vložených peněz. V obou opčních režimech se cílová cena "
-                            "ze souboru nepoužívá."
-                        )
-                    )
-                    self.rezim.on_value_change(lambda _: self._on_rezim_change())
-
-                    # Kompenzace spreadu patří k SL na opci, tedy jen k režimu v USD
-                    self.sl_spread_compensated = (
-                        ui.checkbox(
-                            "SL o zaplacený spread dál",
-                            value=vychozi(
-                                imp.sl_spread_compensated,
-                                self.cfg.trading.sl_spread_compensated,
-                            ),
-                        )
-                        .props("dense")
-                        .classes("prepinac prepinac-podrizeny")
-                        .tooltip(
-                            "Zaškrtnuto: k SL na opci se při nákupu připočte skutečně "
-                            "zaplacený spread (nákupní cena minus BID), takže zadaná "
-                            "hodnota odpovídá pohybu ceny opce. Ztráta na kontrakt "
-                            "o tento spread naroste a množství úměrně klesne."
-                        )
-                    )
-
-            # Přepočet po otevření burzy. Obchody zadané před otevřením vychází
-            # z odhadu prémie ze závěrečné ceny, který po gapu neplatí; engine
-            # je po zadané prodlevě od otevření přepočítá podle živých kotací
-            # a čekající příkaz upraví na místě. Volba se zapisuje do každého
-            # zakládaného obchodu, takže platí i po zavření dialogu
-            with ui.row().classes("blok-obnova"):
-                self.refresh_checkbox, self.refresh_sec_input = widgets.blok_prepoctu(
-                    "Po otevření trhu přepočítat",
-                    "Prodleva [s]",
-                    imp.refresh_after_open,
-                    imp.refresh_after_open_sec,
-                    0,
-                    "Zaškrtnuto: obchody z této dávky, které po otevření burzy "
-                    "ještě čekají na vstup, se po uplynutí prodlevy vpravo jednou "
-                    "přepočítají podle živých kotací - PT v procentech prémie, SL "
-                    "i množství vyjdou ze skutečné ceny opce místo odhadu ze "
-                    "závěrečné ceny. Čekající příkaz v trhu se upraví na místě, "
-                    "neruší se. Obchod, který už nakoupil, se nemění. Spread nad "
-                    "limitem přepočet nezdrží - počítá se s Max. spread. Zadat po otevření trhu "
-                    "volbu nepoužije - dávku přepočítá samo až po otevření, "
-                    "takže druhý přepočet není potřeba.",
-                    widgets.NAPOVEDA_PRODLEVY,
-                    "pole pole-obnova-sec",
-                )
-
-            # Průběžný přepočet za otevřené burzy - volba se zapisuje do obchodu
-            with ui.row().classes("blok-obnova"):
-                self.interval_checkbox, self.interval_sec_input = widgets.blok_prepoctu(
-                    "Přepočítávat každých",
-                    "Odstup [s]",
-                    imp.refresh_interval,
-                    imp.refresh_interval_sec,
-                    1,
-                    widgets.NAPOVEDA_INTERVALU.format(
-                        rozsah="obchody z této dávky, které"
-                    ),
-                    widgets.NAPOVEDA_ODSTUPU,
-                    "pole pole-obnova-sec",
-                )
-
-        with ui.row().classes("radek"):
-            # Každý režim má vlastní pole s vlastní výchozí hodnotou -
-            # přepínač jen mění, které z nich je vidět. Prázdná volba
-            # v konfiguraci nechá pole nevyplněné
-            self.pct_input = (
-                ui.number("PT [%]", value=imp.pt_pct, format="%.2f", min=0)
-                .classes("pole")
-                .props("outlined dense step=any")
-            )
-            self.usd_input = (
-                ui.number("PT [USD/ks]", value=imp.pt_usd, format="%.2f", min=0)
-                .classes("pole")
-                .props("outlined dense step=any")
-            )
-            self.premium_input = (
-                ui.number(
-                    "PT [% prémie]", value=imp.pt_premium_pct, format="%.2f", min=0
-                )
-                .classes("pole")
-                .props("outlined dense step=any")
-            )
-            self.spread_input = (
-                ui.number(
-                    "Max. spread [%]",
-                    value=vychozi(imp.max_spread_pct, self.cfg.trading.max_spread_pct),
-                    format="%.2f",
-                    min=0,
-                )
-                .classes("pole")
-                .props("outlined dense step=any")
-            )
-            # RRR pro dopočet SL z PT u všech načtených pozic; mění se
-            # zřídka, výchozí hodnota vychází z konfigurace - buď přímo
-            # z importu, nebo z poměru SL:PT pro běžné zadání
-            self.rrr_input = (
-                ui.number(
-                    "RRR (PT:SL)",
-                    value=vychozi(
-                        imp.rrr, rrr_z_pomeru(self.cfg.trading.sl_to_pt_ratio)
-                    ),
-                    format="%g",
-                    min=0,
-                )
-                .classes("pole")
-                .props("outlined dense step=any")
-                .tooltip(
-                    "Poměr zisku ku riziku, kterým se z PT dopočítá SL: "
-                    "2 = PT je dvakrát dál než SL, 1 = obě stejně daleko. "
-                    "Výchozí hodnota vychází z konfigurace (převrácené "
-                    "trading.sl_to_pt_ratio), prázdné či nekladné pole "
-                    "se k ní vrací."
-                )
-            )
-            ui.button("Přepočítat", on_click=lambda: self._priprav_vse()).props(
-                "outline"
-            ).classes("tlacitko-vedle").tooltip(
-                "Přepíše PT, SL i množství u všech načtených pozic hodnotami "
-                "spočítanými podle nastavení nad tabulkou."
-            )
-
-        # Počáteční nastavení runneru, společné všem zakládaným pozicím.
-        # Runner se zapíná až po založení obchodu, stejně jako tlačítky
-        # v přehledu - před nákupem si volbu obchod jen zapamatuje
-        with ui.row().classes("radek radek-runner"):
-            ui.label("Runner:").classes("popisek-volby-runner")
-            napoveda = (
-                "Výchozí nastavení runneru pro všechny načtené pozice - přepíše "
-                "volbu ve sloupci Runner, kde ji lze u každé pozice doladit zvlášť. "
-                + widgets.NAPOVEDA_RUNNER_VELIKOST
-                + " Runner dostanou jen pozice s množstvím alespoň takovým, jaké je "
-                "v poli vpravo; menší zůstanou na volbě Bez."
-            )
-            self.runner_buttons = widgets.tlacitka_runneru(
-                self._nastav_runner, napoveda, self.runner_value
-            )
-            # Velikost runneru pro celou dávku; výchozí hodnota je
-            # z konfigurace. Počet kusů z procenta vyjde až při zapnutí
-            # runneru, takže se řádky přepočítávat nemusí
-            self.runner_pct_input = widgets.pole_runner_pct(
-                self.cfg.trading.runner_quantity_pct, "pole pole-runner-pct"
-            )
-            # Nejmenší velikost pozice, které se runner nastaví. Výchozí
-            # hodnota je z konfigurace, změna přerozdělí runnery ve všech
-            # řádcích podle právě spočítaného množství
-            self.runner_min_input = widgets.pole_runner_min(
-                imp.runner_min_quantity, "pole pole-runner-min"
-            )
-            self.runner_min_input.on_value_change(
-                lambda _=None: self._obnov_runner_vsech()
-            )
+        self.rezim = SdilenyPrvek(imp.pt_mode)
+        self.rezim.on_value_change(lambda _: self._on_rezim_change())
+        # Kompenzace spreadu patří k SL na opci, tedy jen k opčním režimům
+        self.sl_spread_compensated = SdilenyPrvek(
+            vychozi(imp.sl_spread_compensated, self.cfg.trading.sl_spread_compensated)
+        )
+        # Přepočet po otevření burzy a průběžný přepočet - volby se zapisují
+        # do každého zakládaného obchodu, takže platí i po zavření dialogu
+        self.refresh_checkbox = SdilenyPrvek(imp.refresh_after_open)
+        self.refresh_sec_input = SdilenyPrvek(imp.refresh_after_open_sec)
+        self.interval_checkbox = SdilenyPrvek(imp.refresh_interval)
+        self.interval_sec_input = SdilenyPrvek(imp.refresh_interval_sec)
+        # Každý režim má vlastní pole s vlastní výchozí hodnotou - přepínač
+        # jen mění, které z nich je vidět. Prázdná volba v konfiguraci nechá
+        # pole nevyplněné
+        self.pct_input = SdilenyPrvek(imp.pt_pct)
+        self.usd_input = SdilenyPrvek(imp.pt_usd)
+        self.premium_input = SdilenyPrvek(imp.pt_premium_pct)
+        self.spread_input = SdilenyPrvek(
+            vychozi(imp.max_spread_pct, self.cfg.trading.max_spread_pct)
+        )
+        # RRR pro dopočet SL z PT u všech načtených pozic; výchozí hodnota
+        # vychází z konfigurace - buď přímo z importu, nebo z poměru SL:PT
+        # pro běžné zadání
+        self.rrr_input = SdilenyPrvek(
+            vychozi(imp.rrr, rrr_z_pomeru(self.cfg.trading.sl_to_pt_ratio))
+        )
+        # Velikost runneru a nejmenší množství, od kterého se runner
+        # nastavuje. Změna minima přerozdělí runnery ve všech řádcích podle
+        # právě spočítaného množství
+        self.runner_pct_input = SdilenyPrvek(self.cfg.trading.runner_quantity_pct)
+        self.runner_min_input = SdilenyPrvek(imp.runner_min_quantity)
+        self.runner_min_input.on_value_change(lambda _=None: self._obnov_runner_vsech())
 
         # Výchozí režim rozhoduje, které pole cíle je vidět a zda je dostupná
         # kompenzace spreadu
         self._on_rezim_change(prepocitat=False)
 
+    def pripoj_pohled(self, pohled: PohledImportu) -> None:
+        """Zaregistruje vykreslení dialogu v nově otevřeném okně prohlížeče."""
+        # Zaniklá okna se zapomínají i tady, ať se nehromadí s každým
+        # načtením stránky
+        self.pohledy = zive(self.pohledy)
+        self.pohledy.append(pohled)
+
+    def _pohledy(self) -> list[PohledImportu]:
+        """Vykreslení v oknech, která ještě existují; zaniklá zapomene."""
+        self.pohledy = zive(self.pohledy)
+        return self.pohledy
+
+    @property
+    def plan_zapnuty(self) -> bool:
+        """Plán čeká na okamžik spuštění, nebo právě běží."""
+        return self.plan_aktivni or self.plan_bezi
+
+    def _oznam(self, zprava: str, **volby: Any) -> None:
+        """
+        Hláška obchodníkovi. Z obsluhy události (kliknutí, nahrání souboru)
+        se ukáže v okně, odkud obsluha přišla. Naplánované zadání ale běží
+        na pozadí bez vazby na okno - tehdy se hláška rozešle do všech
+        otevřených oken a zapíše do logu, aby nezapadla ani bez prohlížeče.
+        """
+        # Obsluha události běží v kontextu okna (neprázdný zásobník slotů),
+        # úloha na pozadí bez něj
+        if ui.context.slot_stack:
+            ui.notify(zprava, **volby)
+            return
+        log.info("Načtení pozic ze souboru: %s", zprava)
+        for pohled in self._pohledy():
+            try:
+                with pohled.client:
+                    ui.notify(zprava, **volby)
+            except Exception:
+                log.exception("Hlášku se nepodařilo doručit do okna prohlížeče.")
+
     # ------------------------------------------------------------------
     # Otevření a načtení souboru
     # ------------------------------------------------------------------
 
-    def open(self) -> None:
-        """Otevře dialog a připomene stav spojení s TWS."""
-        self.dialog.open()
+    def pri_otevreni(self) -> None:
+        """
+        Obsluha otevření dialogu v kterémkoliv okně: nabídne k zadání vše,
+        co zadat lze, a připomene stav spojení s TWS.
+        """
         # Otevření formuláře nabídne k zadání vše, co zadat lze. Zaškrtnutí
         # sundané dřívějším zadáním nebo propásnutým vstupem se tím obnoví,
-        # takže se dá celý soubor poslat do trhu znovu jedním tlačítkem
-        self._vyber_vse()
+        # takže se dá celý soubor poslat do trhu znovu jedním tlačítkem.
+        # Zapnutý či běžící plán ale zadá přesně výběr z okamžiku zapnutí -
+        # znovuotevřený dialog jej proto nechá, jak je
+        if not self.plan_zapnuty:
+            self._vyber_vse()
         if not self.ib.connected:
-            ui.notify(
+            self._oznam(
                 "Není navázáno spojení s TWS - pozice se načtou, ale SL "
                 "ani množství se bez něj nedopočítají.",
                 type="warning",
@@ -565,31 +446,35 @@ class ImportDialog:
         if pripraveno:
             self._naplanuj_pripravu()
 
-    async def _on_upload(self, event: Any) -> None:
+    async def _on_upload(self, event: Any, upload: Any = None) -> None:
         """
-        Zpracuje vybraný soubor: načte pozice a vykreslí tabulku.
+        Zpracuje vybraný soubor: načte pozice a postaví tabulku.
 
         Nic se nepočítá - kontrakt, SL ani množství nevzniknou, dokud si
         obchodník přepočet nevyžádá tlačítkem Přepočítat. Načtení souboru
         tak nesahá do TWS a nechá čas doladit nastavení nad tabulkou.
+
+        upload - nahrávací prvek okna, ze kterého soubor přišel; po přečtení
+        se vyčistí
         """
         soubor = event.file
         try:
             obsah = await soubor.text("utf-8")
         except UnicodeDecodeError:
-            ui.notify("Soubor není v kódování UTF-8.", type="negative")
+            self._oznam("Soubor není v kódování UTF-8.", type="negative")
             return
         except Exception as exc:
-            ui.notify(f"Soubor se nepodařilo přečíst: {exc}", type="negative")
+            self._oznam(f"Soubor se nepodařilo přečíst: {exc}", type="negative")
             return
         finally:
             # Nahrávací prvek se čistí vždy, aby šel týž soubor vybrat znovu
-            self.upload.reset()
+            if upload is not None:
+                upload.reset()
 
         try:
             vysledek = importer.parse_positions(obsah)
         except ValueError as exc:
-            ui.notify(str(exc), type="negative")
+            self._oznam(str(exc), type="negative")
             return
 
         self.nazev_souboru = soubor.name
@@ -605,7 +490,7 @@ class ImportDialog:
         self.warning_label.set_visibility(bool(vysledek.warnings))
 
         if not vysledek.positions:
-            ui.notify("V souboru není žádná použitelná položka.", type="warning")
+            self._oznam("V souboru není žádná použitelná položka.", type="warning")
             return
 
         # Řádky zatím nemají čísla - ať je ve sloupci Stav vidět, na co se čeká
@@ -614,17 +499,19 @@ class ImportDialog:
                 "Čeká na přepočet - stiskněte Přepočítat.", "stav-import-varovani"
             )
 
-        ui.notify(
+        self._oznam(
             f"Načteno {len(vysledek.positions)} pozic ze souboru {soubor.name} - "
             "zadání se připraví tlačítkem Přepočítat.",
             type="positive",
         )
 
     def _vykresli_tabulku(self, pozice: list[ImportedPosition]) -> None:
-        """Postaví tabulku načtených pozic - hlavičku a řádek pro každou pozici."""
+        """
+        Postaví tabulku načtených pozic - sdílené hlavičky a řádek pro každou
+        pozici - a nechá ji překreslit ve všech oknech prohlížeče.
+        """
         self.radky = []
         self.hlavicky = {}
-        self.tabulka.clear()
         self.tabulka.set_visibility(bool(pozice))
         # Probíhající dávka drží tlačítko zakázané, dokud nedoběhne
         self.zadat_button.set_enabled(bool(pozice) and not self.zadavani)
@@ -633,31 +520,18 @@ class ImportDialog:
         self._zrus_plan("Naplánované zadání zrušeno načtením jiného souboru.")
         self.plan_button.set_enabled(bool(pozice) and not self.plan_bezi)
         self.souhrn_label.set_text("")
-        if not pozice:
-            return
 
-        napoveda_urovni = (
-            "Úrovně se v tabulce ukazují v jednotce, se kterou počítá "
-            "aplikace: v režimu na podkladu je to cena podkladu, v obou "
-            "opčních režimech USD na kontrakt. Cíl zadaný v procentech "
-            "prémie je do USD už přepočtený - jednotku zadání si pamatuje "
-            "založený obchod, takže ji běžný formulář ukáže zase "
-            "v procentech."
-        )
-        with self.tabulka:
-            for popisek in SLOUPCE:
-                label = ui.label(popisek).classes("hlavicka-import")
-                # Hlavičky úrovní nesou jednotku, která se mění s režimem -
-                # popisek se proto drží stranou a přepisuje se v _popis_hlavicky
-                if popisek in SLOUPCE_UROVNI:
-                    label.tooltip(napoveda_urovni)
-                    self.hlavicky[popisek] = label
+        if pozice:
+            # Hlavičky úrovní nesou jednotku, která se mění s režimem -
+            # popisek se proto drží stranou a přepisuje se v _popis_hlavicky
+            self.hlavicky = {popisek: SdilenyPrvek(text=popisek) for popisek in SLOUPCE_UROVNI}
+            self.radky = [self._vytvor_radek(polozka) for polozka in pozice]
+            self._popis_hlavicky()
+            self._obnov_souhrn()
 
-            for polozka in pozice:
-                self.radky.append(self._vykresli_radek(polozka))
-
-        self._popis_hlavicky()
-        self._obnov_souhrn()
+        # Každé okno si tabulku postaví znovu z nových řádků
+        for pohled in self._pohledy():
+            pohled.vykresli_tabulku()
 
     def _popis_hlavicky(self) -> None:
         """
@@ -671,38 +545,23 @@ class ImportDialog:
         for druh, label in self.hlavicky.items():
             label.set_text(f"{druh} [{jednotka}]")
 
-    def _vykresli_radek(self, pozice: ImportedPosition) -> RadekPozice:
+    def _vytvor_radek(self, pozice: ImportedPosition) -> RadekPozice:
         """
-        Vykreslí buňky jednoho řádku tabulky. Buňky jsou přímými potomky
-        mřížky, jinak by se sloupce nezarovnaly.
+        Založí sdílený stav jednoho řádku tabulky i s obsluhami změn. Buňky
+        si k němu vykreslí každé okno samo (PohledImportu._vykresli_radek).
         """
         radek = RadekPozice(pozice=pozice)
+        radek.vybrano = SdilenyPrvek(True)
+        radek.kontrakt_label = SdilenyPrvek(text="-")
+        radek.pt_input = SdilenyPrvek()
+        radek.sl_input = SdilenyPrvek()
+        radek.qty_input = SdilenyPrvek()
+        # Runner se nastavuje u každé pozice zvlášť. Řádek začíná bez něj -
+        # globální volbu dostane až podle spočítaného množství
+        radek.runner_select = SdilenyPrvek(RUNNER_VYPNUTO)
+        radek.stav_label = SdilenyPrvek(text="-")
+        radek.obnovit_button = SdilenyPrvek()
 
-        radek.vybrano = ui.checkbox(value=True).props("dense").classes("bunka-import")
-        ui.label(pozice.symbol).classes("bunka-import bunka-ticker")
-        ui.label(pozice.right_label).classes(
-            "bunka-import odznak-smer "
-            + ("smer-long" if pozice.right == "C" else "smer-short")
-        )
-        ui.label(fmt(pozice.entry_price)).classes("bunka-import bunka-cislo")
-        ui.label(fmt(pozice.target_price)).classes("bunka-import bunka-cislo")
-        radek.kontrakt_label = ui.label("-").classes("bunka-import bunka-kontrakt")
-
-        radek.pt_input = (
-            ui.number(value=None, format="%.2f")
-            .classes("bunka-import pole-import")
-            .props("outlined dense step=any")
-        )
-        radek.sl_input = (
-            ui.number(value=None, format="%.2f")
-            .classes("bunka-import pole-import")
-            .props("outlined dense step=any")
-        )
-        radek.qty_input = (
-            ui.number(value=None, format="%.0f", step=1, min=1)
-            .classes("bunka-import pole-import pole-import-ks")
-            .props("outlined dense")
-        )
         # Ručně vyplněné číslo platí v právě zvoleném režimu, takže řádek
         # zase zadatelným udělá - i tehdy, když předtím příprava selhala.
         # Obsluha běží i při programovém zápisu, proto se příznak neplatnosti
@@ -714,28 +573,7 @@ class ImportDialog:
         radek.qty_input.on_value_change(
             lambda _=None, r=radek: self._obnov_runner_radku(r)
         )
-        # Runner se nastavuje u každé pozice zvlášť. Řádek začíná bez něj -
-        # globální volbu dostane až podle spočítaného množství
-        radek.runner_select = (
-            ui.select(runner_volby(kratke=True), value=RUNNER_VYPNUTO)
-            .classes("bunka-import pole-import vyber-runner")
-            .props("outlined dense options-dense")
-        )
         radek.runner_select.on_value_change(lambda _=None, r=radek: self._rucni_runner(r))
-
-        with ui.row().classes("bunka-import bunka-stav"):
-            radek.obnovit_button = (
-                ui.button(
-                    icon="refresh",
-                    on_click=lambda _=None, r=radek: self._priprav_radek_rucne(r),
-                )
-                .props("flat dense round size=sm")
-                .tooltip(
-                    "Přepočítá SL a množství podle PT vyplněného v tomto řádku."
-                )
-            )
-            radek.stav_label = ui.label("-").classes("stav-import")
-
         return radek
 
     # ------------------------------------------------------------------
@@ -838,7 +676,7 @@ class ImportDialog:
         nerozdává podle náhodného čísla.
         """
         hodnota = self._cislo(
-            self.runner_min_input.value if self.runner_min_input is not None else None
+            self.runner_min_input.value
         )
         if hodnota is None or hodnota < 1:
             return self.cfg.import_.runner_min_quantity
@@ -852,7 +690,7 @@ class ImportDialog:
         nenechal jediný kontrakt.
         """
         hodnota = self._cislo(
-            self.runner_pct_input.value if self.runner_pct_input is not None else None
+            self.runner_pct_input.value
         )
         if hodnota is None or not 0 < hodnota < 100:
             return None
@@ -894,7 +732,7 @@ class ImportDialog:
 
     def _zvyrazni_runner(self) -> None:
         """Zvýrazní vybrané tlačítko runneru."""
-        widgets.zvyrazni_tlacitka(self.runner_buttons, self.runner_value)
+        widgets.zvyrazni_tlacitka(self.runner_tlacitka, self.runner_value)
 
     def _pomer(self) -> float | None:
         """
@@ -921,27 +759,25 @@ class ImportDialog:
     def _refresh_after_open_sec(self) -> float | None:
         """
         Prodleva přepočtu po otevření burzy pro zakládané obchody; None
-        znamená přepočet nepoužít. Bez vykreslených prvků platí konfigurace.
+        znamená přepočet nepoužít.
         """
-        imp = self.cfg.import_
         return sekundy_prepoctu(
-            imp.refresh_after_open if self.refresh_checkbox is None else bool(self.refresh_checkbox.value),
-            self.refresh_sec_input.value if self.refresh_sec_input is not None else None,
+            bool(self.refresh_checkbox.value),
+            self.refresh_sec_input.value,
             0,
-            imp.refresh_after_open_sec,
+            self.cfg.import_.refresh_after_open_sec,
         )
 
     def _refresh_interval_sec(self) -> float | None:
         """
         Odstup průběžného přepočtu pro zakládané obchody; None znamená
-        nepřepočítávat. Bez vykreslených prvků platí konfigurace.
+        nepřepočítávat.
         """
-        imp = self.cfg.import_
         return sekundy_prepoctu(
-            imp.refresh_interval if self.interval_checkbox is None else bool(self.interval_checkbox.value),
-            self.interval_sec_input.value if self.interval_sec_input is not None else None,
+            bool(self.interval_checkbox.value),
+            self.interval_sec_input.value,
             1,
-            imp.refresh_interval_sec,
+            self.cfg.import_.refresh_interval_sec,
         )
 
     def _runner_pro_zadani(self, radek: RadekPozice) -> tuple[float, int | None]:
@@ -1009,11 +845,10 @@ class ImportDialog:
 
     def _naplanuj_pripravu(self) -> None:
         """
-        Spustí přípravu až po doběhnutí právě probíhající obsluhy - stejným
-        způsobem jako hlavní formulář, aby v ní fungovalo ui.notify.
+        Spustí přípravu až po doběhnutí právě probíhající obsluhy - jako
+        samostatnou úlohu na pozadí, hlášky z ní rozešle _oznam.
         """
-        with self.tabulka:
-            ui.timer(0, lambda: self._priprav_vse(), once=True)
+        background_tasks.create(self._priprav_vse(), name="priprava-importu")
 
     async def _priprav_vse(self) -> None:
         """
@@ -1027,15 +862,15 @@ class ImportDialog:
         """
         self._zrus_plan("Naplánované zadání zrušeno ručním přepočtem.")
         if not self.radky:
-            ui.notify("Nejprve vyberte soubor s pozicemi.", type="warning")
+            self._oznam("Nejprve vyberte soubor s pozicemi.", type="warning")
             return
         if self._zadana_hodnota() is None:
-            ui.notify(f"Vyplňte {self._popis_hodnoty()}.", type="warning")
+            self._oznam(f"Vyplňte {self._popis_hodnoty()}.", type="warning")
             return
         # Bez spojení se PT přesto vyplní - je to čistý výpočet ze zadání.
         # Dopočet SL a množství potřebuje kontrakt a kotace z TWS
         if not self.ib.connected:
-            ui.notify(
+            self._oznam(
                 "Není navázáno spojení s TWS - doplní se jen PT.", type="warning"
             )
 
@@ -1061,7 +896,7 @@ class ImportDialog:
         if self._zamceno(radek):
             return
         if not self.ib.connected:
-            ui.notify("Není navázáno spojení s TWS.", type="negative")
+            self._oznam("Není navázáno spojení s TWS.", type="negative")
             return
         self._set_loading(True, f"Připravuji {radek.pozice.symbol}…")
         self.priprava = True
@@ -1366,23 +1201,24 @@ class ImportDialog:
 
     def refresh(self) -> None:
         """
-        Udrží otevřený dialog v souladu se skutečností - stav založených
-        obchodů, zámky řádků i souhrn pod tabulkou. Volá se z periodické
-        smyčky rozhraní; zavřený dialog se přeskakuje.
+        Udrží dialog v souladu se skutečností - stav založených obchodů,
+        zámky řádků i souhrn pod tabulkou - a hlídá naplánované zadání.
 
-        Naplánované zadání je z toho vyjmuté - běží i se zavřeným dialogem,
-        protože obchodník ho zapne a dialog odklidí.
+        Volá se ze serverového časovače nezávislého na oknech prohlížeče,
+        takže běží i se zavřeným dialogem či prohlížečem: plán se spustí
+        bez obchodníka u obrazovky a znovu otevřený dialog ukáže živý stav.
         """
         self._tik_planu()
         self._obnov_varovani_spojeni()
-        if not self.dialog.value or not self.radky:
-            return
-
-        for radek in self.radky:
-            if radek.flow_id and radek.stav_z_obchodu:
-                self._zapis_stav_obchodu(radek)
-        self._obnov_zamky()
-        self._obnov_souhrn()
+        if self.radky:
+            for radek in self.radky:
+                if radek.flow_id and radek.stav_z_obchodu:
+                    self._zapis_stav_obchodu(radek)
+            self._obnov_zamky()
+            self._obnov_souhrn()
+        # Jakákoliv změna - i ruční úprava pole v okně - se tak na disk
+        # dostane nejpozději za jeden průchod
+        self._uloz()
 
     def _k_zadani(self) -> list[RadekPozice]:
         """
@@ -1407,6 +1243,188 @@ class ImportDialog:
         )
 
     # ------------------------------------------------------------------
+    # Uložení a obnova stavu po restartu aplikace
+    # ------------------------------------------------------------------
+
+    def cesta_stavu(self) -> Path:
+        """
+        Soubor s uloženým stavem dialogu - vedle souboru se stavem obchodů,
+        se stejným jménem doplněným o "-import" (state.json -> state-import.json).
+        """
+        cesta = Path(self.cfg.state.file)
+        return cesta.with_name(f"{cesta.stem}-import{cesta.suffix or '.json'}")
+
+    def _ted(self) -> datetime:
+        """Aktuální okamžik v UTC; samostatně, aby ho testy mohly podvrhnout."""
+        return datetime.now(timezone.utc)
+
+    def _stav_k_ulozeni(self) -> dict[str, Any]:
+        """
+        Stav dialogu k uložení na disk: načtený soubor, nastavení nad
+        tabulkou, obsah řádků a naplánované zadání. Náhledy kontraktů se
+        neukládají - zadání do trhu je nepotřebuje a plán si řádky před
+        zadáním stejně přepočítá.
+        """
+        radky = []
+        for radek in self.radky:
+            pozice = radek.pozice
+            radky.append(
+                {
+                    "key": pozice.key,
+                    "symbol": pozice.symbol,
+                    "entry_price": pozice.entry_price,
+                    "target_price": pozice.target_price,
+                    "vybrano": bool(radek.vybrano.value),
+                    "kontrakt": radek.kontrakt_label.text,
+                    "pt": radek.pt_input.value,
+                    "sl": radek.sl_input.value,
+                    "qty": radek.qty_input.value,
+                    "runner": radek.runner_select.value,
+                    "runner_rucne": radek.runner_rucne,
+                    "stav": radek.stav_label.text,
+                    "stav_trida": radek.stav_trida,
+                    "stav_z_obchodu": radek.stav_z_obchodu,
+                    "premie": radek.premie,
+                    "rezim_hodnot": radek.rezim_hodnot,
+                    "flow_id": radek.flow_id,
+                    "poznamka": radek.poznamka,
+                }
+            )
+        return {
+            "version": FORMAT_STAVU,
+            "nazev_souboru": self.nazev_souboru,
+            "soubor_text": self.soubor_label.text,
+            "varovani": self.warning_label.text if self.warning_label.visible else "",
+            "nastaveni": {nazev: getattr(self, nazev).value for nazev in NASTAVENI},
+            "runner_value": self.runner_value,
+            "radky": radky,
+            "plan": {
+                "aktivni": self.plan_aktivni,
+                "bezi": self.plan_bezi,
+                "prodleva": self.plan_prodleva,
+                # Okamžik platí jen pro zapnutý plán
+                "okamzik": (
+                    self.plan_okamzik.isoformat()
+                    if self.plan_aktivni and self.plan_okamzik
+                    else None
+                ),
+            },
+        }
+
+    def _uloz(self) -> None:
+        """
+        Uloží stav dialogu na disk, aby restart aplikace obnovil tabulku
+        i naplánované zadání. Zapisuje se jen změněný stav - volá se každou
+        sekundu z obnovy a navíc hned po každé změně plánu či zadání obchodu.
+        Bez ukládání stavu obchodů (state.enabled) se neukládá ani dialog.
+        """
+        if not self.cfg.state.enabled:
+            return
+        obsah = self._stav_k_ulozeni()
+        if obsah == self._ulozeny_stav:
+            return
+        store.save_json(obsah, self.cesta_stavu())
+        self._ulozeny_stav = obsah
+
+    def obnov(self) -> None:
+        """
+        Po startu aplikace načte uložený stav dialogu - tabulku, nastavení
+        i naplánované zadání. Chybějící, poškozený či neznámou verzí zapsaný
+        soubor se ignoruje; dialog pak začíná prázdný.
+        """
+        if not self.cfg.state.enabled:
+            return
+        cesta = self.cesta_stavu()
+        obsah = store.load_json(cesta, FORMAT_STAVU)
+        if obsah is None:
+            return
+        try:
+            self._obnov_ze_zaznamu(obsah)
+        except Exception:
+            # Napůl obnovený dialog nesmí nic zadat sám - plán zůstává vypnutý
+            log.exception("Uložený stav dialogu v %s se nepodařilo obnovit.", cesta)
+            self._vypni_plan()
+
+    def _obnov_ze_zaznamu(self, obsah: dict[str, Any]) -> None:
+        """Naplní sdílený stav dialogu z uloženého záznamu (viz _stav_k_ulozeni)."""
+        # Nastavení nad tabulkou jde první, dokud je tabulka prázdná: změna
+        # režimu cíle by jinak vyprázdnila už obnovené řádky. Režim je
+        # v NASTAVENI proto na prvním místě
+        nastaveni = obsah.get("nastaveni") or {}
+        for nazev in NASTAVENI:
+            if nazev in nastaveni:
+                getattr(self, nazev).set_value(nastaveni[nazev])
+        if obsah.get("runner_value") in runner_volby():
+            self.runner_value = obsah["runner_value"]
+
+        zaznamy = obsah.get("radky") or []
+        if not zaznamy:
+            return
+        pozice = [
+            ImportedPosition(
+                key=str(zaznam["key"]),
+                symbol=str(zaznam["symbol"]),
+                entry_price=float(zaznam["entry_price"]),
+                target_price=float(zaznam["target_price"]),
+            )
+            for zaznam in zaznamy
+        ]
+        self.nazev_souboru = str(obsah.get("nazev_souboru") or "")
+        self.soubor_label.set_text(str(obsah.get("soubor_text") or ""))
+        self._vykresli_tabulku(pozice)
+        varovani = str(obsah.get("varovani") or "")
+        self.warning_label.set_text(varovani)
+        self.warning_label.set_visibility(bool(varovani))
+        for radek, zaznam in zip(self.radky, zaznamy):
+            self._obnov_radek(radek, zaznam)
+        self._obnov_souhrn()
+
+        plan = obsah.get("plan") or {}
+        if plan.get("bezi"):
+            # Restart uprostřed běhu plánu: část pozic už možná v trhu je.
+            # Opakovat se nesmí, obchodník musí stav zkontrolovat sám
+            self.engine.log_event(
+                "Naplánované zadání pozic ze souboru přerušil restart aplikace - "
+                "zkontrolujte přehled obchodů a dialog Načíst ze souboru."
+            )
+        elif plan.get("aktivni") and plan.get("okamzik"):
+            self.plan_prodleva = float(plan.get("prodleva") or 0.0)
+            self.plan_okamzik = datetime.fromisoformat(plan["okamzik"])
+            self.plan_aktivni = True
+            self._obnov_plan()
+            # Zda okamžik mezitím nepropásl, posoudí první průchod _tik_planu
+            self.engine.log_event(
+                f"Obnoveno naplánované zadání {len(self._k_zadani())} pozic "
+                f"ze souboru {self.nazev_souboru or '(bez názvu)'}."
+            )
+
+    def _obnov_radek(self, radek: RadekPozice, zaznam: dict[str, Any]) -> None:
+        """Vrátí do řádku uložené hodnoty, výběr, runner i stav."""
+        # Zápis čísel spouští obsluhy změn (platnost čísel, přidělení
+        # runneru), proto se výsledky těchto obsluh přepisují až po něm
+        radek.pt_input.set_value(zaznam.get("pt"))
+        radek.sl_input.set_value(zaznam.get("sl"))
+        radek.qty_input.set_value(zaznam.get("qty"))
+        runner = zaznam.get("runner")
+        if runner not in runner_volby(kratke=True):
+            runner = RUNNER_VYPNUTO
+        radek.runner_prepis = True
+        try:
+            radek.runner_select.set_value(runner)
+        finally:
+            radek.runner_prepis = False
+        radek.runner_rucne = bool(zaznam.get("runner_rucne"))
+        radek.rezim_hodnot = str(zaznam.get("rezim_hodnot") or "")
+        radek.premie = zaznam.get("premie")
+        radek.flow_id = str(zaznam.get("flow_id") or "")
+        radek.poznamka = str(zaznam.get("poznamka") or "")
+        radek.vybrano.set_value(bool(zaznam.get("vybrano")))
+        radek.kontrakt_label.set_text(str(zaznam.get("kontrakt") or "-"))
+        radek.stav(str(zaznam.get("stav") or "-"), str(zaznam.get("stav_trida") or ""))
+        # Až po zápisu stavu - radek.stav značku obchodem řízeného stavu sundává
+        radek.stav_z_obchodu = bool(zaznam.get("stav_z_obchodu"))
+
+    # ------------------------------------------------------------------
     # Naplánované zadání po otevření trhu
     # ------------------------------------------------------------------
 
@@ -1419,9 +1437,7 @@ class ImportDialog:
         přepočet. Prázdné či záporné pole spadne na hodnotu z konfigurace,
         ať se okamžik zadání neřídí náhodným číslem.
         """
-        hodnota = self._cislo(
-            self.refresh_sec_input.value if self.refresh_sec_input is not None else None
-        )
+        hodnota = self._cislo(self.refresh_sec_input.value)
         if hodnota is None or hodnota < 0:
             return float(self.cfg.import_.refresh_after_open_sec)
         return float(hodnota)
@@ -1453,6 +1469,9 @@ class ImportDialog:
         zbyva = self._plan_zbyva()
         if zbyva is None:
             return None
+        # Okamžik nastal, ale po restartu se ještě obnovují obchody z TWS
+        if zbyva <= 0:
+            return "Naplánované zadání čeká na obnovu obchodů z TWS"
         return f"Naplánováno zadání {self._davka_planu(zbyva)}"
 
     def _davka_planu(self, zbyva: float) -> str:
@@ -1503,8 +1522,6 @@ class ImportDialog:
         plánem dostane naléhavý vzhled, protože zadání samo proběhne jen
         tehdy, když spojení do okamžiku spuštění naskočí.
         """
-        if self.spojeni_label is None:
-            return
         text = self.varovani_spojeni()
         self.spojeni_label.set_visibility(text is not None)
         if text is None:
@@ -1512,8 +1529,10 @@ class ImportDialog:
         self.spojeni_label.set_text(text)
         # Se zapnutým plánem má varování stejný vzhled jako poplach
         # v hlavičce stránky, bez plánu je to klidný rámeček
-        stav = "poplach" if self.plan_aktivni else "varovani-spojeni-klid"
-        self.spojeni_label.classes(replace=f"varovani-spojeni {stav}")
+        if self.plan_aktivni:
+            self.spojeni_label.classes(add="poplach", remove="varovani-spojeni-klid")
+        else:
+            self.spojeni_label.classes(add="varovani-spojeni-klid", remove="poplach")
 
     def _obnov_plan(self) -> None:
         """
@@ -1521,8 +1540,6 @@ class ImportDialog:
         oranžový s odpočtem do spuštění - zapnutý režim tak jde poznat na
         první pohled, stejně jako u zvolené volby runneru.
         """
-        if self.plan_button is None:
-            return
         if self.plan_bezi:
             self.plan_button.set_text("Zadávám naplánované pozice…")
             self.plan_button.props(add="color=orange-8", remove="outline")
@@ -1534,15 +1551,17 @@ class ImportDialog:
             self.plan_button.props(add="outline color=orange-8")
             self.plan_button.classes(remove="plan-aktivni")
             return
-        self.plan_button.set_text(f"Zrušit plán ({format_countdown(zbyva)})")
+        # Po okamžiku spuštění plán čeká jen na obnovu obchodů po restartu
+        odpocet = format_countdown(zbyva) if zbyva > 0 else "čeká na TWS"
+        self.plan_button.set_text(f"Zrušit plán ({odpocet})")
         self.plan_button.props(add="color=orange-8", remove="outline")
         self.plan_button.classes(add="plan-aktivni")
 
     def _zrus_plan(self, duvod: str = "") -> None:
         """
         Ukončí naplánované zadání. Volá se ze všech ručních zásahů, které
-        plán přebíjejí - Přepočítat, Zadat vybrané pozice do trhu, Zavřít
-        i načtení jiného souboru.
+        plán přebíjejí - Přepočítat, Zadat vybrané pozice do trhu i načtení
+        jiného souboru. Zavření dialogu ani prohlížeče plán neruší.
 
         Právě probíhající plán se neruší: přepočet a zadání už běží a vzít
         se zpět nedají. Ticho při vypnutém plánu nechá volajícího zavolat
@@ -1550,10 +1569,15 @@ class ImportDialog:
         """
         if not self.plan_aktivni or self.plan_bezi:
             return
+        self._vypni_plan()
+        if duvod:
+            self._oznam(duvod, type="info")
+
+    def _vypni_plan(self) -> None:
+        """Vypne plán, srovná tlačítko a stav hned uloží na disk."""
         self.plan_aktivni = False
         self._obnov_plan()
-        if duvod:
-            ui.notify(duvod, type="info")
+        self._uloz()
 
     def _prepni_plan(self) -> None:
         """
@@ -1566,25 +1590,25 @@ class ImportDialog:
         pozice do trhu a udělá totéž vědomě.
         """
         if self.plan_bezi:
-            ui.notify("Naplánované zadání právě probíhá.", type="warning")
+            self._oznam("Naplánované zadání právě probíhá.", type="warning")
             return
         if self.plan_aktivni:
             self._zrus_plan("Naplánované zadání zrušeno.")
             return
         if not self.radky:
-            ui.notify("Nejprve vyberte soubor s pozicemi.", type="warning")
+            self._oznam("Nejprve vyberte soubor s pozicemi.", type="warning")
             return
         # Bez vyplněného cíle by naplánovaný přepočet stejně jen ohlásil
         # chybu a dávka by šla do trhu s prázdnými čísly
         if self._zadana_hodnota() is None:
-            ui.notify(f"Vyplňte {self._popis_hodnoty()}.", type="warning")
+            self._oznam(f"Vyplňte {self._popis_hodnoty()}.", type="warning")
             return
         # Plán zadá právě to, co je zaškrtnuté teď - výběr se do spuštění
         # nemění. Prázdný by tiše skončil zadáním nula pozic, a to až po
         # otevření trhu, kdy už je na nápravu pozdě: znovu otevřený dialog
         # zaškrtnutí nepřepočtených řádků sundává
         if not self._k_zadani():
-            ui.notify(
+            self._oznam(
                 "Není vybrána žádná pozice - plán by do trhu nezadal nic.",
                 type="warning",
             )
@@ -1593,7 +1617,7 @@ class ImportDialog:
         prodleva = self._prodleva_planu()
         uplynulo = self.engine.market_open_elapsed()
         if uplynulo is not None and uplynulo >= prodleva:
-            ui.notify(
+            self._oznam(
                 f"Okamžik přepočtu ({prodleva:g} s po otevření trhu) je pryč - "
                 f"trh je otevřený už {format_countdown(uplynulo)}. Použijte "
                 f"Přepočítat a Zadat vybrané pozice do trhu.",
@@ -1603,7 +1627,12 @@ class ImportDialog:
 
         self.plan_prodleva = prodleva
         self.plan_aktivni = True
+        # Okamžik spuštění se zafixuje i v absolutním čase - podle něj se po
+        # restartu pozná plán, který okamžik propásl
+        self.plan_okamzik = self._ted() + timedelta(seconds=self._plan_zbyva() or 0.0)
         self._obnov_plan()
+        # Zapnutý plán se ukládá hned, ať ho obnoví i restart v příští sekundě
+        self._uloz()
         # Bez spojení s TWS plán zapnout jde - TWS se dá do otevření trhu
         # ještě spustit. Místo potvrzení, že zadání proběhne, se ale ukáže
         # varování, že bez spojení neproběhne. Hláška sama nezmizí a čeká
@@ -1611,7 +1640,7 @@ class ImportDialog:
         # ne close_button - jen u akce jde nastavit bílá barva, výchozí
         # modrá na červeném pozadí špatně čte
         if not self.ib.connected:
-            ui.notify(
+            self._oznam(
                 self.varovani_spojeni(),
                 type="negative",
                 multi_line=True,
@@ -1620,7 +1649,7 @@ class ImportDialog:
             )
             return
         zbyva = self._plan_zbyva() or 0.0
-        ui.notify(
+        self._oznam(
             f"Přepočet a zadání proběhne za {format_countdown(zbyva)} "
             f"({prodleva:g} s po otevření trhu).",
             type="positive",
@@ -1628,30 +1657,66 @@ class ImportDialog:
 
     def _tik_planu(self) -> None:
         """
-        Průchod plánem z periodické obnovy rozhraní - drží odpočet na
-        tlačítku a po dosažení okamžiku spustí přepočet se zadáním.
+        Průchod plánem ze serverové obnovy - drží odpočet na tlačítku a po
+        dosažení okamžiku spustí přepočet se zadáním.
 
-        Běží i se zavřeným dialogem: obchodník plán zapne a dialog odklidí,
-        spouštěč musí přesto nastat. Vlastní běh se pouští odloženě přes
-        časovač, aby v něm fungovalo ui.notify - stejně jako u přípravy
-        vyvolané přepnutím režimu.
+        Běží i se zavřeným dialogem či prohlížečem: obchodník plán zapne
+        a odejde, spouštěč musí přesto nastat. Vlastní běh je samostatná
+        úloha na pozadí - stejně jako příprava vyvolaná přepnutím režimu.
         """
         if not self.plan_aktivni or self.plan_bezi:
             return
         zbyva = self._plan_zbyva()
         if zbyva is None:
             return
+        # Plán, který okamžik propásl víc než o lhůtu (aplikace neběžela,
+        # nebo nestihla obnovit obchody), se už nespustí
+        if (
+            self.plan_okamzik is not None
+            and (self._ted() - self.plan_okamzik).total_seconds() > TOLERANCE_PLANU_SEC
+        ):
+            self._zrus_propasnuty_plan()
+            return
         if zbyva > 0:
+            self._obnov_plan()
+            return
+        # Po restartu engine ještě nemusí znát obchody z předchozího běhu -
+        # zadání by vedle čekajícího obchodu téhož tickeru založilo druhý.
+        # Plán počká, než je engine obnoví a ověří v TWS
+        if not self.engine.flows_restored:
             self._obnov_plan()
             return
 
         # Okamžik nastal - zapnutý režim se hned překlápí do běhu, ať ho
-        # další průchod smyčkou nespustí podruhé
+        # další průchod smyčkou nespustí podruhé. Stav se ukládá hned, aby
+        # restart uprostřed běhu plán nespustil znovu
         self.plan_aktivni = False
         self.plan_bezi = True
         self._obnov_plan()
-        with self.tabulka:
-            ui.timer(0, self._spust_plan, once=True)
+        self._uloz()
+        background_tasks.create(self._spust_plan(), name="naplanovane-zadani")
+
+    def _zrus_propasnuty_plan(self) -> None:
+        """
+        Zruší plán, který okamžik spuštění propásl, a výrazně to ohlásí -
+        v provozním logu i trvalou hláškou v otevřených oknech. Pozice pak
+        musí obchodník zkontrolovat a zadat ručně.
+        """
+        self._vypni_plan()
+        zprava = (
+            "Naplánované zadání pozic ze souboru zrušeno - okamžik spuštění "
+            f"minul před více než {TOLERANCE_PLANU_SEC / 60:g} min, aniž by mohlo "
+            "proběhnout (aplikace neběžela, nebo ještě neobnovila obchody z TWS). "
+            "Pozice zkontrolujte a zadejte ručně."
+        )
+        self.engine.log_event(zprava)
+        self._oznam(
+            zprava,
+            type="negative",
+            multi_line=True,
+            timeout=0,
+            actions=[{"label": "Rozumím", "color": "white"}],
+        )
 
     async def _spust_plan(self) -> None:
         """
@@ -1668,24 +1733,10 @@ class ImportDialog:
             await self._zadej()
         except Exception as exc:
             log.exception("Naplánované zadání selhalo.")
-            ui.notify(f"Naplánované zadání selhalo: {exc}", type="negative")
+            self._oznam(f"Naplánované zadání selhalo: {exc}", type="negative")
         finally:
             self.plan_bezi = False
-            self._obnov_plan()
-
-    def _na_zavreni_dialogu(self, event: Any) -> None:
-        """
-        Zavření dialogu ukončí naplánované zadání - odklizený dialog nemá
-        nechávat běžet režim, který sám od sebe pošle pozice do trhu.
-
-        Visí na změně hodnoty dialogu, takže platí pro všechny cesty ven:
-        tlačítko Zavřít, klávesu i kliknutí mimo kartu. Otevření dialogu
-        (hodnota True) se přeskakuje, stejně jako zavření po doběhlé dávce,
-        kdy plán běží a rušit se nedá.
-        """
-        if event.value:
-            return
-        self._zrus_plan("Naplánované zadání zrušeno zavřením dialogu.")
+            self._vypni_plan()
 
     # ------------------------------------------------------------------
     # Zadání do trhu
@@ -1706,10 +1757,10 @@ class ImportDialog:
         """
         self._zrus_plan("Naplánované zadání zrušeno ručním zadáním do trhu.")
         if self.zadavani:
-            ui.notify("Zadávání do trhu už probíhá.", type="warning")
+            self._oznam("Zadávání do trhu už probíhá.", type="warning")
             return
         if self.priprava:
-            ui.notify(
+            self._oznam(
                 "Počkejte na dokončení přípravy - do trhu by šla "
                 "rozpracovaná čísla.",
                 type="warning",
@@ -1733,7 +1784,7 @@ class ImportDialog:
         """
         vybrane = self._k_zadani()
         if not vybrane:
-            ui.notify("Není vybrána žádná pozice k zadání.", type="warning")
+            self._oznam("Není vybrána žádná pozice k zadání.", type="warning")
             return
 
         # Všechna společná nastavení se čtou jednou pro celou dávku - ovládací
@@ -1844,6 +1895,9 @@ class ImportDialog:
                 radek.flow_id = flow.id
                 radek.poznamka = ""
                 radek.vybrano.set_value(False)
+                # Založený obchod se do uloženého stavu propíše hned - restart
+                # by jinak řádek nabídl k zadání podruhé
+                self._uloz()
 
                 # Obchod, který se do trhu nedostal, vzniká rovnou ukončený -
                 # odmítlo ho rušicí či uzavírací okno. Do počtu založených nepatří
@@ -1859,22 +1913,19 @@ class ImportDialog:
 
         self._obnov_zamky()
         self._obnov_souhrn()
-        if self.on_created:
-            self.on_created()
-
         duvody = []
         if chyb:
             duvody.append(f"{chyb} se nezdařilo")
         if odmitnuto:
             duvody.append(f"{odmitnuto} nebylo zadáno do trhu")
         if duvody:
-            ui.notify(
+            self._oznam(
                 f"Založeno {zalozeno} obchodů, {' a '.join(duvody)} - "
                 f"podrobnosti jsou ve sloupci Stav.",
                 type="warning",
             )
         else:
-            ui.notify(f"Založeno {zalozeno} obchodů ze souboru.", type="positive")
+            self._oznam(f"Založeno {zalozeno} obchodů ze souboru.", type="positive")
 
         # Dialog zůstává otevřený jen kvůli chybám řádků - ty jsou vidět
         # pouze v jeho sloupci Stav a obchodník je má opravit. Obchod, který
@@ -1882,3 +1933,354 @@ class ImportDialog:
         # takže dialog nemá proč překážet
         if not chyb:
             self.dialog.close()
+
+
+class PohledImportu:
+    """
+    Vykreslení sdíleného dialogu načtení pozic (ImportDialog) v jednom okně
+    prohlížeče.
+
+    Drží jen skutečné prvky NiceGUI tohoto okna a připojuje je ke sdíleným
+    prvkům stavu; žádná data ani logiku nemá. Zavřením okna zaniká, stav
+    dialogu včetně naplánovaného zadání ale zůstává na serveru.
+
+    stav - sdílený stav a logika dialogu
+    """
+
+    def __init__(self, stav: ImportDialog) -> None:
+        self.stav = stav
+        # Klient (okno prohlížeče), do kterého pohled patří - vzniká s build()
+        self.client: Any = None
+        self.dialog: Any = None
+        self.upload: Any = None
+        self.mrizka: Any = None
+
+    @property
+    def is_deleted(self) -> bool:
+        """True, pokud okno prohlížeče s tímto pohledem už neexistuje."""
+        return self.dialog.is_deleted
+
+    def build(self) -> None:
+        """
+        Vykreslí dialog v právě stavěné stránce a připojí jeho prvky ke
+        sdílenému stavu. Čeká-li naplánované zadání (nebo právě běží),
+        dialog se rovnou otevře - obchodník po návratu do prohlížeče hned
+        vidí, že plán je zapnutý.
+        """
+        stav = self.stav
+        self.client = ui.context.client
+        with ui.dialog().classes("dialog-import-obal") as self.dialog, ui.card().classes(
+            "dialog-import"
+        ):
+            ui.label("Načtení pozic ze souboru").classes("dialog-nadpis")
+            ui.label(
+                "Čerpá se z položek s klíčem končícím plusem - ticker, vstupní "
+                "a cílová cena podkladu."
+            ).classes("dialog-popis")
+
+            with ui.row().classes("radek radek-import-soubor"):
+                self.upload = (
+                    ui.upload(
+                        label="Soubor se zadáním (YAML)",
+                        on_upload=lambda e: stav._on_upload(e, self.upload),
+                        auto_upload=True,
+                        max_files=1,
+                    )
+                    .props('accept=".yaml,.yml" flat dense')
+                    .classes("nahrani-souboru")
+                )
+                stav.soubor_label.pripoj(ui.label("").classes("popis-souboru"))
+
+            self._build_parametry()
+
+            # Indikace přípravy - stejná nenásilná pulzující hláška jako ve formuláři
+            stav.loading_label.pripoj(ui.label("").classes("indikace-nacitani"))
+
+            # Varování z načtení souboru (přeskočené položky)
+            stav.warning_label.pripoj(ui.label("").classes("nahled-varovani"))
+
+            # Tabulka načtených pozic; buňky staví vykresli_tabulku
+            self.mrizka = stav.tabulka.pripoj(ui.grid().classes("tabulka-import"))
+
+            stav.souhrn_label.pripoj(ui.label("").classes("souhrn-import"))
+
+            # Varování na chybějící spojení s TWS. Stojí těsně nad tlačítky,
+            # aby ho obchodník viděl ve chvíli, kdy zadání do trhu spouští
+            stav.spojeni_label.pripoj(
+                ui.label("").classes("varovani-spojeni varovani-spojeni-klid")
+            )
+
+            with ui.row().classes("radek radek-tlacitka"):
+                stav.zadat_button.pripoj(
+                    ui.button("Zadat vybrané pozice do trhu", on_click=stav._zadej)
+                    .props("color=green-8")
+                    .classes("tlacitko-import-akce")
+                )
+                # Naplánované zadání: po otevření trhu a uplynulé prodlevě se
+                # samo provede přepočet a hned po něm zadání vybraných pozic
+                plan_button = (
+                    ui.button(POPIS_PLANU_VYPNUTO, on_click=stav._prepni_plan)
+                    .props("outline color=orange-8")
+                    .classes("tlacitko-import-akce tlacitko-plan")
+                )
+                plan_button.tooltip(
+                    "Zapne jednorázový režim: po otevření trhu a uplynutí "
+                    "prodlevy vpravo nahoře se samo provede přepočet všech "
+                    "nezadaných řádků a hned po něm zadání vybraných pozic "
+                    "do trhu - tytéž dva kroky jako tlačítka Přepočítat "
+                    "a Zadat vybrané pozice do trhu, včetně kontroly, zda "
+                    "podklad od nastaveného času nepřekročil vstup (takový "
+                    "řádek se označí Vstup propásnut a odškrtne). Použitelné i pro pozice, "
+                    "které v trhu ještě vůbec nejsou. Proběhne jediný přepočet: "
+                    "zadané obchody už nedostanou Po otevření trhu přepočítat, "
+                    "takže v přehledu mají stejná čísla i runner jako v dialogu. "
+                    "Plán běží v aplikaci, takže zavření dialogu ani prohlížeče "
+                    "ho nezastaví - znovu otevřený dialog ukáže, že je zapnutý. "
+                    "Režim ukončí opětovný stisk, kterékoliv z obou tlačítek "
+                    "i načtení jiného souboru. Zapnout jde jen dokud okamžik "
+                    "přepočtu teprve nastane."
+                )
+                stav.plan_button.pripoj(plan_button)
+                ui.button("Zavřít", on_click=self.dialog.close).props("flat").classes(
+                    "tlacitko-import-akce"
+                )
+
+        stav.dialog.pripoj(self.dialog)
+        stav.pripoj_pohled(self)
+        self.vykresli_tabulku()
+
+        if stav.plan_zapnuty:
+            self.open()
+
+    def _build_parametry(self) -> None:
+        """Společné parametry pro všechny načtené pozice - režim cíle a spread."""
+        stav = self.stav
+        # Přepínače režimu cíle vlevo; vpravo od nich, v jinak prázdném místě,
+        # stojí blok přepočtu po otevření burzy
+        with ui.row().classes("radek radek-rezim"):
+            with ui.column().classes("prepinace prepinace-import"):
+                with ui.column().classes("skupina-prepinacu"):
+                    stav.rezim.pripoj(
+                        ui.radio(
+                            {
+                                REZIM_PCT: "PT na podkladu v % dráhy k cíli",
+                                REZIM_USD: "PT na opci v USD/ks",
+                                REZIM_PREMIUM: "PT na opci v % prémie",
+                            },
+                        )
+                        .props("dense")
+                        .classes("prepinac")
+                        .tooltip(
+                            "% dráhy k cíli: PT je cena podkladu, 100 % je přesně cílová "
+                            "cena ze souboru; SL se dopočítá také na podkladu podle poměru "
+                            "SL:PT z konfigurace. USD/ks: PT je zisk na jedné opci a SL "
+                            "ztráta na opci, obojí podle téhož poměru. % prémie: totéž, "
+                            "ale zadané podílem z ceny opce - 30 % z opce za 3,00 je "
+                            "90 USD na kontrakt, takže levná i drahá opce riskuje stejný "
+                            "díl vložených peněz. V obou opčních režimech se cílová cena "
+                            "ze souboru nepoužívá."
+                        )
+                    )
+
+                    # Kompenzace spreadu patří k SL na opci, tedy jen k režimu v USD
+                    stav.sl_spread_compensated.pripoj(
+                        ui.checkbox("SL o zaplacený spread dál")
+                        .props("dense")
+                        .classes("prepinac prepinac-podrizeny")
+                        .tooltip(
+                            "Zaškrtnuto: k SL na opci se při nákupu připočte skutečně "
+                            "zaplacený spread (nákupní cena minus BID), takže zadaná "
+                            "hodnota odpovídá pohybu ceny opce. Ztráta na kontrakt "
+                            "o tento spread naroste a množství úměrně klesne."
+                        )
+                    )
+
+            # Přepočet po otevření burzy. Obchody zadané před otevřením vychází
+            # z odhadu prémie ze závěrečné ceny, který po gapu neplatí; engine
+            # je po zadané prodlevě od otevření přepočítá podle živých kotací
+            # a čekající příkaz upraví na místě. Volba se zapisuje do každého
+            # zakládaného obchodu, takže platí i po zavření dialogu
+            with ui.row().classes("blok-obnova"):
+                prepinac, pole = widgets.blok_prepoctu(
+                    "Po otevření trhu přepočítat",
+                    "Prodleva [s]",
+                    stav.refresh_checkbox.value,
+                    stav.refresh_sec_input.value,
+                    0,
+                    "Zaškrtnuto: obchody z této dávky, které po otevření burzy "
+                    "ještě čekají na vstup, se po uplynutí prodlevy vpravo jednou "
+                    "přepočítají podle živých kotací - PT v procentech prémie, SL "
+                    "i množství vyjdou ze skutečné ceny opce místo odhadu ze "
+                    "závěrečné ceny. Čekající příkaz v trhu se upraví na místě, "
+                    "neruší se. Obchod, který už nakoupil, se nemění. Spread nad "
+                    "limitem přepočet nezdrží - počítá se s Max. spread. Zadat po otevření trhu "
+                    "volbu nepoužije - dávku přepočítá samo až po otevření, "
+                    "takže druhý přepočet není potřeba.",
+                    widgets.NAPOVEDA_PRODLEVY,
+                    "pole pole-obnova-sec",
+                )
+                stav.refresh_checkbox.pripoj(prepinac)
+                stav.refresh_sec_input.pripoj(pole)
+
+            # Průběžný přepočet za otevřené burzy - volba se zapisuje do obchodu
+            with ui.row().classes("blok-obnova"):
+                prepinac, pole = widgets.blok_prepoctu(
+                    "Přepočítávat každých",
+                    "Odstup [s]",
+                    stav.interval_checkbox.value,
+                    stav.interval_sec_input.value,
+                    1,
+                    widgets.NAPOVEDA_INTERVALU.format(
+                        rozsah="obchody z této dávky, které"
+                    ),
+                    widgets.NAPOVEDA_ODSTUPU,
+                    "pole pole-obnova-sec",
+                )
+                stav.interval_checkbox.pripoj(prepinac)
+                stav.interval_sec_input.pripoj(pole)
+
+        with ui.row().classes("radek"):
+            # Každý režim má vlastní pole - přepínač jen mění, které z nich
+            # je vidět (viditelnost řídí sdílený stav)
+            stav.pct_input.pripoj(
+                ui.number("PT [%]", format="%.2f", min=0)
+                .classes("pole")
+                .props("outlined dense step=any")
+            )
+            stav.usd_input.pripoj(
+                ui.number("PT [USD/ks]", format="%.2f", min=0)
+                .classes("pole")
+                .props("outlined dense step=any")
+            )
+            stav.premium_input.pripoj(
+                ui.number("PT [% prémie]", format="%.2f", min=0)
+                .classes("pole")
+                .props("outlined dense step=any")
+            )
+            stav.spread_input.pripoj(
+                ui.number("Max. spread [%]", format="%.2f", min=0)
+                .classes("pole")
+                .props("outlined dense step=any")
+            )
+            # RRR pro dopočet SL z PT u všech načtených pozic; mění se
+            # zřídka, výchozí hodnota vychází z konfigurace
+            stav.rrr_input.pripoj(
+                ui.number("RRR (PT:SL)", format="%g", min=0)
+                .classes("pole")
+                .props("outlined dense step=any")
+                .tooltip(
+                    "Poměr zisku ku riziku, kterým se z PT dopočítá SL: "
+                    "2 = PT je dvakrát dál než SL, 1 = obě stejně daleko. "
+                    "Výchozí hodnota vychází z konfigurace (převrácené "
+                    "trading.sl_to_pt_ratio), prázdné či nekladné pole "
+                    "se k ní vrací."
+                )
+            )
+            ui.button("Přepočítat", on_click=stav._priprav_vse).props(
+                "outline"
+            ).classes("tlacitko-vedle").tooltip(
+                "Přepíše PT, SL i množství u všech načtených pozic hodnotami "
+                "spočítanými podle nastavení nad tabulkou."
+            )
+
+        # Počáteční nastavení runneru, společné všem zakládaným pozicím.
+        # Runner se zapíná až po založení obchodu, stejně jako tlačítky
+        # v přehledu - před nákupem si volbu obchod jen zapamatuje
+        with ui.row().classes("radek radek-runner"):
+            ui.label("Runner:").classes("popisek-volby-runner")
+            napoveda = (
+                "Výchozí nastavení runneru pro všechny načtené pozice - přepíše "
+                "volbu ve sloupci Runner, kde ji lze u každé pozice doladit zvlášť. "
+                + widgets.NAPOVEDA_RUNNER_VELIKOST
+                + " Runner dostanou jen pozice s množstvím alespoň takovým, jaké je "
+                "v poli vpravo; menší zůstanou na volbě Bez."
+            )
+            tlacitka = widgets.tlacitka_runneru(
+                stav._nastav_runner, napoveda, stav.runner_value
+            )
+            for klic, tlacitko in tlacitka.items():
+                stav.runner_tlacitka[klic].pripoj(tlacitko)
+            # Velikost runneru a nejmenší velikost pozice, které se runner
+            # nastaví - pro celou dávku
+            stav.runner_pct_input.pripoj(
+                widgets.pole_runner_pct(stav.runner_pct_input.value, "pole pole-runner-pct")
+            )
+            stav.runner_min_input.pripoj(
+                widgets.pole_runner_min(stav.runner_min_input.value, "pole pole-runner-min")
+            )
+
+    def open(self) -> None:
+        """Otevře dialog v tomto okně a nechá stav připravit výběr řádků."""
+        self.dialog.open()
+        self.stav.pri_otevreni()
+
+    def vykresli_tabulku(self) -> None:
+        """
+        Postaví buňky tabulky z řádků sdíleného stavu. Volá se při stavbě
+        okna a pokaždé, když stav načte nový soubor - i z obsluhy jiného okna,
+        proto se do mřížky vstupuje výslovně.
+        """
+        stav = self.stav
+        self.mrizka.clear()
+        if not stav.radky:
+            return
+        with self.mrizka:
+            for popisek in SLOUPCE:
+                label = ui.label(popisek).classes("hlavicka-import")
+                # Hlavičky úrovní nesou jednotku podle režimu cíle
+                if popisek in stav.hlavicky:
+                    stav.hlavicky[popisek].pripoj(label.tooltip(NAPOVEDA_UROVNI))
+            for radek in stav.radky:
+                self._vykresli_radek(radek)
+
+    def _vykresli_radek(self, radek: RadekPozice) -> None:
+        """
+        Vykreslí buňky jednoho řádku tabulky a připojí je ke sdílenému stavu
+        řádku. Buňky jsou přímými potomky mřížky, jinak by se sloupce
+        nezarovnaly.
+        """
+        pozice = radek.pozice
+        radek.vybrano.pripoj(ui.checkbox().props("dense").classes("bunka-import"))
+        ui.label(pozice.symbol).classes("bunka-import bunka-ticker")
+        ui.label(pozice.right_label).classes(
+            "bunka-import odznak-smer "
+            + ("smer-long" if pozice.right == "C" else "smer-short")
+        )
+        ui.label(fmt(pozice.entry_price)).classes("bunka-import bunka-cislo")
+        ui.label(fmt(pozice.target_price)).classes("bunka-import bunka-cislo")
+        radek.kontrakt_label.pripoj(ui.label("-").classes("bunka-import bunka-kontrakt"))
+
+        radek.pt_input.pripoj(
+            ui.number(format="%.2f")
+            .classes("bunka-import pole-import")
+            .props("outlined dense step=any")
+        )
+        radek.sl_input.pripoj(
+            ui.number(format="%.2f")
+            .classes("bunka-import pole-import")
+            .props("outlined dense step=any")
+        )
+        radek.qty_input.pripoj(
+            ui.number(format="%.0f", step=1, min=1)
+            .classes("bunka-import pole-import pole-import-ks")
+            .props("outlined dense")
+        )
+        radek.runner_select.pripoj(
+            ui.select(runner_volby(kratke=True))
+            .classes("bunka-import pole-import vyber-runner")
+            .props("outlined dense options-dense")
+        )
+
+        with ui.row().classes("bunka-import bunka-stav"):
+            radek.obnovit_button.pripoj(
+                ui.button(
+                    icon="refresh",
+                    on_click=lambda _=None, r=radek: self.stav._priprav_radek_rucne(r),
+                )
+                .props("flat dense round size=sm")
+                .tooltip(
+                    "Přepočítá SL a množství podle PT vyplněného v tomto řádku."
+                )
+            )
+            with radek.stav_label.pripoj(ui.label("-").classes("stav-import")):
+                radek.stav_bublina.pripoj(ui.tooltip(""))
