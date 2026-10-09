@@ -432,7 +432,7 @@ import:
   # úroveň (u long high svíčky >= vstup, u short low <= vstup), řádek se
   # ve sloupci Stav označí "Vstup propásnut" a odškrtne - stejně jako při
   # vstupu překonaném podle živé ceny; do trhu ani do přehledu nejde.
-  entry_cross_check: true
+  entry_cross_check: false
   # Od kdy (HH:MM v časové zóně burzy, trading.exchange_timezone) se svíčky
   # procházejí. Půlnoc pokrývá overnight seanci i pre-market až do okamžiku
   # zadání; 09:30 by hlídalo jen dobu od otevření burzy.
