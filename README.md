@@ -725,7 +725,9 @@ Po restartu se aplikace vrací k nastavení ze souboru.
 
 Nezávisle na uzavírání před koncem burzy umí aplikace v pevně daný čas dne
 zrušit obchody, které **ještě nenakoupily** (`trading.pending_cancel_time`,
-výchozí 12:00 newyorského času). Nákupní příkazy takových obchodů se odstraní
+výchozí 12:00 newyorského času; v pátek platí vlastní čas
+`trading.pending_cancel_time_friday`, výchozí 10:00 – půl hodiny po otevření
+burzy). Nákupní příkazy takových obchodů se odstraní
 z trhu a obchod skončí ve stavu *Zrušeno*. Už otevřených pozic se to netýká —
 běží dál se svým PT a SL a uzavře je až automatické uzavření před koncem
 obchodování. Smyslem je nepouštět do trhu vstupy z druhé poloviny seance,

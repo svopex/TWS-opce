@@ -3259,6 +3259,21 @@ class FlowEngine:
                     "pozice se prodává trhem.",
                 )
 
+    def pending_cancel_time(self, ted: datetime | None = None) -> str:
+        """
+        Čas HH:MM, od kterého se v daný den ruší čekající obchody.
+
+        V pátek platí pending_cancel_time_friday, ostatní dny
+        pending_cancel_time. Bez zadaného okamžiku se bere dnešek
+        v časové zóně burzy.
+        """
+        if ted is None:
+            ted = self._exchange_now()
+        # Pátek má v datetime.weekday() číslo 4
+        if ted.weekday() == 4:
+            return self.cfg.trading.pending_cancel_time_friday
+        return self.cfg.trading.pending_cancel_time
+
     def pending_cancel_seconds(self) -> float | None:
         """
         Počet sekund do zrušení čekajících obchodů v pevně daný čas dne.
@@ -3273,7 +3288,7 @@ class FlowEngine:
             return None
 
         ted = self._exchange_now()
-        start = self._exchange_time(ted, self.cfg.trading.pending_cancel_time)
+        start = self._exchange_time(ted, self.pending_cancel_time(ted))
         return self._window_seconds(ted, start)
 
     async def _cancel_pending_flows(self) -> None:
@@ -3286,7 +3301,7 @@ class FlowEngine:
         if not self.pending_cancel_active:
             return
 
-        cas = self.cfg.trading.pending_cancel_time
+        cas = self.pending_cancel_time()
         for flow in list(self.flows.values()):
             # Stavy před vstupem jsou podmnožinou aktivních, takže tahle
             # jediná podmínka odfiltruje pozice i už uzavřené obchody
@@ -3314,7 +3329,7 @@ class FlowEngine:
         if self.pending_cancel_active:
             duvod = (
                 f"v době, kdy se čekající obchody ruší "
-                f"(od {self.cfg.trading.pending_cancel_time} burzovního času)"
+                f"(od {self.pending_cancel_time()} burzovního času)"
             )
         elif self.auto_close_active:
             duvod = (

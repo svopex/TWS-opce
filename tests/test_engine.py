@@ -2703,6 +2703,32 @@ class TestZruseniCekajicich(ZakladTestu):
         self.engine.pending_cancel_on = False
         self.assertIsNone(self.engine.pending_cancel_seconds())
 
+    async def test_v_patek_plati_vlastni_cas(self):
+        # Pátek 21. 8. 2026 - ruší se už od výchozích 10:00, půl hodiny
+        # po otevření burzy
+        self.burza(9, 45, den=21)
+        self.assertEqual(self.engine.pending_cancel_time(), "10:00")
+        self.assertAlmostEqual(self.engine.pending_cancel_seconds(), 900.0)
+
+        self.burza(10, 0, den=21)
+        self.assertEqual(self.engine.pending_cancel_seconds(), 0.0)
+
+        # Ostatní dny zůstává běžný čas 12:00
+        self.burza(10, 0)
+        self.assertEqual(self.engine.pending_cancel_time(), "12:00")
+        self.assertAlmostEqual(self.engine.pending_cancel_seconds(), 7200.0)
+
+    async def test_v_patek_se_cekajici_zrusi_dopoledne(self):
+        cekajici = await self.zaloz_call()
+
+        self.burza(10, 0, den=21)
+        await self.engine._tick()
+
+        # Zpráva o zrušení uvádí páteční čas
+        self.assertEqual(cekajici.state, FlowState.CANCELLED)
+        self.assertIn("10:00", cekajici.message)
+        self.assertIn(cekajici.entry_trade, self.ib.cancelled)
+
     async def test_okno_nezacne_pred_otevrenim_burzy(self):
         # Čas před otevřením se posune na otevření, aby okno nerušilo
         # obchody nachystané právě na open

@@ -315,7 +315,7 @@ class CasovaneOkno:
     sekundy - vrací počet sekund do začátku okna (None = dnes už nenastane)
     popis   - jméno funkce do hlášení obchodníkovi i do textu o vypnutí
     cekani  - text před odpočtem
-    behem   - text po dobu, kdy okno běží
+    behem   - vrací text po dobu, kdy okno běží (může záviset na dni)
     log     - věta do provozního logu, doplní se o "zapnuto/vypnuto obchodníkem"
     """
 
@@ -323,7 +323,7 @@ class CasovaneOkno:
     sekundy: Callable[[], float | None]
     popis: str
     cekani: str
-    behem: str
+    behem: Callable[[], str]
     log: str
     # Widgety se doplní až při stavbě hlavičky
     box: ui.row | None = field(default=None, repr=False)
@@ -512,24 +512,27 @@ class TradingUI:
         Časované funkce, které mají v hlavičce odpočet a přepínač.
 
         Texty se skládají jednou při stavbě stránky - konfigurace se načítá
-        při startu a za běhu se už nemění.
+        při startu a za běhu se už nemění. Jen čas rušení čekajících obchodů
+        závisí na dni v týdnu (pátek má vlastní), proto se text běžícího
+        okna skládá až při překreslení.
         """
         cas = self.cfg.trading.pending_cancel_time
+        cas_patek = self.cfg.trading.pending_cancel_time_friday
         return [
             CasovaneOkno(
                 atribut="pending_cancel_on",
                 sekundy=self.engine.pending_cancel_seconds,
                 popis="Rušení čekajících obchodů",
                 cekani="Zrušení čekajících obchodů za",
-                behem=f"Čekající obchody se ruší (od {cas})",
-                log=f"Rušení čekajících obchodů v {cas} burzovního času",
+                behem=lambda: f"Čekající obchody se ruší (od {self.engine.pending_cancel_time()})",
+                log=f"Rušení čekajících obchodů v {cas} (v pátek {cas_patek}) burzovního času",
             ),
             CasovaneOkno(
                 atribut="auto_close_on",
                 sekundy=self.engine.auto_close_seconds,
                 popis="Automatické uzavření pozic",
                 cekani="Automatické uzavření všech pozic za",
-                behem="Probíhá automatické uzavírání obchodů",
+                behem=lambda: "Probíhá automatické uzavírání obchodů",
                 log="Automatické uzavření pozic před koncem obchodování",
             ),
         ]
@@ -2339,7 +2342,7 @@ class TradingUI:
 
         okno.box.set_visibility(True)
         if sekundy <= 0:
-            okno.label.set_text(okno.behem)
+            okno.label.set_text(okno.behem())
             okno.label.classes(add="odpocet-aktivni")
             return
 

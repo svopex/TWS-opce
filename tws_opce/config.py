@@ -175,6 +175,9 @@ class TradingConfig:
     # Čas zrušení čekajících obchodů ve formátu HH:MM (v časové zóně burzy);
     # okno pak trvá až do zavření burzy
     pending_cancel_time: str = "12:00"
+    # Čas zrušení čekajících obchodů v pátek (HH:MM, časová zóna burzy);
+    # v pátek se ruší dřív, ostatní dny platí pending_cancel_time
+    pending_cancel_time_friday: str = "10:00"
     # Časová zóna burzy - uzavírání i rušení čekajících obchodů se časuje
     # v ní, takže posuny letního a zimního času vůči místnímu času
     # počítače nehrají roli
@@ -449,6 +452,7 @@ def validate_config(cfg: AppConfig) -> None:
         ("trading.exchange_open_time", cfg.trading.exchange_open_time),
         ("trading.exchange_close_time", cfg.trading.exchange_close_time),
         ("trading.pending_cancel_time", cfg.trading.pending_cancel_time),
+        ("trading.pending_cancel_time_friday", cfg.trading.pending_cancel_time_friday),
         ("import.entry_cross_check_from", cfg.import_.entry_cross_check_from),
     ):
         try:
