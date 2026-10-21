@@ -1573,20 +1573,47 @@ class TestNacitaniPodleKonfigurace(unittest.TestCase):
         # Další načtení je zítřejší soubor
         self.assertIn("20261022.yaml", self.dialog.nacitani_popis())
 
-    def test_tyz_den_se_nenacita_podruhe(self):
+    def test_tyz_cas_se_nenacita_podruhe(self):
         self.dialog._prepni_nacitani()
         self.ted = self.ted.replace(minute=15)
         self.dialog.refresh()
-        with mock.patch.object(self.dialog, "_nacti_pozice") as nacteni:
+        nacteno = self.ted
+        with mock.patch.object(ImportDialog, "_nacti_pozice") as nacteni:
             self.ted = self.ted.replace(minute=20)
             self.dialog.refresh()
-            # Ani restart den posledního načtení nezapomene
+            # Ani restart okamžik posledního načtení nezapomene
             obnoveny = self.novy_dialog()
             obnoveny.obnov()
             self.assertTrue(obnoveny.nacitani_aktivni)
             obnoveny.refresh()
         nacteni.assert_not_called()
-        self.assertEqual(obnoveny.nacitani_den, "20261021")
+        self.assertEqual(obnoveny.nacitani_posledni, nacteno)
+
+    def test_opetovne_zapnuti_nacte_znovu(self):
+        self.dialog._prepni_nacitani()
+        self.ted = self.ted.replace(minute=15)
+        self.dialog.refresh()
+        # Vypnutí a zapnutí načte dnešní soubor podruhé - hned, protože
+        # čas načtení už minul
+        self.ted = self.ted.replace(minute=20)
+        self.dialog._prepni_nacitani()
+        self.dialog._prepni_nacitani()
+        with mock.patch.object(self.dialog, "_nacti_pozice") as nacteni:
+            self.dialog.refresh()
+        nacteni.assert_called_once()
+
+    def test_pozdejsi_cas_v_konfiguraci_nacte_znovu(self):
+        self.cfg.import_.auto_load_time = "08:00"
+        self.dialog._prepni_nacitani()
+        self.dialog.refresh()
+        self.assertEqual(len(self.dialog.radky), 2)
+        # Čas posunutý za dnešní načtení se týž den načte znovu
+        self.cfg.import_.auto_load_time = "09:15"
+        self.assertEqual(self.dialog.nacitani_popis(), "Načtení 20261021.yaml za 15:00")
+        self.ted = self.ted.replace(minute=15)
+        with mock.patch.object(self.dialog, "_nacti_pozice") as nacteni:
+            self.dialog.refresh()
+        nacteni.assert_called_once()
 
     def test_zapnuti_po_case_nacteni_nacte_hned(self):
         # Čas načtení minul, ale do okamžiku zadání po otevření zbývá
@@ -1612,13 +1639,15 @@ class TestNacitaniPodleKonfigurace(unittest.TestCase):
         # Aplikace přes okamžik zadání neběžela - soubor se nenačte a plán
         # by jinak pozice zadal až při dalším otevření
         self.dialog.nacitani_aktivni = True
-        self.dialog.nacitani_den = "20261020"
+        self.dialog.nacitani_posledni = self.ted - timedelta(days=1)
         self.ted = self.ted.replace(hour=10)
         self.dialog.refresh()
         self.assertEqual(self.dialog.radky, [])
         self.assertFalse(self.dialog.plan_aktivni)
         self.assertIn("nenačetl", self.udalosti())
-        self.assertEqual(self.dialog.nacitani_den, "20261021")
+        # Propadlý pokus se neopakuje, další načtení je zítra
+        self.assertEqual(self.dialog.nacitani_posledni, self.ted)
+        self.assertIn("20261022.yaml", self.dialog.nacitani_popis())
 
     def test_chybejici_soubor_se_ohlasi_trvale_a_neopakuje(self):
         (self.adresar / "20261021.yaml").unlink()

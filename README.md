@@ -1151,8 +1151,10 @@ načtení pryč, ale okamžik zadání po otevření ještě nenastal, soubor se
 hned, jinak se začne dalším obchodním dnem. Chybějící či vadný soubor,
 propásnutý okamžik zadání (aplikace v tu dobu neběžela) i nezapnutý plán se
 zapíší do *Průběhu* a ohlásí hláškou, která sama nezmizí; další pokus přijde
-až další obchodní den. Zapnuté načítání i den posledního načtení se ukládají
-se stavem dialogu, takže je restart vrátí a týž den soubor podruhé nenačte.
+až další obchodní den. Zapnuté načítání i okamžik posledního načtení se
+ukládají se stavem dialogu, takže je restart vrátí a pro týž nastavený čas
+soubor podruhé nenačte. Znovu ho ale načte opětovné zapnutí tlačítka (je-li
+čas načtení pryč, hned) i čas v konfiguraci posunutý za dnešní načtení.
 
 **Přepočítávat každých [s]** zapíná průběžný přepočet čekajících obchodů
 za otevřené burzy — tatáž volba, jakou má formulář zadání (podrobně

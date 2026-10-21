@@ -161,14 +161,6 @@ SLOUPCE = (
 SLOUPCE_UROVNI = ("PT", "SL")
 
 
-def den_burzy(okamzik: datetime) -> str:
-    """
-    Den burzy jako YYYYMMDD - jméno souboru se zadáním dne i značka dne,
-    pro který načtení podle konfigurace proběhlo; obojí tak vždy souhlasí.
-    """
-    return f"{okamzik:%Y%m%d}"
-
-
 def fmt(value: float | None, digits: int = 2, suffix: str = "") -> str:
     """Číslo pro zobrazení v dialogu; chybějící hodnotu nahradí pomlčkou."""
     if value is None:
@@ -282,10 +274,11 @@ class ImportDialog:
         self.plan_okamzik: datetime | None = None
         # Načítání podle konfigurace - každý obchodní den v čase
         # import.auto_load_time se načte soubor dne a zapne se plán.
-        # nacitani_den drží den burzy (YYYYMMDD), pro který načtení už
-        # proběhlo nebo propadlo, ať se týž den neopakuje
+        # nacitani_posledni drží okamžik posledního načtení (nebo propadlého
+        # pokusu): nastavený čas, který už je za ním, se neopakuje, pozdější
+        # čas v konfiguraci ale týž den načte znovu
         self.nacitani_aktivni: bool = False
-        self.nacitani_den: str = ""
+        self.nacitani_posledni: datetime | None = None
         # Naposledy uložený stav dialogu - beze změny se nezapisuje
         self._ulozeny_stav: dict[str, Any] | None = None
         # Vykreslení dialogu v jednotlivých oknech prohlížeče
@@ -1345,7 +1338,9 @@ class ImportDialog:
             },
             "nacitani": {
                 "aktivni": self.nacitani_aktivni,
-                "den": self.nacitani_den,
+                "posledni": (
+                    self.nacitani_posledni.isoformat() if self.nacitani_posledni else None
+                ),
             },
         }
 
@@ -1395,11 +1390,12 @@ class ImportDialog:
         if obsah.get("runner_value") in runner_volby():
             self.runner_value = obsah["runner_value"]
         # Načítání podle konfigurace nezávisí na tabulce, obnovuje se
-        # i s prázdnou. Den posledního načtení brání tomu, aby restart
-        # týž den načetl soubor podruhé
+        # i s prázdnou. Okamžik posledního načtení brání tomu, aby restart
+        # načetl soubor pro týž nastavený čas podruhé
         nacitani = obsah.get("nacitani") or {}
         self.nacitani_aktivni = bool(nacitani.get("aktivni"))
-        self.nacitani_den = str(nacitani.get("den") or "")
+        posledni = nacitani.get("posledni")
+        self.nacitani_posledni = datetime.fromisoformat(posledni) if posledni else None
 
         zaznamy = obsah.get("radky") or []
         if not zaznamy:
@@ -1795,25 +1791,25 @@ class ImportDialog:
         Soubor se zadáním obchodního dne podle konfigurace:
         <import.auto_load_dir>/<YYYYMMDD>.yaml, například ~/Tmp/20261021.yaml.
         """
-        return Path(self.cfg.import_.auto_load_dir).expanduser() / f"{den_burzy(den)}.yaml"
+        return Path(self.cfg.import_.auto_load_dir).expanduser() / f"{den:%Y%m%d}.yaml"
 
     def _pristi_nacteni(self) -> tuple[datetime, float] | None:
         """
         Okamžik příštího načtení v čase burzy a sekundy do něj; None, když
         je načítání vypnuté.
 
-        Je to čas import.auto_load_time nejbližšího obchodního dne, pro
-        který načtení ještě neproběhlo - i dnešek, jehož čas už minul:
-        sekundy pak vyjdou nekladné a načtení čeká jen na průchod obnovou.
+        Je to čas import.auto_load_time nejbližšího obchodního dne, který
+        leží za posledním načtením - i dnešek, jehož čas už minul: sekundy
+        pak vyjdou nekladné a načtení čeká jen na průchod obnovou.
         """
         if not self.nacitani_aktivni:
             return None
         ted = self._ted()
-        okamzik = self.engine.trading_day_time(
-            ted,
-            self.cfg.import_.auto_load_time,
-            skip_today=den_burzy(ted) == self.nacitani_den,
-        )
+        cas = self.cfg.import_.auto_load_time
+        okamzik = self.engine.trading_day_time(ted, cas)
+        # Dnešní čas, který už je za posledním načtením, se neopakuje
+        if self.nacitani_posledni is not None and okamzik <= self.nacitani_posledni:
+            okamzik = self.engine.trading_day_time(ted, cas, skip_today=True)
         # Rozdíl přes timestamp počítá skutečné sekundy i přes změnu času
         return okamzik, okamzik.timestamp() - ted.timestamp()
 
@@ -1842,7 +1838,7 @@ class ImportDialog:
         if pristi is None:
             return None
         okamzik, zbyva = pristi
-        return f"Načtení {den_burzy(okamzik)}.yaml za {format_countdown(zbyva)}"
+        return f"Načtení {self._soubor_dne(okamzik).name} za {format_countdown(zbyva)}"
 
     def _obnov_nacitani(self) -> tuple[datetime, float] | None:
         """
@@ -1864,16 +1860,17 @@ class ImportDialog:
         Obsluha tlačítka Načíst podle konfigurace - zapne, nebo vypne denní
         načítání souboru se zadáním dne.
 
-        Zapnuté načítání proběhne hned, pokud dnešní čas načtení už minul,
-        ale plán po otevření trhu jde ještě zapnout. Později by dnešní
-        soubor zadat nešlo, takže se začne až dalším obchodním dnem.
+        Zapnutí zapomene dřívější načtení, takže dnešní soubor se načte
+        znovu, i když už dnes jednou načtený byl - hned, pokud dnešní čas
+        načtení už minul. To ale jen dokud plán po otevření trhu jde ještě
+        zapnout; později by dnešní soubor zadat nešlo, takže se začne až
+        dalším obchodním dnem.
         """
         if self.nacitani_aktivni:
             self.nacitani_aktivni = False
         else:
             ted = self._ted()
-            if self._po_okamziku_planu(ted):
-                self.nacitani_den = den_burzy(ted)
+            self.nacitani_posledni = ted if self._po_okamziku_planu(ted) else None
             self.nacitani_aktivni = True
         pristi = self._obnov_nacitani()
         self._uloz()
@@ -1901,23 +1898,20 @@ class ImportDialog:
             and pristi[1] <= 0
             and not (self.priprava or self.zadavani or self.plan_bezi)
         ):
-            self._nacti_podle_konfigurace(pristi[0])
+            self._nacti_podle_konfigurace()
         self._obnov_nacitani()
 
-    def _nacti_podle_konfigurace(self, okamzik: datetime) -> None:
+    def _nacti_podle_konfigurace(self) -> None:
         """
-        Načte soubor dne podle konfigurace a zapne naplánované zadání po
-        otevření trhu. Den se poznamená předem, takže selhání (chybějící
-        či vadný soubor) se ohlásí jednou a další pokus přijde až příští
-        obchodní den.
-
-        okamzik - dnešní okamžik načtení, který už nastal
+        Načte dnešní soubor podle konfigurace a zapne naplánované zadání po
+        otevření trhu. Pokus se poznamená předem, takže selhání (chybějící
+        či vadný soubor) se ohlásí jednou a týž nastavený čas se neopakuje.
         """
-        self.nacitani_den = den_burzy(okamzik)
-        cesta = self._soubor_dne(okamzik)
+        self.nacitani_posledni = ted = self._ted()
+        cesta = self._soubor_dne(ted)
         # Aplikace přes okamžik zadání neběžela - pozice ze souboru by šly
         # do trhu až s dalším otevřením
-        if self._po_okamziku_planu(self._ted()):
+        if self._po_okamziku_planu(ted):
             self._trvala_hlaska(
                 f"Soubor {cesta} se podle konfigurace nenačetl - okamžik zadání "
                 "po otevření trhu už minul. Pozice zadejte ručně."
