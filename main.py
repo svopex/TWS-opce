@@ -88,7 +88,7 @@ def main() -> None:
         host=cfg.ui.host,
         port=cfg.ui.port,
         title=APP_TITLE,
-        dark=cfg.ui.dark,
+        dark=cfg.ui.dark_mode,
         reload=False,
         show=False,
         favicon="📈",

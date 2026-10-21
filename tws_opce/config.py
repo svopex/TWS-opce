@@ -329,6 +329,10 @@ class StateConfig:
     file: str = "state.json"
 
 
+# Hodnota ui.dark pro vzhled podle nastavení systému (vedle true a false)
+DARK_AUTO = "auto"
+
+
 @dataclass
 class UiConfig:
     """Parametry webového rozhraní."""
@@ -336,12 +340,18 @@ class UiConfig:
     host: str = "127.0.0.1"
     port: int = 8080
     refresh_interval_sec: float = 1.0
-    dark: bool = False
+    # Výchozí vzhled: false světlý, true tmavý, "auto" podle systému
+    dark: bool | str = DARK_AUTO
     log_lines: int = 300
     # Jak často se měří odezva TWS pro ukazatel v hlavičce. Je to dotaz do
     # TWS, ne čtení z paměti jako zbytek obnovy, proto vlastní, řidší tempo;
     # 0 měření vypne a v hlavičce zůstane jen stáří tržních dat
     latency_interval_sec: float = 5.0
+
+    @property
+    def dark_mode(self) -> bool | None:
+        """Vzhled ve tvaru pro NiceGUI - None znamená podle systému."""
+        return None if self.dark == DARK_AUTO else self.dark
 
 
 @dataclass
@@ -620,6 +630,10 @@ def validate_config(cfg: AppConfig) -> None:
         problems.append("engine.poll_interval_sec musí být kladné číslo")
     if cfg.engine.quotes_grace_sec < 0:
         problems.append("engine.quotes_grace_sec nesmí být záporné")
+    # Vzhled je pravdivostní hodnota, nebo "auto" - YAML řetězec "false"
+    # by se jinak vyhodnotil jako tmavý
+    if not isinstance(cfg.ui.dark, bool) and cfg.ui.dark != DARK_AUTO:
+        problems.append(f"ui.dark musí být true, false nebo {DARK_AUTO}")
     if cfg.state.enabled and not cfg.state.file:
         problems.append("state.file musí být vyplněn, pokud je ukládání stavu zapnuté")
 

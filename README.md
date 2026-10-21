@@ -911,10 +911,12 @@ založené dnešního dne a k nim všechny, které stále běží (aplikace mů�
 přes noc nebo obnovit stav z předchozího dne). *Vše* ukazuje celý obsah
 monitoringu bez ohledu na datum.
 
-Vedle něj je **přepínač světlého a tmavého vzhledu** — tentýž, jaký stojí
-v hlavičce stránky, jen ji přehled přes celou obrazovku zakrývá. Přepíná
-vzhled celé aplikace včetně barev grafů, volba se pamatuje mezi spuštěními
-(výchozí hodnota je `ui.dark` v konfiguraci) a přehled se překreslí ihned.
+Vedle něj je **přepínač vzhledu** — tentýž, jaký stojí v hlavičce stránky,
+jen ji přehled přes celou obrazovku zakrývá. Kliknutím střídá světlý, tmavý
+a automatický vzhled (ikona „A“), který se řídí nastavením systému a mění se
+spolu s ním. Přepíná vzhled celé aplikace včetně barev grafů, volba se pamatuje
+mezi spuštěními (výchozí hodnota je `ui.dark` v konfiguraci: `false`, `true`
+nebo `auto`) a přehled se překreslí ihned.
 
 Obsah se obnovuje ze stejné smyčky jako tabulka, takže otevřené pozice v něm
 tikají živě. Rozvržení je navržené na jednu obrazovku bez posuvníku — posouvají
@@ -1343,8 +1345,8 @@ Vše podstatné je v `config.yaml` (podrobné komentáře u každé položky):
 * `engine` — časování monitorovací smyčky, čekání na tržní data, kontrola
   pozic bez dozoru a obnova velikosti účtu,
 * `state` — ukládání stavu obchodů,
-* `ui` — adresa a port rozhraní, tempo překreslování, měření odezvy, tmavý
-  vzhled a délka provozního logu.
+* `ui` — adresa a port rozhraní, tempo překreslování, měření odezvy, výchozí
+  vzhled (světlý, tmavý, podle systému) a délka provozního logu.
 
 ## Testy
 
@@ -1384,12 +1386,14 @@ tws_opce/
   report.py              souhrn obchodního dne pro přehled výsledků
   report_dialog.py       popup s přehledem výsledků na celou obrazovku
   ui.py                  webové rozhraní
+  vzhled.py              přepínač vzhledu (světlý, tmavý, podle systému)
   static/styles.css      styly
+  static/vzhled.js       hlášení systémového vzhledu prohlížeče serveru
 tests/                   testy (fake_ib.py = náhrada TWS, zaklad.py = společný základ)
 ```
 
 Za běhu vznikají (a ve verzování jsou ignorované) `config.yaml`, `state.json`
-a adresář `.nicegui/`, kde si rozhraní pamatuje volbu tmavého vzhledu.
+a adresář `.nicegui/`, kde si rozhraní pamatuje zvolený vzhled.
 
 ## Stav obchodů a restart
 

@@ -608,8 +608,9 @@ ui:
   # 0 měření vypne a v hlavičce zůstane jen stáří tržních dat.
   latency_interval_sec: 5.0
 
-  # true = tmavý vzhled rozhraní.
-  dark: false
+  # Výchozí vzhled rozhraní: false = světlý, true = tmavý, auto = podle
+  # nastavení systému. Volba přepínačem v hlavičce má přednost a pamatuje se.
+  dark: auto
 
   # Kolik posledních událostí se uchovává v provozním logu.
   log_lines: 300

@@ -37,6 +37,7 @@ from .models import (
     sklonuj,
 )
 from .report_dialog import ReportDialog
+from .vzhled import Vzhled
 
 log = logging.getLogger(__name__)
 
@@ -356,6 +357,8 @@ class TradingUI:
     def build(self) -> None:
         """Vykreslí celou stránku - hlavičku, formulář, přehled a log."""
         ui.add_head_html(f'<link rel="stylesheet" href="{staticky_soubor("styles.css")}">')
+        # Hlášení systémového vzhledu prohlížeče pro automatický režim
+        ui.add_head_html(f'<script defer src="{staticky_soubor("vzhled.js")}"></script>')
 
         # Obchod aktuálně načtený ve formuláři - jeho změny z tabulky
         # (posun cíle, SL) se promítají zpět do polí formuláře
@@ -400,12 +403,7 @@ class TradingUI:
         # Popup s přehledem výsledků dne; grafy v něm se řídí zvoleným
         # vzhledem a přepnout se dá i zevnitř - přehled je přes celou
         # obrazovku, takže tlačítko v hlavičce stránky pod ním zmizí
-        self.report_dialog = ReportDialog(
-            self.cfg,
-            self.engine,
-            lambda: bool(self.dark_mode.value),
-            self._toggle_dark,
-        )
+        self.report_dialog = ReportDialog(self.cfg, self.engine, self.vzhled)
         self.report_dialog.build()
 
         # Pruh s upozorněním na pozice, které aplikace neřídí
@@ -429,11 +427,9 @@ class TradingUI:
 
     def _build_header(self) -> None:
         """Hlavička s názvem aplikace, přepínačem vzhledu a stavem spojení na TWS."""
-        # Tmavý režim: výchozí hodnota z konfigurace, poslední volba
-        # obchodníka se pamatuje mezi spuštěními
-        self.dark_mode = ui.dark_mode(
-            bool(app.storage.general.get("dark_mode", self.cfg.ui.dark))
-        )
+        # Vzhled světlý / tmavý / podle systému: výchozí hodnota
+        # z konfigurace, poslední volba obchodníka se pamatuje mezi spuštěními
+        self.vzhled = Vzhled(self.cfg.ui.dark_mode)
         # Hlavička je sloupec: nahoře řádek s údaji, pod ním poplach
         # naplánovaného zadání bez spojení. Řádek se nezalamuje, takže
         # objevení poplachu nerozhodí rozložení údajů nad ním
@@ -464,10 +460,7 @@ class TradingUI:
                 # jinak než tady by nebyly vidět
                 self.plan_label = ui.label().classes("odpocet-plan")
                 self.plan_label.set_visibility(False)
-                self.dark_button = ui.button(on_click=self._toggle_dark).props("flat round dense")
-                with self.dark_button:
-                    ui.tooltip("Přepnout světlý/tmavý vzhled")
-                self._refresh_dark_button()
+                self.vzhled.tlacitko()
                 self.status_label = ui.label().classes("stav-spojeni")
                 # Kvalita spojení: odezva TWS a stáří tržních dat. Ukazuje, že
                 # spojení nejen stojí, ale i žije - odpojené se skrývá
@@ -496,17 +489,6 @@ class TradingUI:
             # chybějící puntík hlídání v tabulce
             self.stall_alarm_label = ui.label().classes("poplach")
             self.stall_alarm_label.set_visibility(False)
-
-    def _toggle_dark(self) -> None:
-        """Přepne světlý/tmavý vzhled a volbu si zapamatuje."""
-        self.dark_mode.value = not self.dark_mode.value
-        app.storage.general["dark_mode"] = self.dark_mode.value
-        self._refresh_dark_button()
-
-    def _refresh_dark_button(self) -> None:
-        """Ikona přepínače ukazuje režim, do kterého se lze přepnout."""
-        ikona = "light_mode" if self.dark_mode.value else "dark_mode"
-        self.dark_button.props(f"icon={ikona}")
 
     def _popis_oken(self) -> list[CasovaneOkno]:
         """

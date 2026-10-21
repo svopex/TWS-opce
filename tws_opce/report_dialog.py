@@ -13,7 +13,6 @@ ze stejné periodické smyčky, takže běžící pozice v něm tikají živě.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -23,6 +22,7 @@ from . import report
 from .config import AppConfig
 from .engine import FlowEngine
 from .models import Flow, FlowState, cislo_text, sklonuj
+from .vzhled import Vzhled
 
 # Popisky přepínače rozsahu přehledu
 ROZSAHY = {report.ROZSAH_DNES: "Dnes", report.ROZSAH_VSE: "Vše"}
@@ -169,17 +169,14 @@ class ReportDialog:
         self,
         cfg: AppConfig,
         engine: FlowEngine,
-        je_tmavy: Callable[[], bool],
-        prepni_vzhled: Callable[[], None],
+        vzhled: Vzhled,
     ) -> None:
         self.cfg = cfg
         self.engine = engine
-        # Vzhled grafů se řídí přepínačem světlý/tmavý režim. Přehled se
-        # otevírá přes celou obrazovku, takže přepínač v hlavičce stránky
-        # není vidět - dialog má proto vlastní tlačítko, které přepíná touž
-        # volbu (stav i jeho uložení drží hlavní rozhraní)
-        self.je_tmavy = je_tmavy
-        self.prepni_vzhled = prepni_vzhled
+        # Barvy grafů se řídí zobrazeným vzhledem a po jeho změně se grafy
+        # hned překreslí (podpis vykreslených dat vzhled obsahuje)
+        self.vzhled = vzhled
+        vzhled.pri_zmene(self.refresh)
         self.rozsah = report.ROZSAH_DNES
 
         # Podpisy naposledy vykreslených dat. Seznamy a grafy se překreslují
@@ -263,40 +260,11 @@ class ReportDialog:
             )
             # Přepínač vzhledu - přehled zakrývá hlavičku stránky, kde stojí
             # ten hlavní, a v tmavém sále se čte tmavý přehled lépe
-            self.tlacitko_vzhledu = (
-                ui.button(on_click=self._prepni_vzhled)
-                .props("flat round dense")
-                .classes("report-vzhled")
-            )
-            with self.tlacitko_vzhledu:
-                ui.tooltip("Přepnout světlý/tmavý vzhled")
-            self._obnov_tlacitko_vzhledu()
+            self.vzhled.tlacitko().classes("report-vzhled")
 
             ui.button(icon="close", on_click=self.dialog.close).props(
                 "flat round dense"
             ).classes("report-zavrit").tooltip("Zavřít přehled")
-
-    def _obnov_tlacitko_vzhledu(self) -> None:
-        """
-        Ikona ukazuje režim, do kterého se lze přepnout - stejně jako
-        tlačítko v hlavičce stránky.
-        """
-        ikona = "light_mode" if self.je_tmavy() else "dark_mode"
-        self.tlacitko_vzhledu.props(f"icon={ikona}")
-
-    def _prepni_vzhled(self) -> None:
-        """
-        Přepne světlý/tmavý vzhled celé aplikace a přehled hned překreslí.
-
-        Barvy grafů si vzhled nesou v podpisu vykreslených dat, takže by se
-        samy srovnaly až s dalším během obnovovací smyčky - podpisy se proto
-        zahodí a kreslí se rovnou.
-        """
-        self.prepni_vzhled()
-        self._obnov_tlacitko_vzhledu()
-        self._podpis_krivka = None
-        self._podpis_tickery = None
-        self.refresh()
 
     def _build_dlazdice(self, klic: str, nadpis: str) -> dict[str, Any]:
         """
@@ -331,8 +299,6 @@ class ReportDialog:
     def open(self) -> None:
         """Otevře přehled a rovnou jej naplní aktuálními daty."""
         self.dialog.open()
-        # Vzhled se mezitím mohl přepnout tlačítkem v hlavičce stránky
-        self._obnov_tlacitko_vzhledu()
         self.refresh()
 
     def _on_rozsah(self, event: Any) -> None:
@@ -721,7 +687,7 @@ class ReportDialog:
 
     def _barvy(self) -> dict[str, str]:
         """Barvy grafů podle zvoleného vzhledu - grafy kreslí canvas, ne CSS."""
-        if self.je_tmavy():
+        if self.vzhled.je_tmavy():
             return {
                 "text": "#94a3b8",
                 "mrizka": "#334155",
@@ -771,7 +737,7 @@ class ReportDialog:
         self.graf_krivka.set_visibility(bool(podklad.krivka))
         self.prazdno_krivka.set_visibility(not podklad.krivka)
 
-        podpis = (self.je_tmavy(),) + tuple(
+        podpis = (self.vzhled.je_tmavy(),) + tuple(
             round(hodnota, 2) for _, hodnota in podklad.krivka
         )
         if podpis == self._podpis_krivka:
@@ -844,7 +810,7 @@ class ReportDialog:
         self.graf_tickery.set_visibility(bool(podklad.podle_tickeru))
         self.prazdno_tickery.set_visibility(not podklad.podle_tickeru)
 
-        podpis = (self.je_tmavy(),) + tuple(
+        podpis = (self.vzhled.je_tmavy(),) + tuple(
             (polozka.symbol, round(polozka.celkem_s_provizi, 0))
             for polozka in podklad.podle_tickeru
         )
