@@ -11,11 +11,11 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import calc, store
+from . import calc, market_calendar, store
 from .config import AppConfig
 from .ib_service import IBService, PositionInfo, order_ref, parse_order_ref, valid_price
 from .models import (
@@ -57,6 +57,10 @@ MARKET_SELL_MAX_ATTEMPTS = 5
 # smyčka stojí. Běžný průchod trvá zlomky sekundy, delší dotazy do TWS mají
 # limit REQUEST_TIMEOUT_SEC - půl minuty už znamená, že něco uvázlo
 STALL_ALARM_SEC = 30.0
+
+# Jak často se z TWS obnovují obchodní hodiny burzy (viz _refresh_trading_hours).
+# Rozvrh se mění zřídka a o zadání stejně rozhoduje ověření těsně před ním
+TRADING_HOURS_REFRESH_SEC = 3600.0
 
 
 @dataclass
@@ -201,6 +205,11 @@ class FlowEngine:
         self._warned: set[str] = set()
         # Překročení rozpočtu OER už bylo ohlášeno - hlásí se změna stavu
         self._oer_over_warned: bool = False
+        # Zavření burzy podle dne z obchodních hodin v TWS (None = burza
+        # zavřená) a kdy se naposledy načítaly. Podle nich zadání po otevření
+        # trhu pozná svátek a zkrácený obchodní den
+        self.trading_hours: dict[date, datetime | None] = {}
+        self._hours_checked: float = float("-inf")
 
     # ------------------------------------------------------------------
     # Pomocné
@@ -3355,6 +3364,62 @@ class FlowEngine:
             return None
         return f"Zadáno {duvod} - příkaz nebyl do TWS odeslán."
 
+    # ------------------------------------------------------------------
+    # Kalendář obchodních dní
+    # ------------------------------------------------------------------
+
+    def non_trading_reason(self, day: date) -> str | None:
+        """
+        Důvod, proč se v daný den (zóna burzy) nemá obchodovat, nebo None.
+
+        Vychází z dosud načtených obchodních hodin z TWS; den, který
+        nepokrývají, se posoudí jen podle víkendu a bank holidays (viz
+        market_calendar.non_trading_reason).
+        """
+        ted = self._exchange_now()
+        return market_calendar.non_trading_reason(
+            day, self.trading_hours, self._exchange_close(ted).time(), ted.tzinfo
+        )
+
+    async def verify_trading_day(self, day: date) -> str | None:
+        """
+        Ověří den proti obchodním hodinám z TWS - volá se těsně před zadáním
+        naplánovaných pozic. Vrací důvod, proč se v den nemá obchodovat,
+        nebo None.
+
+        Hodiny drží aktuální smyčka (_refresh_trading_hours); z TWS se tu
+        načítají jen tehdy, když den ještě nepokrývají. Den, který nepokrývají
+        ani potom, se za obchodní nepovažuje: bez ověření by plán mohl
+        obchodovat ve svátek či zkrácený den, a tak raději neobchoduje vůbec.
+        """
+        if day not in self.trading_hours:
+            await self._load_trading_hours()
+        duvod = self.non_trading_reason(day)
+        if duvod is None and day not in self.trading_hours:
+            return (
+                "obchodní hodiny burzy se z TWS nepodařilo načíst, "
+                "svátek ani zkrácený obchodní den nelze vyloučit"
+            )
+        return duvod
+
+    async def _load_trading_hours(self) -> None:
+        """Doplní obchodní hodiny burzy z TWS; bez odpovědi zůstanou dosavadní."""
+        self.trading_hours.update(await self.ib.liquid_hours())
+
+    async def _refresh_trading_hours(self) -> None:
+        """
+        Periodicky načte obchodní hodiny burzy, aby už zapnutí zadání po
+        otevření trhu poznalo svátek či zkrácený den, na který by mířilo.
+        O samotném zadání rozhoduje ověření těsně před ním (verify_trading_day).
+        """
+        if not self.cfg.import_.plan_trading_days_only:
+            return
+        loop = asyncio.get_running_loop()
+        if loop.time() - self._hours_checked < TRADING_HOURS_REFRESH_SEC:
+            return
+        self._hours_checked = loop.time()
+        await self._load_trading_hours()
+
     def _sync_commissions(self) -> bool:
         """
         Promítne provize účtované TWS do obchodů a řekne, zda se něco změnilo.
@@ -3414,6 +3479,10 @@ class FlowEngine:
         # Pozice bez dozoru aplikace se kontrolují v delším intervalu
         self._loop_step = "kontrola pozic bez dozoru"
         await self._check_unmanaged()
+
+        # Obchodní hodiny burzy pro zadání po otevření trhu se obnovují zřídka
+        self._loop_step = "obchodní hodiny burzy"
+        await self._refresh_trading_hours()
 
         # V nastavený čas dne se ruší obchody, které ještě nenakoupily
         self._loop_step = "rušení čekajících obchodů"

@@ -10,7 +10,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
@@ -32,6 +32,7 @@ from ib_async import (
     Trade,
 )
 
+from . import market_calendar
 from .config import AppConfig
 from .oer import OrderEfficiency
 
@@ -66,6 +67,10 @@ IBKR_LINK_RESTORED = frozenset({1101, 1102})
 
 # Jak dlouho se drží stažené minutové svíčky - viz IBService.minute_bars
 BARS_CACHE_SEC = 30.0
+
+# Ticker, podle jehož obchodních hodin v TWS se poznávají svátky a zkrácené
+# obchodní dny - viz IBService.liquid_hours
+CALENDAR_SYMBOL = "SPY"
 
 
 def order_ref(flow_id: str, druh: str) -> str:
@@ -361,6 +366,32 @@ class IBService:
         if not qualified or qualified[0] is None:
             raise ValueError(f"Ticker '{symbol}' se nepodařilo najít v TWS.")
         return qualified[0]
+
+    async def liquid_hours(self) -> dict[date, datetime | None]:
+        """
+        Zavření burzy podle dne na zhruba týden dopředu z běžných obchodních
+        hodin (liquidHours) referenčního tickeru CALENDAR_SYMBOL; None znamená
+        burza zavřená. Prázdný slovník, když TWS rozvrh nevydal.
+
+        Americké akcie sdílejí kalendář NYSE, takže jeden ticker stačí pro
+        všechny - svátky i zkrácené obchodní dny v rozvrhu TWS vyznačuje sám.
+        """
+        # Bez spojení s IBKR by TWS detaily kontraktu nevydal a dotaz by jen čekal
+        if not self.connected or not self.ibkr_connected:
+            return {}
+        stock = Stock(CALENDAR_SYMBOL, self.cfg.trading.exchange, self.cfg.trading.currency)
+        details = await self._request(
+            self.ib.reqContractDetailsAsync(stock), "Obchodní hodiny burzy"
+        )
+        if not details:
+            return {}
+        detail = details[0]
+        # Zónu rozvrhu udává TWS (např. US/Eastern); neznámá spadne na zónu burzy
+        try:
+            zona = ZoneInfo(detail.timeZoneId)
+        except Exception:
+            zona = ZoneInfo(self.cfg.trading.exchange_timezone)
+        return market_calendar.parse_liquid_hours(detail.liquidHours, zona)
 
     async def option_chain(self, underlying: Contract) -> Any:
         """

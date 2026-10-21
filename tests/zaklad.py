@@ -25,6 +25,14 @@ from tws_opce.engine import FlowEngine
 # Časová zóna burzy, se kterou testy podvrhují čas
 BURZA = ZoneInfo("America/New_York")
 
+# Obchodní hodiny (liquidHours), jak je TWS vydává kolem Thanksgivingu 2026:
+# ve čtvrtek 26. 11. zavřeno, v pátek 27. 11. zkrácené obchodování do 13:00,
+# v pondělí 30. 11. běžná seance
+HODINY_THANKSGIVING = (
+    "20261125:0930-20261125:1600;20261126:CLOSED;"
+    "20261127:0930-20261127:1300;20261130:0930-20261130:1600"
+)
+
 
 def svicka(hodina: int, minuta: int, high: float, low: float, den: int = 19) -> BarData:
     """
@@ -41,7 +49,9 @@ def vychozi_config() -> AppConfig:
     Konfigurace pro testy - účet 5000 USD, risk 1 %, limit spreadu 5 %.
     Stav se nezapisuje na disk, automatické uzavírání před koncem burzy
     i rušení čekajících obchodů v nastavený čas jsou vypnuté; jinak by sada
-    spuštěná odpoledne obchody rušila, resp. uzavírala.
+    spuštěná odpoledne obchody rušila, resp. uzavírala. Vypnutá je i kontrola
+    obchodního dne u zadání po otevření trhu - o víkendu či ve svátek by
+    plán nezadal nic.
     """
     cfg = AppConfig()
     cfg.account.size = 5000.0
@@ -52,6 +62,7 @@ def vychozi_config() -> AppConfig:
     cfg.state.enabled = False
     cfg.trading.auto_close_enabled = False
     cfg.trading.pending_cancel_enabled = False
+    cfg.import_.plan_trading_days_only = False
     return cfg
 
 
@@ -66,15 +77,17 @@ class ZakladEnginu(unittest.IsolatedAsyncioTestCase):
         # jinak by si obnovu vynutil první průchod smyčkou
         self.engine._synced = True
 
-    def podvrhni_cas_burzy(self, hodina: int, minuta: int, den: int = 19) -> None:
+    def podvrhni_cas_burzy(
+        self, hodina: int, minuta: int, den: int = 19, mesic: int = 8, rok: int = 2026
+    ) -> None:
         """
-        Podvrhne enginu čas burzy - srpen 2026, výchozí den je středa 19. 8.
+        Podvrhne enginu čas burzy - výchozí je středa 19. 8. 2026.
 
         Testy odpočtů i časovaných akcí tím obejdou skutečné hodiny, takže
         výsledek nezávisí na tom, kdy sada běží.
         """
         self.engine._exchange_now = lambda: datetime(
-            2026, 8, den, hodina, minuta, tzinfo=ZoneInfo("America/New_York")
+            rok, mesic, den, hodina, minuta, tzinfo=ZoneInfo("America/New_York")
         )
 
 

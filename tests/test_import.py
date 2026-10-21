@@ -13,7 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.fake_ib import FakeIBService
-from tests.zaklad import BURZA, ZakladEnginu, svicka
+from tests.zaklad import BURZA, HODINY_THANKSGIVING, ZakladEnginu, svicka
 from tws_opce import import_dialog, importer
 from tws_opce.config import AppConfig, validate_config
 from tws_opce.engine import FlowEngine
@@ -1185,6 +1185,8 @@ class TestVarovaniNaSpojeni(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = AppConfig()
         self.cfg.state.enabled = False
+        # Test běží se skutečnými hodinami - o víkendu by plán nešel zapnout
+        self.cfg.import_.plan_trading_days_only = False
         self.ib = FakeIBService(self.cfg)
         self.engine = FlowEngine(self.cfg, self.ib)
         self.dialog = ImportDialog(self.cfg, self.engine, self.ib)
@@ -1343,15 +1345,15 @@ class TestViditelnostSdilenehoPrvku(unittest.TestCase):
         self.assertFalse(okno.zobrazeny)
 
 
-class TestPlanBezOkna(ZakladEnginu):
+class ZakladPlanu(ZakladEnginu):
     """
-    Naplánované zadání žije ve sdíleném stavu na serveru - doběhne i bez
-    otevřeného dialogu či prohlížeče a znovuotevření dialogu ho nezmění.
+    Sdílený stav dialogu bez jediného vykresleného okna s načtenou pozicí.
+    Přípravu i zadání nahrazují záznamy do self.kroky, takže testy plánu
+    vidí, zda a v jakém pořadí by do trhu šel.
     """
 
     def setUp(self) -> None:
         super().setUp()
-        # Sdílený stav bez jediného vykresleného okna
         self.dialog = ImportDialog(self.cfg, self.engine, self.ib)
         self.dialog._vykresli_tabulku(
             [
@@ -1370,31 +1372,47 @@ class TestPlanBezOkna(ZakladEnginu):
         )
         uloha.start()
         self.addCleanup(uloha.stop)
-
-    async def test_plan_se_spusti_ze_serverove_obnovy(self):
-        kroky: list[str] = []
+        self.kroky: list[str] = []
 
         async def priprav() -> None:
-            kroky.append("priprava")
+            self.kroky.append("priprava")
 
         async def zadej() -> None:
-            kroky.append("zadani")
+            self.kroky.append("zadani")
 
         self.dialog._priprav_vse = priprav
         self.dialog._zadej = zadej
+
+    async def spust_plan(self) -> None:
+        """
+        Zapnutý plán, jehož okamžik spuštění právě nastal (trh je otevřený
+        déle než prodleva), spuštěný ze serverové obnovy až do doběhnutí.
+        """
         self.dialog.plan_aktivni = True
         self.dialog.plan_prodleva = 15.0
-        # Trh je otevřený déle než prodleva - okamžik spuštění nastal
         self.engine.market_open_seconds = lambda: None
         self.engine.market_open_elapsed = lambda: 20.0
-
         self.dialog.refresh()
         self.assertTrue(self.dialog.plan_bezi)
         for _ in range(5):
             await asyncio.sleep(0)
-        self.assertEqual(kroky, ["priprava", "zadani"])
         self.assertFalse(self.dialog.plan_bezi)
         self.assertFalse(self.dialog.plan_aktivni)
+
+    def udalosti(self) -> str:
+        """Všechny zápisy průběhu enginu v jednom textu."""
+        return " | ".join(zprava for _, zprava in self.engine.events)
+
+
+class TestPlanBezOkna(ZakladPlanu):
+    """
+    Naplánované zadání žije ve sdíleném stavu na serveru - doběhne i bez
+    otevřeného dialogu či prohlížeče a znovuotevření dialogu ho nezmění.
+    """
+
+    async def test_plan_se_spusti_ze_serverove_obnovy(self):
+        await self.spust_plan()
+        self.assertEqual(self.kroky, ["priprava", "zadani"])
 
     def test_znovuotevreni_dialogu_nemeni_vyber_planu(self):
         radek = self.dialog.radky[0]
@@ -1407,6 +1425,74 @@ class TestPlanBezOkna(ZakladEnginu):
         self.dialog.plan_aktivni = False
         self.dialog.pri_otevreni()
         self.assertFalse(radek.vybrano.value)
+
+
+class TestPlanJenVObchodniDen(ZakladPlanu):
+    """
+    Zadání po otevření trhu obchoduje jen v řádný obchodní den - ne ve
+    svátek, ve zkrácený obchodní den ani v bank holiday. Plán na takový
+    den nejde zapnout, a zapnutý se těsně před zadáním zruší.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.cfg.import_.plan_trading_days_only = True
+        self.ib.liquid_hours_text = HODINY_THANKSGIVING
+        # Plán jde zapnout jen s vyplněným cílem; výběr řádků se obchází
+        self.dialog._zadana_hodnota = lambda: 30.0
+        self.dialog._k_zadani = lambda: self.dialog.radky
+
+    async def test_ve_zkraceny_den_plan_nezada_nic(self):
+        self.podvrhni_cas_burzy(9, 30, den=27, mesic=11)
+        await self.spust_plan()
+        self.assertEqual(self.kroky, [])
+        self.assertIn(
+            "neproběhlo: 27.11.2026 se neobchoduje - zkrácené obchodování "
+            "(burza zavírá v 13:00)",
+            self.udalosti(),
+        )
+        # Trvalá hláška nezmizí sama
+        self.assertEqual(self.dialog._oznam.call_args.kwargs.get("timeout"), 0)
+
+    async def test_v_bezny_den_plan_zada(self):
+        self.podvrhni_cas_burzy(9, 30, den=30, mesic=11)
+        await self.spust_plan()
+        self.assertEqual(self.kroky, ["priprava", "zadani"])
+
+    async def test_neoverene_hodiny_plan_nezada(self):
+        # TWS obchodní hodiny nevydal a žádné dřív načtené den nepokrývají
+        self.ib.liquid_hours_text = ""
+        self.podvrhni_cas_burzy(9, 30, den=30, mesic=11)
+        await self.spust_plan()
+        self.assertEqual(self.kroky, [])
+        self.assertIn("nepodařilo načíst", self.udalosti())
+
+    async def test_vypnuta_kontrola_zada_i_ve_zkraceny_den(self):
+        self.cfg.import_.plan_trading_days_only = False
+        self.podvrhni_cas_burzy(9, 30, den=27, mesic=11)
+        await self.spust_plan()
+        self.assertEqual(self.kroky, ["priprava", "zadani"])
+
+    async def test_na_znamy_zkraceny_den_plan_nejde_zapnout(self):
+        # Čtvrtek večer: další otevření je v pátek, o kterém hodiny z TWS
+        # (načtené smyčkou) už vědí, že je zkrácený
+        await self.engine._load_trading_hours()
+        self.podvrhni_cas_burzy(18, 0, den=26, mesic=11)
+        duvod = self.dialog._zapni_plan()
+        self.assertIn("27.11.2026 se neobchoduje - zkrácené obchodování", duvod)
+        self.assertFalse(self.dialog.plan_aktivni)
+
+    def test_na_bank_holiday_plan_nejde_zapnout(self):
+        # Pátek večer: další otevření je o Columbus Day - bez hodin z TWS
+        self.podvrhni_cas_burzy(17, 0, den=9, mesic=10)
+        duvod = self.dialog._zapni_plan()
+        self.assertIn("12.10.2026 se neobchoduje - bank holiday (Columbus Day)", duvod)
+        self.assertFalse(self.dialog.plan_aktivni)
+
+    def test_na_bezny_den_se_plan_zapne(self):
+        self.podvrhni_cas_burzy(17, 0, den=12, mesic=10)
+        self.assertIsNone(self.dialog._zapni_plan())
+        self.assertTrue(self.dialog.plan_aktivni)
 
 
 class TestObnovaPoRestartu(unittest.TestCase):

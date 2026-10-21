@@ -72,6 +72,13 @@ class FakeIBService(IBService):
         self.bars: list[BarData] = []
         self.bars_requests: int = 0
         self.bars_error: Exception | None = None
+        # Běžné obchodní hodiny burzy (liquidHours), které vydá dotaz na
+        # detaily kontraktu, a počet těchto dotazů; prázdné = TWS je nevydal.
+        # Dotaz se nahrazuje až na úrovni ib_async, takže rozbor hodin
+        # v IBService.liquid_hours běží naostro
+        self.liquid_hours_text: str = ""
+        self.liquid_hours_requests: int = 0
+        self.ib.reqContractDetailsAsync = self._contract_details
         self._next_order_id = 1
 
     # --- spojení ---
@@ -121,6 +128,15 @@ class FakeIBService(IBService):
             # s libovolnou cenovou hladinou dostaly smysluplný kontrakt
             strikes=self._strikes(),
         )
+
+    async def _contract_details(self, contract: Contract) -> list[ContractDetails]:
+        """Detaily kontraktu s obchodními hodinami nastavenými testem místo dotazu do TWS."""
+        self.liquid_hours_requests += 1
+        return [
+            ContractDetails(
+                contract=contract, timeZoneId="US/Eastern", liquidHours=self.liquid_hours_text
+            )
+        ]
 
     async def _request_minute_bars(self, contract: Contract, since: datetime) -> list[BarData]:
         """Svíčky nastavené testem místo dotazu do TWS; filtr od `since` jako naostro."""

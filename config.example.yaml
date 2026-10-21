@@ -361,7 +361,8 @@ trading:
   exchange_open_time: "09:30"
 
   # Čas zavření burzy ve formátu HH:MM (v časové zóně burzy).
-  # Zkrácené obchodní dny (např. před svátky) aplikace nezná.
+  # Zkrácené obchodní dny (např. před svátky) zná jen zadání po otevření
+  # trhu (import.plan_trading_days_only); uzavírání pozic se jimi neřídí.
   exchange_close_time: "16:00"
 
 
@@ -452,6 +453,15 @@ import:
   auto_load_time: "09:15"
   # Adresář se soubory zadání dne; ~ znamená domovský adresář.
   auto_load_dir: "~/Tmp"
+
+  # Zadat po otevření trhu (tlačítko i načtení podle konfigurace) jen
+  # v řádný obchodní den. O víkendu, ve svátek burzy, ve zkrácený obchodní
+  # den (burza zavírá dřív než v exchange_close_time) a v americký bank
+  # holiday (např. Columbus Day, Veterans Day) naplánované zadání neproběhne.
+  # Svátky a zkrácené dny se ověřují v obchodních hodinách z TWS (podle
+  # tickeru SPY), bank holidays podle pravidel Federal Reserve. Ruční zadání
+  # (formulář i Zadat vybrané pozice do trhu) se netýká.
+  plan_trading_days_only: true
 
 
 # -----------------------------------------------------------------------------

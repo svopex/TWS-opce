@@ -714,8 +714,8 @@ výsledků důvod výstupu „ručně".
 Čas se počítá v časové zóně burzy (`trading.exchange_timezone`, výchozí
 `America/New_York`), takže posuny letního a zimního času vůči místnímu času
 počítače nehrají roli. Čas zavření burzy určuje `trading.exchange_close_time`
-(výchozí 16:00 newyorského času); zkrácené obchodní dny před svátky aplikace
-nezná. Výchozí stav funkce určuje `trading.auto_close_enabled` (v šabloně
+(výchozí 16:00 newyorského času); zkrácené obchodní dny před svátky
+uzavírání nezná. Výchozí stav funkce určuje `trading.auto_close_enabled` (v šabloně
 zapnuto); tlačítkem s budíkem vedle odpočtu v hlavičce ji lze kdykoliv vypnout
 a zase zapnout. Vypnutá funkce zůstává v hlavičce vidět jako zšedlé
 *Automatické uzavření pozic vypnuto*, aby se nedala vypnout a zapomenout.
@@ -756,7 +756,7 @@ Mimo obchodní hodiny ukazuje hlavička odpočet do nejbližšího otevření bu
 Čas otevření určuje `trading.exchange_open_time` (výchozí 09:30 newyorského
 času) a počítá se ve stejné časové zóně jako uzavírání. Po zavření a o víkendu
 odpočet míří na otevření následujícího obchodního dne, proto se u delších pauz
-vypisuje i počet dní; svátky aplikace nezná. Během seance je odpočet skrytý
+vypisuje i počet dní; svátky odpočet nezná. Během seance je odpočet skrytý
 a nastavení nijak neovlivňuje obchodování.
 
 ### Kvalita spojení
@@ -1118,6 +1118,21 @@ pruh s počtem pozic a odpočtem a titulek záložky prohlížeče začíná
 „⚠ TWS NEPŘIPOJEN“. Zapnutí plánu bez spojení navíc ohlásí hláška, která
 sama nezmizí.
 
+Plán obchoduje **jen v řádný obchodní den**. O víkendu, ve svátek burzy,
+ve zkrácený obchodní den (burza zavírá dřív než v `trading.exchange_close_time`,
+například 27.11.2026 ve 13:00) ani v americký bank holiday (Columbus Day,
+Veterans Day a další svátky Federal Reserve) nezadá nic. Svátky a zkrácené
+dny aplikace bere z obchodních hodin, které TWS vydává k tickeru SPY zhruba
+na týden dopředu (americké akcie sdílejí kalendář NYSE); bank holidays
+počítá sama podle pravidel Fedu. Na den, o kterém už ví, že se neobchoduje,
+plán nejde zapnout a hláška řekne proč. Rozhoduje ale až ověření těsně před
+zadáním proti čerstvě načteným obchodním hodinám: vyjde-li, že se dnes
+neobchoduje, plán se zruší s trvalou hláškou a záznamem v *Průběhu*. Nevydá-li
+TWS obchodní hodiny ani tehdy a žádné dřív načtené den nepokrývají, plán
+raději neobchoduje také. Ruční zadání — formulář *Zadání obchodu* i **Zadat
+vybrané pozice do trhu** — se kontrola netýká. Vypíná ji
+`import.plan_trading_days_only`.
+
 Plán běží v aplikaci, ne v okně prohlížeče: zavření dialogu ani celého
 prohlížeče ho nezastaví a pozice se po otevření trhu zadají i bez otevřené
 stránky. Stav dialogu (načtený soubor, nastavení, tabulka i plán) je jeden
@@ -1139,8 +1154,9 @@ ručně. Stejně tak se neopakuje plán, který restart přerušil uprostřed
 zadávání — část pozic už může být v trhu.
 
 Tlačítko **Načíst podle konfigurace** vedle *Zadat po otevření trhu* celé
-zadání zautomatizuje. Zapne denní načítání: každý obchodní den (po–pá, svátky
-aplikace nezná) v čase `import.auto_load_time` (výchozí 9:15 v časové zóně
+zadání zautomatizuje. Zapne denní načítání: každý obchodní den (po–pá; ve
+svátek či jiný den bez obchodování se soubor načte, ale plán se nezapne
+nebo nezadá, viz výše) v čase `import.auto_load_time` (výchozí 9:15 v časové zóně
 burzy `trading.exchange_timezone`) se načte soubor
 `<import.auto_load_dir>/<RRRRMMDD>.yaml` s dnešním datem burzy — s výchozím
 adresářem `~/Tmp` tedy například `~/Tmp/20261021.yaml` — a hned se zapne
@@ -1207,6 +1223,7 @@ takže se po otevření nemusí nic přepínat:
 | `refresh_interval`, `refresh_interval_sec` | přepínač *Přepočítávat každých* a pole *Odstup [s]*; platí i pro formulář zadání |
 | `entry_cross_check`, `entry_cross_check_from` | kontrola propásnutého vstupu podle minutových svíček a čas (HH:MM, zóna burzy), od kterého se svíčky procházejí |
 | `auto_load_time`, `auto_load_dir` | čas (HH:MM, zóna burzy, před otevřením) a adresář tlačítka *Načíst podle konfigurace* |
+| `plan_trading_days_only` | *Zadat po otevření trhu* jen v řádný obchodní den — ne o víkendu, ve svátek, ve zkrácený den ani v bank holiday |
 | `max_spread_pct`, `rrr`, `sl_spread_compensated` | totéž co v běžném formuláři; `null` = převzít ze sekce `trading` |
 
 Volby `max_spread_pct`, `rrr` a `sl_spread_compensated` má i formulář

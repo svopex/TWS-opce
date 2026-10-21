@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -166,6 +166,17 @@ def fmt(value: float | None, digits: int = 2, suffix: str = "") -> str:
     if value is None:
         return "-"
     return f"{cislo_text(value, digits)}{suffix}"
+
+
+def neobchodni_den(den: date, duvod: str) -> str:
+    """
+    Věta o dni, kdy naplánované zadání neobchoduje - sdílí ji zapnutí plánu
+    i jeho spuštění, aby hlášky zněly stejně.
+
+    den   - den, na který plán míří (zóna burzy)
+    duvod - důvod z FlowEngine.non_trading_reason či verify_trading_day
+    """
+    return f"{den:%d.%m.%Y} se neobchoduje - {duvod}."
 
 
 @dataclass
@@ -1641,7 +1652,8 @@ class ImportDialog:
         otevření trhu s uplynulou prodlevou by plán zadal do trhu hned po
         stisku, což od tlačítka se slovem "po otevření" nikdo nečeká -
         v takové chvíli má obchodník po ruce Přepočítat a Zadat vybrané
-        pozice do trhu a udělá totéž vědomě.
+        pozice do trhu a udělá totéž vědomě. Nezapne se ani na den, o kterém
+        je už známo, že se neobchoduje (import.plan_trading_days_only).
         """
         if not self.radky:
             return "Není načtena žádná pozice ze souboru."
@@ -1664,6 +1676,14 @@ class ImportDialog:
                 f"trh je otevřený už {format_countdown(uplynulo)}. Použijte "
                 f"Přepočítat a Zadat vybrané pozice do trhu."
             )
+        # Plán obchoduje jen v řádný obchodní den. Den, na který míří, se
+        # tu posoudí podle dosud známých obchodních hodin z TWS - rozhodne
+        # až ověření těsně před zadáním (viz _spust_plan)
+        if self.cfg.import_.plan_trading_days_only:
+            den = self._den_planu()
+            duvod = self.engine.non_trading_reason(den)
+            if duvod:
+                return neobchodni_den(den, duvod)
 
         self.plan_prodleva = prodleva
         self.plan_aktivni = True
@@ -1686,6 +1706,14 @@ class ImportDialog:
             type="positive",
         )
         return None
+
+    def _den_planu(self) -> date:
+        """
+        Den (v zóně burzy), na jehož otevření trhu plán míří: během seance
+        dnešek, jinak den nejbližšího otevření.
+        """
+        do_otevreni = self.engine.market_open_seconds() or 0.0
+        return (self._ted() + timedelta(seconds=do_otevreni)).date()
 
     def _tik_planu(self) -> None:
         """
@@ -1770,9 +1798,21 @@ class ImportDialog:
         Je to táž dvojice kroků jako ruční Přepočítat a Zadat vybrané pozice
         do trhu, včetně jejich kontrol - obchod tedy vznikne přesně jako
         z ruky. Selhání se ohlásí a režim se v každém případě vypne, aby
-        se dávka po chybě neopakovala.
+        se dávka po chybě neopakovala. Ve dni, kdy se neobchoduje (víkend,
+        svátek, zkrácený obchodní den, bank holiday), se nezadá nic.
         """
         try:
+            # Těsně před zadáním se den ověří proti čerstvým obchodním hodinám
+            # z TWS - plán zapnutý dřív o svátku či zkráceném dni vědět nemusel
+            if self.cfg.import_.plan_trading_days_only:
+                den = self._ted().date()
+                duvod = await self.engine.verify_trading_day(den)
+                if duvod:
+                    self._trvala_hlaska(
+                        "Naplánované zadání pozic ze souboru neproběhlo: "
+                        + neobchodni_den(den, duvod)
+                    )
+                    return
             await self._priprav_vse()
             await self._zadej()
         except Exception as exc:
