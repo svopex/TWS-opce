@@ -1060,6 +1060,13 @@ body.body--dark .popisek-volby-runner {
   animation: pulzovani 1.6s ease-in-out infinite;
 }
 
+/* Tlačítko načítání podle konfigurace. Zapnuté je plné, ale nepulzuje -
+   zůstává zapnuté celé dny a pulzování patří jen blížícímu se zadání.
+   Šířka drží nejdelší stav s odpočtem, ať tlačítka neposkakují */
+.dialog-import .tlacitko-nacitani {
+  min-width: 220px;
+}
+
 /* Varování nad tlačítky, když TWS není připojen. Vzhled dává stav: se
    zapnutým plánem .poplach jako v hlavičce, bez plánu klidný rámeček -
    SL ani množství se nedopočítají, ale nic samo neproběhne */

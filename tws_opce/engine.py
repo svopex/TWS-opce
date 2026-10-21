@@ -3152,15 +3152,30 @@ class FlowEngine:
         if ted.weekday() < 5 and ted < self._exchange_close(ted):
             return None
 
-        # Po zavření a o víkendu se hledá nejbližší další obchodní den.
-        # Přičítání dnů běží v nástěnném čase burzy, takže přechod mezi
-        # letním a zimním časem otevírací hodinu neposune
-        cil = otevreni + timedelta(days=1)
-        while cil.weekday() >= 5:
-            cil += timedelta(days=1)
+        # Po zavření a o víkendu se hledá nejbližší další obchodní den
+        cil = self.trading_day_time(ted, self.cfg.trading.exchange_open_time, skip_today=True)
         # Rozdíl přes timestamp počítá skutečně uplynulé sekundy i tehdy,
         # když mezi dneškem a cílem přeskočí hodina letního času
         return cil.timestamp() - ted.timestamp()
+
+    def trading_day_time(self, ted: datetime, cas: str, skip_today: bool = False) -> datetime:
+        """
+        Okamžik daný časem HH:MM (zóna burzy) v nejbližší obchodní den
+        (po-pá) počínaje dneškem - dnešní tedy i tehdy, když už minul.
+        Svátky a zkrácené obchodní dny aplikace nezná.
+
+        ted        - aktuální čas burzy
+        cas        - čas HH:MM z konfigurace
+        skip_today - hledat až od zítřka
+        """
+        cil = self._exchange_time(ted, cas)
+        if skip_today:
+            cil += timedelta(days=1)
+        # Přičítání dnů běží v nástěnném čase burzy, takže přechod mezi
+        # letním a zimním časem hodinu neposune
+        while cil.weekday() >= 5:
+            cil += timedelta(days=1)
+        return cil
 
     def market_open_elapsed(self) -> float | None:
         """

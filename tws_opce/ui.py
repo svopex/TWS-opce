@@ -459,8 +459,9 @@ class TradingUI:
                             # stránka by jich za den nasbírala desetitisíce
                             okno.tip = ui.tooltip("")
                     okno.box.set_visibility(False)
-                # Naplánované zadání pozic ze souboru. Režim běží i se zavřeným
-                # dialogem, takže jinak než tady by nebyl vidět
+                # Naplánované zadání pozic ze souboru či načítání podle
+                # konfigurace. Oba režimy běží i se zavřeným dialogem, takže
+                # jinak než tady by nebyly vidět
                 self.plan_label = ui.label().classes("odpocet-plan")
                 self.plan_label.set_visibility(False)
                 self.dark_button = ui.button(on_click=self._toggle_dark).props("flat round dense")
@@ -2286,7 +2287,8 @@ class TradingUI:
 
     def _refresh_plan(self) -> None:
         """
-        Signalizace naplánovaného zadání pozic ze souboru v hlavičce.
+        Signalizace naplánovaného zadání pozic ze souboru (případně zapnutého
+        načítání podle konfigurace) v hlavičce.
 
         Dialog si popis skládá sám - zná odpočet i počet vybraných pozic;
         prázdný popis znamená, že režim neběží a popisek se skryje.
@@ -2298,7 +2300,7 @@ class TradingUI:
         a přeplnil řádek) a varování dostane i titulek záložky.
         """
         alarm = self.import_dialog.plan_bez_spojeni()
-        popis = None if alarm else self.import_dialog.plan_popis()
+        popis = None if alarm else self.import_dialog.popis_hlavicky()
         self.plan_label.set_visibility(popis is not None)
         if popis is not None:
             self.plan_label.set_text(popis)

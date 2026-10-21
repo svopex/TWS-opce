@@ -13,7 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.fake_ib import FakeIBService
-from tests.zaklad import ZakladEnginu, svicka
+from tests.zaklad import BURZA, ZakladEnginu, svicka
 from tws_opce import import_dialog, importer
 from tws_opce.config import AppConfig, validate_config
 from tws_opce.engine import FlowEngine
@@ -1521,6 +1521,126 @@ class TestObnovaPoRestartu(unittest.TestCase):
         self.assertIn("přerušil restart", obnoveny.engine.events[0][1])
 
 
+class TestNacitaniPodleKonfigurace(unittest.TestCase):
+    """
+    Tlačítko Načíst podle konfigurace: každý obchodní den v čase
+    import.auto_load_time (zóna burzy) se načte soubor <YYYYMMDD>.yaml
+    z import.auto_load_dir a hned se zapne zadání po otevření trhu.
+    """
+
+    def setUp(self) -> None:
+        adresar = tempfile.TemporaryDirectory()
+        self.addCleanup(adresar.cleanup)
+        self.adresar = Path(adresar.name)
+        self.cfg = AppConfig()
+        self.cfg.state.file = str(self.adresar / "state.json")
+        self.cfg.import_.auto_load_dir = str(self.adresar)
+        # Plán jde zapnout jen s vyplněným cílem zvoleného režimu
+        self.cfg.import_.pt_premium_pct = 30.0
+        (self.adresar / "20261021.yaml").write_text(SOUBOR, "utf-8")
+        # Středa 21. 10. 2026 v 9:00 čas burzy
+        self.ted = datetime(2026, 10, 21, 9, 0, tzinfo=BURZA)
+        self.dialog = self.novy_dialog()
+
+    def novy_dialog(self) -> ImportDialog:
+        """Dialog nad novým enginem, jehož čas burzy řídí self.ted."""
+        engine = FlowEngine(self.cfg, FakeIBService(self.cfg))
+        engine._exchange_now = lambda: self.ted
+        engine._restored = True
+        dialog = ImportDialog(self.cfg, engine, engine.ib)
+        dialog._oznam = mock.Mock()
+        return dialog
+
+    def udalosti(self) -> str:
+        """Všechny zápisy průběhu enginu v jednom textu."""
+        return " | ".join(zprava for _, zprava in self.dialog.engine.events)
+
+    def test_v_nastaveny_cas_nacte_soubor_a_zapne_plan(self):
+        self.dialog._prepni_nacitani()
+        self.dialog.refresh()
+        # Před časem načtení se jen odpočítává
+        self.assertEqual(self.dialog.radky, [])
+        self.assertEqual(self.dialog.nacitani_popis(), "Načtení 20261021.yaml za 15:00")
+
+        self.ted = self.ted.replace(minute=15)
+        self.dialog.refresh()
+        self.assertEqual(
+            [radek.pozice.symbol for radek in self.dialog.radky], ["AMZN", "SPY"]
+        )
+        self.assertEqual(self.dialog.nazev_souboru, "20261021.yaml")
+        self.assertTrue(self.dialog.plan_aktivni)
+        self.assertIn("zapnuto zadání po otevření trhu", self.udalosti())
+        # Další načtení je zítřejší soubor
+        self.assertIn("20261022.yaml", self.dialog.nacitani_popis())
+
+    def test_tyz_den_se_nenacita_podruhe(self):
+        self.dialog._prepni_nacitani()
+        self.ted = self.ted.replace(minute=15)
+        self.dialog.refresh()
+        with mock.patch.object(self.dialog, "_nacti_pozice") as nacteni:
+            self.ted = self.ted.replace(minute=20)
+            self.dialog.refresh()
+            # Ani restart den posledního načtení nezapomene
+            obnoveny = self.novy_dialog()
+            obnoveny.obnov()
+            self.assertTrue(obnoveny.nacitani_aktivni)
+            obnoveny.refresh()
+        nacteni.assert_not_called()
+        self.assertEqual(obnoveny.nacitani_den, "20261021")
+
+    def test_zapnuti_po_case_nacteni_nacte_hned(self):
+        # Čas načtení minul, ale do okamžiku zadání po otevření zbývá
+        self.ted = self.ted.replace(minute=20)
+        self.dialog._prepni_nacitani()
+        self.dialog.refresh()
+        self.assertEqual(len(self.dialog.radky), 2)
+        self.assertTrue(self.dialog.plan_aktivni)
+
+    def test_zapnuti_po_okamziku_zadani_ceka_na_dalsi_obchodni_den(self):
+        # Pátek po otevření trhu: dnešní soubor už zadat nejde a víkend se
+        # přeskakuje, další načtení je v pondělí
+        self.ted = datetime(2026, 10, 23, 10, 0, tzinfo=BURZA)
+        self.dialog._prepni_nacitani()
+        self.dialog.refresh()
+        self.assertEqual(self.dialog.radky, [])
+        self.assertEqual(
+            self.dialog.nacitani_popis(), "Načtení 20261026.yaml za 2 d 23:15:00"
+        )
+        self.assertEqual(self.udalosti(), "")
+
+    def test_propasnuty_okamzik_zadani_se_ohlasi(self):
+        # Aplikace přes okamžik zadání neběžela - soubor se nenačte a plán
+        # by jinak pozice zadal až při dalším otevření
+        self.dialog.nacitani_aktivni = True
+        self.dialog.nacitani_den = "20261020"
+        self.ted = self.ted.replace(hour=10)
+        self.dialog.refresh()
+        self.assertEqual(self.dialog.radky, [])
+        self.assertFalse(self.dialog.plan_aktivni)
+        self.assertIn("nenačetl", self.udalosti())
+        self.assertEqual(self.dialog.nacitani_den, "20261021")
+
+    def test_chybejici_soubor_se_ohlasi_trvale_a_neopakuje(self):
+        (self.adresar / "20261021.yaml").unlink()
+        self.dialog._prepni_nacitani()
+        self.ted = self.ted.replace(minute=15)
+        self.dialog.refresh()
+        self.assertFalse(self.dialog.plan_aktivni)
+        self.assertIn("nepodařilo načíst", self.udalosti())
+        self.assertEqual(self.dialog._oznam.call_args.kwargs.get("timeout"), 0)
+        # Další pokus až příští obchodní den
+        self.assertIn("20261022.yaml", self.dialog.nacitani_popis())
+
+    def test_vypnuti_nacitani(self):
+        self.dialog._prepni_nacitani()
+        self.dialog._prepni_nacitani()
+        self.assertFalse(self.dialog.nacitani_aktivni)
+        self.assertIsNone(self.dialog.nacitani_popis())
+        self.ted = self.ted.replace(minute=15)
+        self.dialog.refresh()
+        self.assertEqual(self.dialog.radky, [])
+
+
 class TestKonfiguraceImportu(unittest.TestCase):
     """Validace sekce import - vadné hodnoty musí padnout hned při startu."""
 
@@ -1557,6 +1677,13 @@ class TestKonfiguraceImportu(unittest.TestCase):
     def test_platny_cas_kontroly_svicek_projde(self):
         self.cfg.import_.entry_cross_check_from = "4:00"
         validate_config(self.cfg)
+
+    def test_cas_nacteni_az_po_otevreni_neprojde(self):
+        # Načtení podle konfigurace zapíná plán, a to jde jen před otevřením
+        self.cfg.import_.auto_load_time = "9:30"
+        with self.assertRaises(ValueError) as chyba:
+            validate_config(self.cfg)
+        self.assertIn("import.auto_load_time", str(chyba.exception))
 
     def test_zaporne_pt_neprojde(self):
         self.cfg.import_.pt_premium_pct = -1.0

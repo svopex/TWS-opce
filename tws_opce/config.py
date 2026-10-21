@@ -256,6 +256,13 @@ class ImportConfig:
     # Od kdy (HH:MM v časové zóně burzy) se svíčky procházejí. Půlnoc
     # pokrývá overnight seanci i pre-market až do okamžiku zadání
     entry_cross_check_from: str = "00:00"
+    # Načtení podle konfigurace (tlačítko v dialogu): každý obchodní den
+    # v tento čas (HH:MM v časové zóně burzy) se načte soubor
+    # <auto_load_dir>/<YYYYMMDD>.yaml a hned se zapne zadání po otevření
+    # trhu. Čas musí ležet před otevřením burzy
+    auto_load_time: str = "09:15"
+    # Adresář se soubory zadání dne; ~ znamená domovský adresář
+    auto_load_dir: str = "~/Tmp"
 
 
 @dataclass
@@ -446,21 +453,33 @@ def validate_config(cfg: AppConfig) -> None:
             f"trading.exchange_timezone '{cfg.trading.exchange_timezone}' není platná časová zóna"
         )
 
-    # Časy otevření a zavření burzy, času zrušení čekajících obchodů
-    # i začátku kontroly svíček musí mít tvar HH:MM
+    # Časy otevření a zavření burzy, času zrušení čekajících obchodů,
+    # začátku kontroly svíček i načtení podle konfigurace musí mít tvar
+    # HH:MM. Platné časy se drží pro porovnání níže
+    casy: dict[str, tuple[int, int]] = {}
     for nazev, hodnota in (
         ("trading.exchange_open_time", cfg.trading.exchange_open_time),
         ("trading.exchange_close_time", cfg.trading.exchange_close_time),
         ("trading.pending_cancel_time", cfg.trading.pending_cancel_time),
         ("trading.pending_cancel_time_friday", cfg.trading.pending_cancel_time_friday),
         ("import.entry_cross_check_from", cfg.import_.entry_cross_check_from),
+        ("import.auto_load_time", cfg.import_.auto_load_time),
     ):
         try:
             hodina, minuta = (int(cast) for cast in hodnota.split(":"))
             if not (0 <= hodina <= 23 and 0 <= minuta <= 59):
                 raise ValueError
+            casy[nazev] = (hodina, minuta)
         except (ValueError, AttributeError):
             problems.append(f"{nazev} '{hodnota}' musí mít tvar HH:MM")
+    # Načtení podle konfigurace zapíná zadání po otevření trhu, a to jde
+    # jen před otevřením - pozdější čas by plán nezapnul nikdy
+    nacteni = casy.get("import.auto_load_time")
+    otevreni = casy.get("trading.exchange_open_time")
+    if nacteni and otevreni and nacteni >= otevreni:
+        problems.append(
+            "import.auto_load_time musí být dřív než trading.exchange_open_time"
+        )
     if cfg.trading.exit_order_type not in EXIT_ORDER_TYPES:
         problems.append(
             f"trading.exit_order_type musí být jedna z {EXIT_ORDER_TYPES}, "

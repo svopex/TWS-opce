@@ -1138,6 +1138,22 @@ zruší se s trvalou hláškou a záznamem v *Průběhu* a pozice je třeba zada
 ručně. Stejně tak se neopakuje plán, který restart přerušil uprostřed
 zadávání — část pozic už může být v trhu.
 
+Tlačítko **Načíst podle konfigurace** vedle *Zadat po otevření trhu* celé
+zadání zautomatizuje. Zapne denní načítání: každý obchodní den (po–pá, svátky
+aplikace nezná) v čase `import.auto_load_time` (výchozí 9:15 v časové zóně
+burzy `trading.exchange_timezone`) se načte soubor
+`<import.auto_load_dir>/<RRRRMMDD>.yaml` s dnešním datem burzy — s výchozím
+adresářem `~/Tmp` tedy například `~/Tmp/20261021.yaml` — a hned se zapne
+*Zadat po otevření trhu*, jako by obchodník soubor vybral a tlačítko stiskl
+sám. Zapnuté tlačítko ukazuje odpočet do příštího načtení, totéž hlásí
+hlavička stránky; vypne ho opětovný stisk. Je-li při zapnutí dnešní čas
+načtení pryč, ale okamžik zadání po otevření ještě nenastal, soubor se načte
+hned, jinak se začne dalším obchodním dnem. Chybějící či vadný soubor,
+propásnutý okamžik zadání (aplikace v tu dobu neběžela) i nezapnutý plán se
+zapíší do *Průběhu* a ohlásí hláškou, která sama nezmizí; další pokus přijde
+až další obchodní den. Zapnuté načítání i den posledního načtení se ukládají
+se stavem dialogu, takže je restart vrátí a týž den soubor podruhé nenačte.
+
 **Přepočítávat každých [s]** zapíná průběžný přepočet čekajících obchodů
 za otevřené burzy — tatáž volba, jakou má formulář zadání (podrobně
 v jeho popisu výše). Každý obchod z dávky, který ještě čeká na vstup, si
@@ -1188,6 +1204,7 @@ takže se po otevření nemusí nic přepínat:
 | `refresh_after_open`, `refresh_after_open_sec` | přepínač *Po otevření trhu přepočítat* a pole *Prodleva [s]* |
 | `refresh_interval`, `refresh_interval_sec` | přepínač *Přepočítávat každých* a pole *Odstup [s]*; platí i pro formulář zadání |
 | `entry_cross_check`, `entry_cross_check_from` | kontrola propásnutého vstupu podle minutových svíček a čas (HH:MM, zóna burzy), od kterého se svíčky procházejí |
+| `auto_load_time`, `auto_load_dir` | čas (HH:MM, zóna burzy, před otevřením) a adresář tlačítka *Načíst podle konfigurace* |
 | `max_spread_pct`, `rrr`, `sl_spread_compensated` | totéž co v běžném formuláři; `null` = převzít ze sekce `trading` |
 
 Volby `max_spread_pct`, `rrr` a `sl_spread_compensated` má i formulář

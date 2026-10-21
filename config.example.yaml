@@ -443,6 +443,16 @@ import:
   # zadání; 09:30 by hlídalo jen dobu od otevření burzy.
   entry_cross_check_from: "00:00"
 
+  # Načtení podle konfigurace (tlačítko vedle Zadat po otevření trhu). Se
+  # zapnutým tlačítkem se každý obchodní den (po-pá) v auto_load_time
+  # (HH:MM v časové zóně burzy, trading.exchange_timezone) načte soubor
+  # <auto_load_dir>/<YYYYMMDD>.yaml s dnešním datem burzy, například
+  # ~/Tmp/20261021.yaml, a hned se zapne Zadat po otevření trhu. Čas musí
+  # ležet před otevřením burzy (trading.exchange_open_time).
+  auto_load_time: "09:15"
+  # Adresář se soubory zadání dne; ~ znamená domovský adresář.
+  auto_load_dir: "~/Tmp"
+
 
 # -----------------------------------------------------------------------------
 # VÝBĚR EXPIRACE OPCE

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +85,10 @@ JEDNOTKY_UROVNI = {
 # Popisek tlačítka naplánovaného zadání ve vypnutém stavu; zapnutý stav
 # ukazuje odpočet, proto se skládá až za běhu
 POPIS_PLANU_VYPNUTO = "Zadat po otevření trhu"
+
+# Popisek tlačítka načítání podle konfigurace ve vypnutém stavu; zapnutý
+# stav ukazuje odpočet do příštího načtení
+POPIS_NACITANI_VYPNUTO = "Načíst podle konfigurace"
 
 # Verze formátu uloženého stavu dialogu - při nekompatibilní změně se
 # uložený stav ignoruje
@@ -155,6 +159,14 @@ SLOUPCE = (
 
 # Sloupce s úrovněmi, jejichž hlavička nese jednotku
 SLOUPCE_UROVNI = ("PT", "SL")
+
+
+def den_burzy(okamzik: datetime) -> str:
+    """
+    Den burzy jako YYYYMMDD - jméno souboru se zadáním dne i značka dne,
+    pro který načtení podle konfigurace proběhlo; obojí tak vždy souhlasí.
+    """
+    return f"{okamzik:%Y%m%d}"
 
 
 def fmt(value: float | None, digits: int = 2, suffix: str = "") -> str:
@@ -265,9 +277,15 @@ class ImportDialog:
         self.plan_aktivni: bool = False
         self.plan_bezi: bool = False
         self.plan_prodleva: float = 0.0
-        # Okamžik spuštění plánu (UTC) určený při zapnutí. Hlídá, aby plán,
+        # Okamžik spuštění plánu určený při zapnutí. Hlídá, aby plán,
         # který okamžik propásl (aplikace neběžela), nezadal pozice později
         self.plan_okamzik: datetime | None = None
+        # Načítání podle konfigurace - každý obchodní den v čase
+        # import.auto_load_time se načte soubor dne a zapne se plán.
+        # nacitani_den drží den burzy (YYYYMMDD), pro který načtení už
+        # proběhlo nebo propadlo, ať se týž den neopakuje
+        self.nacitani_aktivni: bool = False
+        self.nacitani_den: str = ""
         # Naposledy uložený stav dialogu - beze změny se nezapisuje
         self._ulozeny_stav: dict[str, Any] | None = None
         # Vykreslení dialogu v jednotlivých oknech prohlížeče
@@ -303,6 +321,8 @@ class ImportDialog:
         self.zadat_button.set_enabled(False)
         self.plan_button = SdilenyPrvek(text=POPIS_PLANU_VYPNUTO)
         self.plan_button.set_enabled(False)
+        # Načítání podle konfigurace soubor nepotřebuje, dostupné je vždy
+        self.nacitani_button = SdilenyPrvek(text=POPIS_NACITANI_VYPNUTO)
         # Tlačítka volby runneru podle klíče volby
         self.runner_tlacitka = {klic: SdilenyPrvek() for klic in runner_volby()}
         self._zvyrazni_runner()
@@ -476,11 +496,28 @@ class ImportDialog:
         except ValueError as exc:
             self._oznam(str(exc), type="negative")
             return
+        self._nacti_pozice(vysledek, soubor.name)
 
-        self.nazev_souboru = soubor.name
-        self.soubor_label.set_text(
-            f"{soubor.name} – {len(vysledek.positions)} pozic k zadání"
+        if not vysledek.positions:
+            self._oznam("V souboru není žádná použitelná položka.", type="warning")
+            return
+        self._oznam(
+            f"Načteno {len(vysledek.positions)} pozic ze souboru {soubor.name} - "
+            "zadání se připraví tlačítkem Přepočítat.",
+            type="positive",
         )
+
+    def _nacti_pozice(self, vysledek: importer.ImportResult, nazev: str) -> None:
+        """
+        Postaví tabulku z pozic načtených ze souboru - společný krok výběru
+        souboru v okně i načtení podle konfigurace. Výsledek hlásí volající,
+        každý po svém.
+
+        vysledek - rozebraný soubor se zadáním dne
+        nazev    - jméno souboru pro popisek nad tabulkou
+        """
+        self.nazev_souboru = nazev
+        self.soubor_label.set_text(f"{nazev} – {len(vysledek.positions)} pozic k zadání")
         self._vykresli_tabulku(vysledek.positions)
 
         if vysledek.warnings:
@@ -489,21 +526,11 @@ class ImportDialog:
             )
         self.warning_label.set_visibility(bool(vysledek.warnings))
 
-        if not vysledek.positions:
-            self._oznam("V souboru není žádná použitelná položka.", type="warning")
-            return
-
         # Řádky zatím nemají čísla - ať je ve sloupci Stav vidět, na co se čeká
         for radek in self.radky:
             radek.stav(
                 "Čeká na přepočet - stiskněte Přepočítat.", "stav-import-varovani"
             )
-
-        self._oznam(
-            f"Načteno {len(vysledek.positions)} pozic ze souboru {soubor.name} - "
-            "zadání se připraví tlačítkem Přepočítat.",
-            type="positive",
-        )
 
     def _vykresli_tabulku(self, pozice: list[ImportedPosition]) -> None:
         """
@@ -1208,6 +1235,9 @@ class ImportDialog:
         takže běží i se zavřeným dialogem či prohlížečem: plán se spustí
         bez obchodníka u obrazovky a znovu otevřený dialog ukáže živý stav.
         """
+        # Načtení podle konfigurace jde před plánem - plán, který zapne,
+        # se tak hned v tomtéž průchodu ukáže s odpočtem
+        self._tik_nacitani()
         self._tik_planu()
         self._obnov_varovani_spojeni()
         if self.radky:
@@ -1255,8 +1285,12 @@ class ImportDialog:
         return cesta.with_name(f"{cesta.stem}-import{cesta.suffix or '.json'}")
 
     def _ted(self) -> datetime:
-        """Aktuální okamžik v UTC; samostatně, aby ho testy mohly podvrhnout."""
-        return datetime.now(timezone.utc)
+        """
+        Aktuální okamžik v časové zóně burzy. Bere se z hodin enginu, aby
+        plán, načítání podle konfigurace i odpočty enginu měly jediný
+        zdroj času; samostatně, aby ho testy mohly podvrhnout.
+        """
+        return self.engine._exchange_now()
 
     def _stav_k_ulozeni(self) -> dict[str, Any]:
         """
@@ -1309,6 +1343,10 @@ class ImportDialog:
                     else None
                 ),
             },
+            "nacitani": {
+                "aktivni": self.nacitani_aktivni,
+                "den": self.nacitani_den,
+            },
         }
 
     def _uloz(self) -> None:
@@ -1356,6 +1394,12 @@ class ImportDialog:
                 getattr(self, nazev).set_value(nastaveni[nazev])
         if obsah.get("runner_value") in runner_volby():
             self.runner_value = obsah["runner_value"]
+        # Načítání podle konfigurace nezávisí na tabulce, obnovuje se
+        # i s prázdnou. Den posledního načtení brání tomu, aby restart
+        # týž den načetl soubor podruhé
+        nacitani = obsah.get("nacitani") or {}
+        self.nacitani_aktivni = bool(nacitani.get("aktivni"))
+        self.nacitani_den = str(nacitani.get("den") or "")
 
         zaznamy = obsah.get("radky") or []
         if not zaznamy:
@@ -1580,8 +1624,22 @@ class ImportDialog:
         self._uloz()
 
     def _prepni_plan(self) -> None:
+        """Obsluha tlačítka naplánovaného zadání - zapne, nebo vypne režim."""
+        if self.plan_bezi:
+            self._oznam("Naplánované zadání právě probíhá.", type="warning")
+            return
+        if self.plan_aktivni:
+            self._zrus_plan("Naplánované zadání zrušeno.")
+            return
+        duvod = self._zapni_plan()
+        if duvod:
+            self._oznam(duvod, type="warning")
+
+    def _zapni_plan(self) -> str | None:
         """
-        Obsluha tlačítka naplánovaného zadání - zapne, nebo vypne režim.
+        Zapne naplánované zadání nad načtenou tabulkou. Vrací důvod, proč
+        zapnout nejde, nebo None, když se plán zapnul - důvod ohlásí
+        volající po svém. Volá ho tlačítko plánu i načtení podle konfigurace.
 
         Zapnout jde jen tehdy, když okamžik spuštění teprve nastane. Po
         otevření trhu s uplynulou prodlevou by plán zadal do trhu hned po
@@ -1589,41 +1647,27 @@ class ImportDialog:
         v takové chvíli má obchodník po ruce Přepočítat a Zadat vybrané
         pozice do trhu a udělá totéž vědomě.
         """
-        if self.plan_bezi:
-            self._oznam("Naplánované zadání právě probíhá.", type="warning")
-            return
-        if self.plan_aktivni:
-            self._zrus_plan("Naplánované zadání zrušeno.")
-            return
         if not self.radky:
-            self._oznam("Nejprve vyberte soubor s pozicemi.", type="warning")
-            return
+            return "Není načtena žádná pozice ze souboru."
         # Bez vyplněného cíle by naplánovaný přepočet stejně jen ohlásil
         # chybu a dávka by šla do trhu s prázdnými čísly
         if self._zadana_hodnota() is None:
-            self._oznam(f"Vyplňte {self._popis_hodnoty()}.", type="warning")
-            return
+            return f"Vyplňte {self._popis_hodnoty()}."
         # Plán zadá právě to, co je zaškrtnuté teď - výběr se do spuštění
         # nemění. Prázdný by tiše skončil zadáním nula pozic, a to až po
         # otevření trhu, kdy už je na nápravu pozdě: znovu otevřený dialog
         # zaškrtnutí nepřepočtených řádků sundává
         if not self._k_zadani():
-            self._oznam(
-                "Není vybrána žádná pozice - plán by do trhu nezadal nic.",
-                type="warning",
-            )
-            return
+            return "Není vybrána žádná pozice - plán by do trhu nezadal nic."
 
         prodleva = self._prodleva_planu()
         uplynulo = self.engine.market_open_elapsed()
         if uplynulo is not None and uplynulo >= prodleva:
-            self._oznam(
+            return (
                 f"Okamžik přepočtu ({prodleva:g} s po otevření trhu) je pryč - "
                 f"trh je otevřený už {format_countdown(uplynulo)}. Použijte "
-                f"Přepočítat a Zadat vybrané pozice do trhu.",
-                type="warning",
+                f"Přepočítat a Zadat vybrané pozice do trhu."
             )
-            return
 
         self.plan_prodleva = prodleva
         self.plan_aktivni = True
@@ -1635,25 +1679,17 @@ class ImportDialog:
         self._uloz()
         # Bez spojení s TWS plán zapnout jde - TWS se dá do otevření trhu
         # ještě spustit. Místo potvrzení, že zadání proběhne, se ale ukáže
-        # varování, že bez spojení neproběhne. Hláška sama nezmizí a čeká
-        # na potvrzení (timeout 0); potvrzovací tlačítko je akce Quasaru,
-        # ne close_button - jen u akce jde nastavit bílá barva, výchozí
-        # modrá na červeném pozadí špatně čte
+        # trvalé varování, že bez spojení neproběhne
         if not self.ib.connected:
-            self._oznam(
-                self.varovani_spojeni(),
-                type="negative",
-                multi_line=True,
-                timeout=0,
-                actions=[{"label": "Rozumím", "color": "white"}],
-            )
-            return
+            self._trvala_hlaska(self.varovani_spojeni(), do_prubehu=False)
+            return None
         zbyva = self._plan_zbyva() or 0.0
         self._oznam(
             f"Přepočet a zadání proběhne za {format_countdown(zbyva)} "
             f"({prodleva:g} s po otevření trhu).",
             type="positive",
         )
+        return None
 
     def _tik_planu(self) -> None:
         """
@@ -1703,13 +1739,25 @@ class ImportDialog:
         musí obchodník zkontrolovat a zadat ručně.
         """
         self._vypni_plan()
-        zprava = (
+        self._trvala_hlaska(
             "Naplánované zadání pozic ze souboru zrušeno - okamžik spuštění "
             f"minul před více než {TOLERANCE_PLANU_SEC / 60:g} min, aniž by mohlo "
             "proběhnout (aplikace neběžela, nebo ještě neobnovila obchody z TWS). "
             "Pozice zkontrolujte a zadejte ručně."
         )
-        self.engine.log_event(zprava)
+
+    def _trvala_hlaska(self, zprava: str, do_prubehu: bool = True) -> None:
+        """
+        Závažná zpráva: v oknech zůstane, dokud ji obchodník nepotvrdí -
+        zadání do trhu, které se čekalo, neproběhne a nesmí to zapadnout.
+        Potvrzovací tlačítko je akce Quasaru, ne close_button - jen u akce
+        jde nastavit bílá barva, výchozí modrá na červeném pozadí špatně čte.
+
+        do_prubehu - zprávu zapsat i do průběhu; patří tam vše, co nastane
+                     při samočinném běhu bez obchodníka u obrazovky
+        """
+        if do_prubehu:
+            self.engine.log_event(zprava)
         self._oznam(
             zprava,
             type="negative",
@@ -1737,6 +1785,163 @@ class ImportDialog:
         finally:
             self.plan_bezi = False
             self._vypni_plan()
+
+    # ------------------------------------------------------------------
+    # Načtení podle konfigurace
+    # ------------------------------------------------------------------
+
+    def _soubor_dne(self, den: datetime) -> Path:
+        """
+        Soubor se zadáním obchodního dne podle konfigurace:
+        <import.auto_load_dir>/<YYYYMMDD>.yaml, například ~/Tmp/20261021.yaml.
+        """
+        return Path(self.cfg.import_.auto_load_dir).expanduser() / f"{den_burzy(den)}.yaml"
+
+    def _pristi_nacteni(self) -> tuple[datetime, float] | None:
+        """
+        Okamžik příštího načtení v čase burzy a sekundy do něj; None, když
+        je načítání vypnuté.
+
+        Je to čas import.auto_load_time nejbližšího obchodního dne, pro
+        který načtení ještě neproběhlo - i dnešek, jehož čas už minul:
+        sekundy pak vyjdou nekladné a načtení čeká jen na průchod obnovou.
+        """
+        if not self.nacitani_aktivni:
+            return None
+        ted = self._ted()
+        okamzik = self.engine.trading_day_time(
+            ted,
+            self.cfg.import_.auto_load_time,
+            skip_today=den_burzy(ted) == self.nacitani_den,
+        )
+        # Rozdíl přes timestamp počítá skutečné sekundy i přes změnu času
+        return okamzik, okamzik.timestamp() - ted.timestamp()
+
+    def _po_okamziku_planu(self, ted: datetime) -> bool:
+        """
+        True, když dnešní soubor už naplánovat nejde - okamžik zadání po
+        otevření trhu (otevření plus prodleva) dnes minul. Kontrola
+        v _zapni_plan na to nestačí: po zavření trhu plán přijme a pozice
+        zadá až při dalším otevření, tedy podle souboru jiného dne.
+        """
+        otevreni = self.engine.trading_day_time(ted, self.cfg.trading.exchange_open_time)
+        return ted >= otevreni + timedelta(seconds=self._prodleva_planu())
+
+    def popis_hlavicky(self) -> str | None:
+        """
+        Popis pro hlavičku stránky: naplánované zadání, bez něj zapnuté
+        načítání podle konfigurace; None, když neběží ani jedno. Načítání
+        se opakuje každý den a samo zapíná zadání do trhu, nesmí proto
+        zůstat zapnuté bez povšimnutí.
+        """
+        return self.plan_popis() or self.nacitani_popis()
+
+    def nacitani_popis(self) -> str | None:
+        """Popis zapnutého načítání s odpočtem; None, když je vypnuté."""
+        pristi = self._pristi_nacteni()
+        if pristi is None:
+            return None
+        okamzik, zbyva = pristi
+        return f"Načtení {den_burzy(okamzik)}.yaml za {format_countdown(zbyva)}"
+
+    def _obnov_nacitani(self) -> tuple[datetime, float] | None:
+        """
+        Sladí tlačítko se stavem načítání - vypnuté je obrysové, zapnuté
+        plné s odpočtem do příštího načtení. Vrací příští načtení
+        (viz _pristi_nacteni), ať ho volající nemusí počítat znovu.
+        """
+        pristi = self._pristi_nacteni()
+        if pristi is None:
+            self.nacitani_button.set_text(POPIS_NACITANI_VYPNUTO)
+            self.nacitani_button.props(add="outline color=blue-8")
+        else:
+            self.nacitani_button.set_text(f"Vypnout načítání ({format_countdown(pristi[1])})")
+            self.nacitani_button.props(add="color=blue-8", remove="outline")
+        return pristi
+
+    def _prepni_nacitani(self) -> None:
+        """
+        Obsluha tlačítka Načíst podle konfigurace - zapne, nebo vypne denní
+        načítání souboru se zadáním dne.
+
+        Zapnuté načítání proběhne hned, pokud dnešní čas načtení už minul,
+        ale plán po otevření trhu jde ještě zapnout. Později by dnešní
+        soubor zadat nešlo, takže se začne až dalším obchodním dnem.
+        """
+        if self.nacitani_aktivni:
+            self.nacitani_aktivni = False
+        else:
+            ted = self._ted()
+            if self._po_okamziku_planu(ted):
+                self.nacitani_den = den_burzy(ted)
+            self.nacitani_aktivni = True
+        pristi = self._obnov_nacitani()
+        self._uloz()
+        if pristi is None:
+            self._oznam("Načítání podle konfigurace vypnuto.", type="info")
+            return
+        okamzik, zbyva = pristi
+        self._oznam(
+            f"Soubor {self._soubor_dne(okamzik)} se načte za {format_countdown(zbyva)} "
+            "a hned se zapne zadání po otevření trhu. Opakuje se každý obchodní den.",
+            type="positive",
+        )
+
+    def _tik_nacitani(self) -> None:
+        """
+        Průchod načítáním ze serverové obnovy - v čas načtení načte soubor
+        dne a drží odpočet na tlačítku. Stejně jako plán běží i se
+        zavřeným dialogem či prohlížečem.
+        """
+        pristi = self._pristi_nacteni()
+        # Rozpracovanou přípravu ani zadání nová tabulka nepřeruší -
+        # načtení počká na další průchod
+        if (
+            pristi is not None
+            and pristi[1] <= 0
+            and not (self.priprava or self.zadavani or self.plan_bezi)
+        ):
+            self._nacti_podle_konfigurace(pristi[0])
+        self._obnov_nacitani()
+
+    def _nacti_podle_konfigurace(self, okamzik: datetime) -> None:
+        """
+        Načte soubor dne podle konfigurace a zapne naplánované zadání po
+        otevření trhu. Den se poznamená předem, takže selhání (chybějící
+        či vadný soubor) se ohlásí jednou a další pokus přijde až příští
+        obchodní den.
+
+        okamzik - dnešní okamžik načtení, který už nastal
+        """
+        self.nacitani_den = den_burzy(okamzik)
+        cesta = self._soubor_dne(okamzik)
+        # Aplikace přes okamžik zadání neběžela - pozice ze souboru by šly
+        # do trhu až s dalším otevřením
+        if self._po_okamziku_planu(self._ted()):
+            self._trvala_hlaska(
+                f"Soubor {cesta} se podle konfigurace nenačetl - okamžik zadání "
+                "po otevření trhu už minul. Pozice zadejte ručně."
+            )
+            return
+        # Chybějící soubor, špatné kódování (UnicodeDecodeError je
+        # ValueError) i vadný YAML se hlásí stejně
+        try:
+            vysledek = importer.parse_positions(cesta.read_text("utf-8"))
+        except (OSError, ValueError) as exc:
+            self._trvala_hlaska(f"Soubor {cesta} se podle konfigurace nepodařilo načíst: {exc}")
+            return
+        self._nacti_pozice(vysledek, cesta.name)
+        duvod = self._zapni_plan()
+        if duvod:
+            self._trvala_hlaska(
+                f"Soubor {cesta} se podle konfigurace načetl, zadání po otevření "
+                f"trhu se ale nezapnulo: {duvod}"
+            )
+            return
+        self.engine.log_event(
+            f"Načten soubor {cesta} podle konfigurace ({len(vysledek.positions)} "
+            "pozic), zapnuto zadání po otevření trhu."
+        )
 
     # ------------------------------------------------------------------
     # Zadání do trhu
@@ -2041,6 +2246,23 @@ class PohledImportu:
                     "přepočtu teprve nastane."
                 )
                 stav.plan_button.pripoj(plan_button)
+                # Načítání podle konfigurace: každý obchodní den v nastavený
+                # čas se načte soubor dne a hned se zapne Zadat po otevření trhu
+                imp = stav.cfg.import_
+                nacitani_button = (
+                    ui.button(POPIS_NACITANI_VYPNUTO, on_click=stav._prepni_nacitani)
+                    .props("outline color=blue-8")
+                    .classes("tlacitko-import-akce tlacitko-nacitani")
+                )
+                nacitani_button.tooltip(
+                    f"Zapne denní načítání: každý obchodní den (po-pá) v "
+                    f"{imp.auto_load_time} čas burzy ({stav.cfg.trading.exchange_timezone}) "
+                    f"se načte soubor {Path(imp.auto_load_dir) / 'RRRRMMDD.yaml'} "
+                    "s dnešním datem a hned se zapne Zadat po otevření trhu. "
+                    "Běží i se zavřeným prohlížečem, dokud ho opětovný stisk "
+                    "nevypne. Nastavuje import.auto_load_time a import.auto_load_dir."
+                )
+                stav.nacitani_button.pripoj(nacitani_button)
                 ui.button("Zavřít", on_click=self.dialog.close).props("flat").classes(
                     "tlacitko-import-akce"
                 )
