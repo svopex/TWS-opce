@@ -348,7 +348,7 @@ trading:
   # Čas zrušení čekajících obchodů v pátek ve formátu HH:MM (v časové zóně
   # burzy). V pátek se ruší dřív - výchozí půl hodiny po otevření burzy;
   # ostatní dny platí pending_cancel_time.
-  pending_cancel_time_friday: "10:00"
+  pending_cancel_time_friday: "10:30"
 
   # Časová zóna burzy - uzavírání i rušení čekajících obchodů se časuje v ní,
   # takže posuny letního a zimního času vůči místnímu času počítače
