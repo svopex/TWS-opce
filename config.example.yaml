@@ -450,7 +450,7 @@ import:
   # <auto_load_dir>/<YYYYMMDD>.yaml s dnešním datem burzy, například
   # ~/Tmp/20261021.yaml, a hned se zapne Zadat po otevření trhu. Čas musí
   # ležet před otevřením burzy (trading.exchange_open_time).
-  auto_load_time: "09:15"
+  auto_load_time: "09:25"
   # Adresář se soubory zadání dne; ~ znamená domovský adresář.
   auto_load_dir: "~/Tmp"
 
