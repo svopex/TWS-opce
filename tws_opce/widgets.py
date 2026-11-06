@@ -120,6 +120,20 @@ def zvyrazni_tlacitka(tlacitka: dict[str, Any], vybrane: str) -> None:
             tlacitko.props(add="outline color=grey-7")
 
 
+def nastav_zapnuti(tlacitko: Any, zapnuto: bool, barva: str) -> None:
+    """
+    Vzhled přepínacího tlačítka dialogu: zapnuté je plné a pulzuje,
+    vypnuté jen obrysové. Parametry: tlacitko - prvek s props()/classes(),
+    zapnuto - stav režimu, barva - barva Quasaru (např. orange-8).
+    """
+    if zapnuto:
+        tlacitko.props(add=f"color={barva}", remove="outline")
+        tlacitko.classes(add="tlacitko-pulzuje")
+    else:
+        tlacitko.props(add=f"outline color={barva}")
+        tlacitko.classes(remove="tlacitko-pulzuje")
+
+
 def pole_runner_pct(hodnota: float, trida: str) -> Any:
     """Pole „Runner [%]" - jak velká část pozice připadne runnerovi."""
     return (

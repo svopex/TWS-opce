@@ -1056,15 +1056,17 @@ body.body--dark .popisek-volby-runner {
   min-width: 210px;
 }
 
-.dialog-import .tlacitko-plan.plan-aktivni {
-  animation: pulzovani 1.6s ease-in-out infinite;
-}
-
-/* Tlačítko načítání podle konfigurace. Zapnuté je plné, ale nepulzuje -
-   zůstává zapnuté celé dny a pulzování patří jen blížícímu se zadání.
-   Šířka drží nejdelší stav s odpočtem, ať tlačítka neposkakují */
+/* Tlačítko načítání podle konfigurace. Zapnuté se plní modrou. Šířka drží
+   nejdelší stav s odpočtem, ať tlačítka neposkakují */
 .dialog-import .tlacitko-nacitani {
   min-width: 220px;
+}
+
+/* Pulzování zapnutého přepínacího tlačítka (plán i načítání), třídu
+   přepíná widgets.nastav_zapnuti. Oba režimy samy pošlou pozice do trhu,
+   nesmí proto zůstat zapnuté bez povšimnutí */
+.dialog-import .tlacitko-pulzuje {
+  animation: pulzovani 1.6s ease-in-out infinite;
 }
 
 /* Varování nad tlačítky, když TWS není připojen. Vzhled dává stav: se

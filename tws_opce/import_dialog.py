@@ -1593,20 +1593,17 @@ class ImportDialog:
         """
         if self.plan_bezi:
             self.plan_button.set_text("Zadávám naplánované pozice…")
-            self.plan_button.props(add="color=orange-8", remove="outline")
-            self.plan_button.classes(add="plan-aktivni")
+            widgets.nastav_zapnuti(self.plan_button, True, "orange-8")
             return
         zbyva = self._plan_zbyva()
         if zbyva is None:
             self.plan_button.set_text(POPIS_PLANU_VYPNUTO)
-            self.plan_button.props(add="outline color=orange-8")
-            self.plan_button.classes(remove="plan-aktivni")
+            widgets.nastav_zapnuti(self.plan_button, False, "orange-8")
             return
         # Po okamžiku spuštění plán čeká jen na obnovu obchodů po restartu
         odpocet = format_countdown(zbyva) if zbyva > 0 else "čeká na TWS"
         self.plan_button.set_text(f"Zrušit plán ({odpocet})")
-        self.plan_button.props(add="color=orange-8", remove="outline")
-        self.plan_button.classes(add="plan-aktivni")
+        widgets.nastav_zapnuti(self.plan_button, True, "orange-8")
 
     def _zrus_plan(self, duvod: str = "") -> None:
         """
@@ -1883,16 +1880,15 @@ class ImportDialog:
     def _obnov_nacitani(self) -> tuple[datetime, float] | None:
         """
         Sladí tlačítko se stavem načítání - vypnuté je obrysové, zapnuté
-        plné s odpočtem do příštího načtení. Vrací příští načtení
-        (viz _pristi_nacteni), ať ho volající nemusí počítat znovu.
+        plné, pulzující a s odpočtem do příštího načtení. Vrací příští
+        načtení (viz _pristi_nacteni), ať ho volající nemusí počítat znovu.
         """
         pristi = self._pristi_nacteni()
         if pristi is None:
             self.nacitani_button.set_text(POPIS_NACITANI_VYPNUTO)
-            self.nacitani_button.props(add="outline color=blue-8")
         else:
             self.nacitani_button.set_text(f"Vypnout načítání ({format_countdown(pristi[1])})")
-            self.nacitani_button.props(add="color=blue-8", remove="outline")
+        widgets.nastav_zapnuti(self.nacitani_button, pristi is not None, "blue-8")
         return pristi
 
     def _prepni_nacitani(self) -> None:

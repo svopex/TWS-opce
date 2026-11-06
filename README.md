@@ -1163,7 +1163,8 @@ burzy `trading.exchange_timezone`) se načte soubor
 `<import.auto_load_dir>/<RRRRMMDD>.yaml` s dnešním datem burzy — s výchozím
 adresářem `~/Tmp` tedy například `~/Tmp/20261021.yaml` — a hned se zapne
 *Zadat po otevření trhu*, jako by obchodník soubor vybral a tlačítko stiskl
-sám. Zapnuté tlačítko ukazuje odpočet do příštího načtení, totéž hlásí
+sám. Zapnuté tlačítko pulzuje stejně jako *Zadat po otevření trhu* a ukazuje
+odpočet do příštího načtení, totéž hlásí
 hlavička stránky; vypne ho opětovný stisk. Je-li při zapnutí dnešní čas
 načtení pryč, ale okamžik zadání po otevření ještě nenastal, soubor se načte
 hned, jinak se začne dalším obchodním dnem. Chybějící či vadný soubor,
