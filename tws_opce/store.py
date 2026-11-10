@@ -60,6 +60,10 @@ SAVED_FIELDS = (
     "sl_to_pt_ratio",
     "expiration",
     "strike",
+    # Posun strike kvůli riziku a tvrdé dodržení rizika - přepočet po
+    # restartu musí čekající obchod posuzovat stejně jako před ním
+    "original_strike",
+    "enforce_risk",
     "option_conid",
     "underlying_conid",
     "min_tick",

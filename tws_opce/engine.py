@@ -10,7 +10,7 @@ import itertools
 import logging
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -82,6 +82,35 @@ class _ReferenceOption:
 
 
 @dataclass
+class _PremiumLevels:
+    """
+    Úrovně na opci zadané procentem prémie. Engine dostává USD na kontrakt
+    převedené z prémie `base`; procento se zachová, když se částka přepočte
+    na prémii právě posuzovaného kontraktu (pt / sl = která úroveň).
+    """
+
+    base: float
+    pt: bool
+    sl: bool
+
+
+@dataclass
+class _LevelInputs:
+    """
+    Vstupy posouzení kontraktu, které na kontraktu nezávisí: vstupní cena,
+    úrovně v USD před přepočtem procent prémie (SL None = dopočítat podle
+    poměru), limit spreadu a procenta prémie. Tytéž platí pro vybraný
+    kontrakt i pro vzdálenější strike hledaný kvůli riziku.
+    """
+
+    entry_price: float
+    profit_target: float
+    stop_loss: float | None
+    limit_spreadu: float
+    procenta: _PremiumLevels | None = None
+
+
+@dataclass
 class Preview:
     """
     Výsledek přípravy zadání - podklady pro předvyplnění formuláře.
@@ -131,6 +160,20 @@ class Preview:
     quantity: int = 1
     risk_amount: float = 0.0
     account_size: float = 0.0
+    # Ztráta jednoho kontraktu na SL v USD, ze které vyšlo množství (SL
+    # na opci včetně odhadu kompenzace spreadu a stropu prémie, na podkladu
+    # přes deltu při vstupu). None = úrovně ještě nejsou dopočtené
+    loss_per_contract: float | None = None
+    # Prémie (cena opce za kus), ke které se vztahují úrovně zadané procentem
+    # prémie - u vybraného kontraktu jeho odhadovaná nákupní cena. None
+    # znamená, že se procenta nepoužila
+    premium_base: float | None = None
+    # Strike vybraný podle konfigurace, pokud ho kvůli riziku na obchod
+    # nahradil vzdálenější; None = strike se neposouval
+    original_strike: float | None = None
+    # Proč nejmenší množství nedodrží riziko na obchod (trading.risk_overflow),
+    # prázdné = dodrží, nebo se riziko nehlídá
+    risk_problem: str = ""
     warnings: list[str] = field(default_factory=list)
 
     # Runtime kontrakty pro následné založení flow
@@ -210,6 +253,10 @@ class FlowEngine:
         # trhu pozná svátek a zkrácený obchodní den
         self.trading_hours: dict[date, datetime | None] = {}
         self._hours_checked: float = float("-inf")
+        # Běžící hledání vzdálenějšího strike pro čekající obchody, které se
+        # po přepočtu nevešly do rizika (klíč = id obchodu). Dotazy do TWS
+        # trvají sekundy, proto běží mimo monitorovací smyčku
+        self._risk_tasks: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
     # Pomocné
@@ -411,6 +458,12 @@ class FlowEngine:
         sl_spread_compensated: bool = False,
         sl_to_pt_ratio: float | None = None,
         max_spread_pct: float | None = None,
+        *,
+        premium_base: float | None = None,
+        pt_in_premium: bool = False,
+        sl_in_premium: bool = False,
+        fit_risk: bool = True,
+        strike: float | None = None,
     ) -> Preview:
         """
         Připraví zadání obchodu: načte cenu podkladu, určí typ opce, expiraci,
@@ -430,9 +483,32 @@ class FlowEngine:
         max_spread_pct je limit spreadu, se kterým obchod poběží (z formuláře;
         bez něj platí konfigurace). Odhad kompenzace SL se jím stropuje - nad
         limitem se nenakupuje, takže širší spread obchod nezaplatí.
+
+        premium_base s příznaky pt_in_premium / sl_in_premium říká, že úrovně
+        na opci vznikly z procenta prémie této ceny opce. Přepočtou se pak
+        na prémii vybraného kontraktu, aby procento platilo i pro jinak
+        drahou opci (posunutý strike, pohyb kotací od minulého náhledu).
+
+        Nevejde-li se do rizika na obchod ani nejmenší množství, zkusí se
+        podle trading.risk_overflow vzdálenější strike; fit_risk=False to
+        vypíná pro pomocné průchody, které jen zjišťují cenu opce.
+
+        strike je kontrakt vybraný už dřívějším náhledem - použije se místo
+        výběru podle strike.mode (hledání podle rizika pak začíná od něj).
         """
         if not self.ib.connected:
             raise RuntimeError("Není navázáno spojení s TWS.")
+
+        # Procenta prémie mají smysl jen u úrovní zadaných na opci
+        procenta = (
+            _PremiumLevels(
+                premium_base,
+                pt_in_premium and not pt_on_underlying,
+                sl_in_premium and not sl_on_underlying,
+            )
+            if premium_base and premium_base > 0 and (pt_in_premium or sl_in_premium)
+            else None
+        )
 
         symbol = symbol.upper().strip()
         if not symbol:
@@ -553,9 +629,14 @@ class FlowEngine:
                 )
 
             # Strike podle nastaveného režimu - odsazený od vstupu mimo peníze,
-            # nejbližší vstupní ceně, nebo nejbližší cílové úrovni
-            cil_strike = self._strike_target(
-                entry_price, cilova_uroven, preview.right, list(chain.strikes)
+            # nejbližší vstupní ceně, nebo nejbližší cílové úrovni; strike
+            # vybraný dřívějším náhledem má přednost
+            cil_strike = (
+                strike
+                if strike is not None
+                else self._strike_target(
+                    entry_price, cilova_uroven, preview.right, list(chain.strikes)
+                )
             )
 
             nejblizsi = calc.nearest_strike(sorted(chain.strikes), cil_strike)
@@ -583,6 +664,10 @@ class FlowEngine:
             preview.option = option
             preview.min_tick = details.minTick or 0.01
 
+            # Varování, která nepatří k vybranému kontraktu - převezme je
+            # i případný vzdálenější strike hledaný kvůli riziku
+            zakladni_varovani = list(preview.warnings)
+
             # Náhradní strike se hlásí, aby bylo jasné, proč kontrakt neodpovídá cíli
             if nejblizsi is not None and strike != nejblizsi:
                 preview.warnings.append(
@@ -595,13 +680,30 @@ class FlowEngine:
             await self.ib.wait_for_quotes(
                 option, self.cfg.engine.market_data_timeout_sec, self.cfg.engine.quotes_grace_sec
             )
-            # Kotace, delta a odhad nákupní ceny; z nich pak SL a množství.
-            # Stejné dva kroky používá i přepočet čekajícího obchodu po
-            # otevření burzy, proto jsou vyčleněné do samostatných metod
-            used_delta = self._load_option_market(preview, entry_price, limit_spreadu)
-            self._derive_levels(
-                preview, entry_price, profit_target, stop_loss, used_delta, limit_spreadu
-            )
+            # Kotace, delta a odhad nákupní ceny; z nich pak SL, množství
+            # a posouzení rizika na obchod
+            vstupy = _LevelInputs(entry_price, profit_target, stop_loss, limit_spreadu, procenta)
+            self._evaluate_contract(preview, vstupy)
+
+            # Nevejde-li se do rizika ani nejmenší množství, zkusí se strike
+            # dál od peněz - levnější opce ztratí na SL méně
+            if (
+                preview.risk_problem
+                and fit_risk
+                and self.cfg.trading.risk_overflow == "restrike"
+            ):
+                vyhovujici, duvod = await self._shift_strike_for_risk(
+                    preview, chain, vstupy, zakladni_varovani
+                )
+                if vyhovujici is not None:
+                    # Náhled přechází na vzdálenější kontrakt; odběr původního
+                    # se uvolní hned, úklid ve finally už hlídá ten nový
+                    self.ib.unsubscribe(preview.option)
+                    preview = vyhovujici
+                else:
+                    preview.risk_problem = f"{preview.risk_problem} {duvod}"
+            if preview.risk_problem:
+                preview.warnings.append(preview.risk_problem)
 
             self._replace_preview(preview)
             return preview
@@ -673,6 +775,66 @@ class FlowEngine:
 
         return used_delta
 
+    def _evaluate_contract(self, preview: Preview, vstupy: _LevelInputs) -> None:
+        """
+        Posoudí kontrakt vybraný v náhledu: načte jeho tržní data, úrovně
+        v procentech prémie přepočte na jeho prémii, dopočítá SL a množství
+        a zjistí, zda nejmenší množství dodrží riziko na obchod.
+
+        Kontrakt musí být v náhledu vybraný a odebíraný. Sdílí ho příprava
+        zadání, hledání vzdálenějšího strike i přepočet čekajícího obchodu,
+        aby všechny došly ke stejným číslům.
+        """
+        used_delta = self._load_option_market(preview, vstupy.entry_price, vstupy.limit_spreadu)
+        profit_target, stop_loss = self._premium_levels(
+            preview, vstupy.profit_target, vstupy.stop_loss, vstupy.procenta
+        )
+        self._derive_levels(
+            preview, vstupy.entry_price, profit_target, stop_loss, used_delta, vstupy.limit_spreadu
+        )
+        preview.risk_problem = self._risk_overflow_text(
+            preview.loss_per_contract, preview.quantity, preview.strike
+        )
+
+    @staticmethod
+    def premium_of(preview: Preview) -> float | None:
+        """
+        Prémie kontraktu z náhledu pro převody procent prémie: odhad nákupní
+        ceny při vstupu, bez modelu aktuální ASK (nakupuje se u něj),
+        nakonec cena pro model. Stejný základ používá dialog načtení pozic.
+        """
+        return preview.expected_fill_price or preview.option_ask or preview.option_price
+
+    def _premium_levels(
+        self,
+        preview: Preview,
+        profit_target: float,
+        stop_loss: float | None,
+        procenta: _PremiumLevels | None,
+    ) -> tuple[float, float | None]:
+        """
+        Úrovně zadané procentem prémie přepočtené na prémii kontraktu
+        v náhledu; ostatní úrovně se vrací beze změny. Použitou prémii
+        zapíše do náhledu (premium_base). Bez známé ceny opce zůstávají
+        částky převedené z původní prémie.
+        """
+        if procenta is None:
+            return profit_target, stop_loss
+
+        preview.premium_base = procenta.base
+        premie = self.premium_of(preview)
+        if not premie or premie <= 0:
+            return profit_target, stop_loss
+
+        # Totéž procento z jiné prémie: částka se mění ve stejném poměru
+        preview.premium_base = premie
+        pomer = premie / procenta.base
+        if procenta.pt:
+            profit_target = round(profit_target * pomer, 2)
+        if procenta.sl and stop_loss is not None:
+            stop_loss = round(stop_loss * pomer, 2)
+        return profit_target, stop_loss
+
     def _derive_levels(
         self,
         preview: Preview,
@@ -728,8 +890,12 @@ class FlowEngine:
             if varovani is not None:
                 preview.warnings.append(varovani)
 
-        preview.quantity = self._quantity_for_risk(
-            preview, entry_price, used_delta, self.risk_amount
+        preview.loss_per_contract = self._loss_per_contract(preview, entry_price, used_delta)
+        preview.quantity = calc.suggest_quantity_for_loss(
+            self.risk_amount,
+            preview.loss_per_contract,
+            self.cfg.trading.min_quantity,
+            self.cfg.trading.max_quantity,
         )
 
         # Závěrečná cena je jediná dostupná mimo obchodní hodiny; pohnul-li se
@@ -749,36 +915,258 @@ class FlowEngine:
                 f"{limit_spreadu:g} %."
             )
 
-    def _quantity_for_risk(
-        self, preview: Preview, entry_price: float, used_delta: float, riziko: float
-    ) -> int:
+    def _loss_per_contract(self, preview: Preview, entry_price: float, used_delta: float) -> float:
         """
-        Množství kontraktů pro riskovanou částku `riziko` nad úrovněmi náhledu.
+        Ztráta jednoho kontraktu na SL v USD podle úrovní náhledu.
 
-        Při SL na podkladu se ztráta na kontrakt odhaduje přes deltu, při SL
-        na opci je zadaná přímo v USD (včetně kompenzace o spread) a stropuje
-        se zaplacenou prémií - stop nemůže klesnout pod jeden tik. Částku
-        lze předat nižší, než je riziko na obchod; průběžný přepočet tak
-        zjišťuje, zda by zvýšení množství obstálo i s rezervou.
+        Při SL na podkladu se odhaduje přes deltu, při SL na opci je zadaná
+        přímo v USD (včetně kompenzace o spread) a stropuje se zaplacenou
+        prémií - stop nemůže klesnout pod jeden tik.
         """
-        trading = self.cfg.trading
         if preview.sl_on_underlying:
-            return calc.suggest_quantity(
-                riziko,
-                entry_price,
-                preview.stop_loss,
-                used_delta,
-                trading.min_quantity,
-                trading.max_quantity,
-            )
+            return calc.underlying_loss(entry_price, preview.stop_loss, used_delta)
         ztrata = preview.stop_loss + preview.sl_spread_usd
         if preview.expected_fill_price is not None:
             ztrata = min(
                 ztrata, calc.max_option_loss(preview.expected_fill_price, preview.min_tick)
             )
-        return calc.suggest_quantity_for_loss(
-            riziko, ztrata, trading.min_quantity, trading.max_quantity
+        return ztrata
+
+    def _risk_overflow_text(self, ztrata: float | None, quantity: int, strike: float) -> str:
+        """
+        Proč `quantity` kontraktů se ztrátou `ztrata` USD na kontrakt (strike
+        jen do hlášky) nedodrží riziko na obchod s tolerancí
+        trading.risk_tolerance_pct; prázdný řetězec, když dodrží. Při
+        trading.risk_overflow = allow, neznámé velikosti účtu nebo neznámé
+        ztrátě se riziko neposuzuje.
+        """
+        trading = self.cfg.trading
+        riziko = self.risk_amount
+        if trading.risk_overflow == "allow" or riziko <= 0 or not ztrata:
+            return ""
+        if calc.fits_risk(riziko, ztrata, quantity, trading.risk_tolerance_pct):
+            return ""
+        return (
+            f"Riziko na obchod {riziko:.0f} USD (+{trading.risk_tolerance_pct:g} %) "
+            f"nelze dodržet - {quantity} ks na strike {strike:g} ztratí na SL "
+            f"až {quantity * ztrata:.0f} USD."
         )
+
+    @staticmethod
+    def _sl_fixed_usd(preview: Preview, vstupy: _LevelInputs) -> bool:
+        """
+        True, když je SL pevná částka v USD na kontrakt - vzdálenější strike
+        ji nezmenší, takže ho nemá smysl hledat. Zadaný SL je pevný, není-li
+        v procentech prémie; dopočtený z PT je pevný, když je i PT pevná
+        částka na opci (zisk na PT na podkladu s levnější opcí klesá).
+        """
+        procenta = vstupy.procenta
+        if preview.sl_on_underlying:
+            return False
+        if vstupy.stop_loss is not None:
+            return not (procenta is not None and procenta.sl)
+        if preview.pt_on_underlying:
+            return False
+        return not (procenta is not None and procenta.pt)
+
+    async def _shift_strike_for_risk(
+        self,
+        preview: Preview,
+        chain: Any,
+        vstupy: _LevelInputs,
+        zakladni_varovani: list[str],
+    ) -> tuple[Preview | None, str]:
+        """
+        Hledá strike dál od peněz, na kterém se do rizika na obchod vejde
+        aspoň nejmenší množství kontraktů (trading.risk_overflow = restrike).
+
+        Kandidáti z opčního řetězce `chain` leží za strikem náhledu nejvýš
+        strike.risk_max_extra_steps kroků rastru; každý se posoudí živými
+        kotacemi se vstupy `vstupy` stejně jako vybraný kontrakt. Hledání
+        končí u prvního vyhovujícího, u kontraktu s deltou při vstupu pod
+        strike.risk_min_delta (dál je delta ještě nižší), nebo po vyčerpání
+        kandidátů. Kontrakt se spreadem nad limitem se přeskočí.
+        zakladni_varovani jsou varování nezávislá na kontraktu.
+
+        Vrací vyhovující náhled, jehož odběr tržních dat přebírá volající,
+        nebo None s důvodem neúspěchu. Odběr kontraktu ze vstupního náhledu
+        se nemění.
+        """
+        if self._sl_fixed_usd(preview, vstupy):
+            return None, "Vzdálenější strike nepomůže - SL je pevná částka v USD na kontrakt."
+
+        kandidati = calc.strikes_beyond(
+            list(chain.strikes), preview.strike, preview.right, self.cfg.strike.risk_max_extra_steps
+        )
+        if not kandidati:
+            return None, "Vzdálenější strike v opčním řetězci není."
+
+        min_delta = self.cfg.strike.risk_min_delta
+        duvod = ""
+        start = self._risk_search_start(preview, kandidati, vstupy.entry_price)
+        for strike in kandidati[start:]:
+            kandidat = await self._risk_candidate(
+                preview, strike, chain.tradingClass, vstupy, zakladni_varovani
+            )
+            if kandidat is None:
+                duvod = f"Strike {strike:g} nemá v TWS kontrakt nebo kotace."
+                continue
+
+            # Odběr zamítnutého kandidáta se uvolní na každé cestě ven
+            vyhovuje = False
+            try:
+                # Delta s každým dalším strike klesá - pod mezí nemá smysl
+                # pokračovat. Bez modelu rozhoduje dnešní delta z TWS
+                delta = (
+                    kandidat.entry_delta if kandidat.entry_delta is not None else kandidat.delta
+                )
+                if delta is None or abs(delta) < min_delta:
+                    popis = (
+                        "neznámou deltu" if delta is None else f"deltu při vstupu {abs(delta):.2f}"
+                    )
+                    return None, (
+                        f"Vzdálenější strike {strike:g} už má {popis}, pod mezí {min_delta:g} "
+                        f"(strike.risk_min_delta)."
+                    )
+
+                # Nad limitem spreadu by se nákup do trhu nedostal
+                if calc.spread_over_limit(
+                    kandidat.option_bid,
+                    kandidat.option_ask,
+                    vstupy.limit_spreadu,
+                    self.cfg.trading.cheap_option_rule,
+                ):
+                    duvod = f"Strike {strike:g} má spread nad limitem {vstupy.limit_spreadu:g} %."
+                    continue
+
+                if kandidat.risk_problem:
+                    duvod = (
+                        f"Ani vzdálenější strike {strike:g} se do rizika nevejde "
+                        f"(ztráta na SL {kandidat.loss_per_contract:.0f} USD/ks)."
+                    )
+                    continue
+
+                vyhovuje = True
+                # Původní strike si náhled pamatuje i přes opakovaný posun
+                kandidat.original_strike = preview.original_strike or preview.strike
+                kandidat.warnings.append(
+                    f"Strike posunut z {preview.strike:g} na {strike:g} kvůli riziku na obchod "
+                    f"{kandidat.risk_amount:.0f} USD - {kandidat.quantity} ks ztratí na SL "
+                    f"≈ {kandidat.quantity * kandidat.loss_per_contract:.0f} USD."
+                )
+                return kandidat, ""
+            finally:
+                if not vyhovuje:
+                    self.ib.unsubscribe(kandidat.option)
+        return None, duvod
+
+    def _risk_search_start(
+        self, preview: Preview, kandidati: list[float], entry_price: float
+    ) -> int:
+        """
+        Index kandidáta, od kterého se vzdálenější strike ověřuje v TWS.
+
+        Každé ověření stojí dotaz do TWS a čekání na kotace, proto se první
+        vhodný strike odhadne modelem: z implikované volatility vybraného
+        kontraktu se kandidáti ocení pro vstupní úroveň a ztráta na kontrakt
+        se přepočte úměrou - u SL na opci k ceně opce (procenta prémie
+        i spread se s ní mění úměrně), u SL na podkladu k deltě. Začíná se
+        o jeden strike blíž než odhad, protože opce mimo peníze bývají kvůli
+        skew levnější, než předpoví model s jedinou volatilitou. Kandidáti
+        pod mezí delty se přeskakují; bez modelu se začíná od nejbližšího.
+        """
+        cena = preview.option_price
+        if not cena or preview.current_price is None or not preview.loss_per_contract:
+            return 0
+        rate = self.cfg.trading.risk_free_rate_pct / 100.0
+        years = calc.years_to_expiry(preview.expiration)
+        sigma = calc.implied_volatility(
+            cena, preview.current_price, preview.strike, years, rate, preview.right
+        )
+        if sigma is None:
+            return 0
+
+        def odhad(strike: float) -> tuple[float, float]:
+            """Modelová cena a |delta| opce se zadaným strikem při vstupu."""
+            return (
+                calc.black_scholes_price(entry_price, strike, years, rate, sigma, preview.right),
+                abs(calc.black_scholes_delta(entry_price, strike, years, rate, sigma, preview.right)),
+            )
+
+        cena_zaklad, delta_zaklad = odhad(preview.strike)
+        if cena_zaklad <= 0 or delta_zaklad <= 0:
+            return 0
+
+        trading = self.cfg.trading
+        posledni = 0
+        for index, strike in enumerate(kandidati):
+            cena_kandidata, delta_kandidata = odhad(strike)
+            if delta_kandidata < self.cfg.strike.risk_min_delta:
+                break
+            posledni = index
+            if preview.sl_on_underlying:
+                pomer = delta_kandidata / delta_zaklad
+            else:
+                pomer = cena_kandidata / cena_zaklad
+            if calc.fits_risk(
+                preview.risk_amount,
+                preview.loss_per_contract * pomer,
+                trading.min_quantity,
+                trading.risk_tolerance_pct,
+            ):
+                return max(index - 1, 0)
+        # Podle modelu se nevejde žádný - ověří se aspoň nejvzdálenější
+        # přípustný, ztráta s odstupem od peněz jen klesá
+        return posledni
+
+    async def _risk_candidate(
+        self,
+        zaklad: Preview,
+        strike: float,
+        trading_class: str,
+        vstupy: _LevelInputs,
+        zakladni_varovani: list[str],
+    ) -> Preview | None:
+        """
+        Posoudí vzdálenější strike pro hledání podle rizika: ověří kontrakt
+        v TWS, přihlásí jeho tržní data a spočítá úrovně i množství stejně
+        jako u vybraného kontraktu. Vrací náhled s odebíraným kontraktem
+        (odběr uvolňuje volající), nebo None, když kontrakt v TWS není nebo
+        nemá žádnou cenu.
+        """
+        try:
+            option, details = await self.ib.qualify_option(
+                zaklad.symbol, zaklad.expiration, strike, zaklad.right, trading_class
+            )
+        except ValueError:
+            return None
+
+        # Kopie náhledu se vstupy, které na kontraktu nezávisí; tržní údaje
+        # a dopočty přepíše posouzení, podmíněně plněná pole se nulují
+        kandidat = replace(
+            zaklad,
+            strike=strike,
+            option=option,
+            min_tick=details.minTick or 0.01,
+            warnings=list(zakladni_varovani),
+            delta_estimated=False,
+            sl_spread_usd=0.0,
+        )
+        self.ib.subscribe(option)
+        try:
+            await self.ib.wait_for_quotes(
+                option, self.cfg.engine.market_data_timeout_sec, self.cfg.engine.quotes_grace_sec
+            )
+            self._evaluate_contract(kandidat, vstupy)
+        except BaseException:
+            self.ib.unsubscribe(option)
+            raise
+
+        # Bez ceny opce nelze přepočítat procenta prémie ani ověřit deltu
+        if kandidat.option_price is None:
+            self.ib.unsubscribe(option)
+            return None
+        return kandidat
 
     def _model_delta(
         self,
@@ -1384,7 +1772,14 @@ class FlowEngine:
                 request.sl_spread_compensated,
                 request.sl_to_pt_ratio,
                 request.max_spread_pct,
+                premium_base=request.premium_base,
+                pt_in_premium=request.pt_in_premium,
+                sl_in_premium=request.sl_in_premium,
+                strike=request.strike,
             )
+            # Strike vybraný podle konfigurace: z náhledu, ve kterém se strike
+            # posunul poprvé, jinak z tohoto přehodnocení
+            original_strike = request.original_strike or preview.original_strike
 
             # Propásnutý vstup se hlásí dřív než ostatní kontroly, jinak by
             # uživatel dostal matoucí hlášku o poloze PT vůči vstupu.
@@ -1415,13 +1810,11 @@ class FlowEngine:
             # s právě otevřenou pozicí, která by zůstala bez zajištění
             bezici = overit_bezici(zamer)
 
-            # Zadané úrovně mají přednost, chybějící dodala příprava
-            profit_target = (
-                request.profit_target
-                if request.profit_target is not None
-                else preview.profit_target
-            )
-            stop_loss = request.stop_loss if request.stop_loss is not None else preview.stop_loss
+            # Úrovně z přípravy: zadané beze změny, chybějící dopočtené
+            # a zadané procentem prémie přepočtené na prémii vybraného
+            # kontraktu (i posunutého kvůli riziku)
+            profit_target = preview.profit_target
+            stop_loss = preview.stop_loss
             self._validate(
                 preview.right,
                 request.entry_price,
@@ -1434,6 +1827,26 @@ class FlowEngine:
             quantity = int(request.quantity or preview.quantity)
             if quantity < 1:
                 raise ValueError("Množství opcí musí být alespoň 1 kontrakt.")
+
+            # Riziko na obchod: při tvrdém dodržení (zadání ze souboru) se
+            # obchod, do kterého se nevejde ani nejmenší množství, nezadá
+            # a vyšší ručně zadané množství se sníží na to doporučené.
+            # Ruční formulář jen varuje - rozhodnutí nechává obchodníkovi
+            varovani_rizika = ""
+            if preview.risk_problem and request.enforce_risk:
+                self.log_event(f"{symbol}: obchod nezadán - {preview.risk_problem}")
+                raise ValueError(preview.risk_problem)
+            prekroceni = self._risk_overflow_text(
+                preview.loss_per_contract, quantity, preview.strike
+            )
+            if prekroceni and request.enforce_risk:
+                self.log_event(
+                    f"{symbol}: množství sníženo z {quantity} na {preview.quantity} ks - "
+                    f"{prekroceni}"
+                )
+                quantity = preview.quantity
+            elif prekroceni:
+                varovani_rizika = prekroceni
 
             max_spread = (
                 request.max_spread_pct
@@ -1509,7 +1922,13 @@ class FlowEngine:
                 # úroveň a poměr, kterým se ta druhá dopočítala
                 pt_in_premium=request.pt_in_premium,
                 sl_in_premium=request.sl_in_premium,
-                premium_base=request.premium_base,
+                # Prémie vybraného kontraktu, na kterou příprava procenta
+                # přepočetla; bez procent zůstává hodnota ze zadání
+                premium_base=(
+                    preview.premium_base
+                    if preview.premium_base is not None
+                    else request.premium_base
+                ),
                 primary_level=request.primary_level,
                 # Přepočet po otevření burzy si obchod nese s sebou - dialog,
                 # který ho zadal, může být dávno zavřený
@@ -1525,6 +1944,8 @@ class FlowEngine:
                 sl_to_pt_ratio=preview.sl_to_pt_ratio,
                 expiration=preview.expiration,
                 strike=preview.strike,
+                original_strike=original_strike,
+                enforce_risk=request.enforce_risk,
                 min_tick=preview.min_tick,
                 option_contract=preview.option,
                 underlying_contract=preview.underlying,
@@ -1561,6 +1982,16 @@ class FlowEngine:
                 f"vstup {request.entry_price:g}, PT {flow.level_text('pt')}, "
                 f"SL {flow.level_text('sl')}."
             )
+
+            # Posun strike i překročené riziko se hlásí do logu - v náhledu
+            # je obchodník vidět nemusel
+            if original_strike is not None:
+                self.log_event(
+                    f"{flow.id}: strike posunut z {original_strike:g} na "
+                    f"{preview.strike:g} kvůli riziku na obchod {preview.risk_amount:.0f} USD."
+                )
+            if varovani_rizika:
+                self.log_event(f"{flow.id}: POZOR - {varovani_rizika}")
 
             # Zdroj ceny pro model se hlásí i do logu - v náhledu ho obchodník
             # vidět nemusel, přesto z něj vycházejí dopočítané úrovně
@@ -3059,8 +3490,8 @@ class FlowEngine:
             self._watchdog = asyncio.create_task(self._watch())
 
     async def stop(self) -> None:
-        """Zastaví monitorovací smyčku i jejího hlídače."""
-        for task in (self._task, self._watchdog):
+        """Zastaví monitorovací smyčku, jejího hlídače i hledání strike na pozadí."""
+        for task in (self._task, self._watchdog, *self._risk_tasks.values()):
             if task is None:
                 continue
             task.cancel()
@@ -4307,6 +4738,7 @@ class FlowEngine:
             underlying=flow.underlying_contract,
             option=flow.option_contract,
             min_tick=flow.min_tick,
+            original_strike=flow.original_strike,
         )
 
     def _refresh_after_open(self, flow: Flow) -> bool:
@@ -4373,15 +4805,22 @@ class FlowEngine:
         nákupní ceny, PT v USD a na podkladu zůstává; SL a množství se
         dopočítají stejnými kroky jako při přípravě zadání, příkaz čekající
         v trhu se upraví na místě (stejné orderId) a runner se srovná
-        s automatickou volbou. Spread nad limitem přepočet nezdržuje - stropuje
-        se limitem jako při přípravě; příkaz nad limitem už předtím stáhla
-        _withdraw_on_spread_breach. Dokud chybí kotace, TWS příkaz právě mění
-        nebo není známa velikost účtu, přepočet počká na další pokus.
-        Přepočet po otevření se zapisuje do logu vždy, průběžný jen tehdy,
-        když změnil množství nebo runner. Vrací True, pokud přepočet proběhl.
+        s automatickou volbou. Nevejde-li se do rizika ani nejmenší množství,
+        rozhodne _handle_risk_overflow. Spread nad limitem přepočet nezdržuje
+        - stropuje se limitem jako při přípravě; příkaz nad limitem už
+        předtím stáhla _withdraw_on_spread_breach. Dokud chybí kotace, TWS
+        příkaz právě mění nebo není známa velikost účtu, přepočet počká na
+        další pokus. Přepočet po otevření se zapisuje do logu vždy, průběžný
+        jen tehdy, když změnil množství nebo runner. Vrací True, pokud
+        přepočet proběhl.
         """
         # Bez známé velikosti účtu by množství vyšlo z nulového rizika
         if self.account_size <= 0:
+            return False
+
+        # Běží-li pro obchod hledání vzdálenějšího strike, přepočet počká na
+        # jeho výsledek - jinak by upravoval kontrakt, který se právě mění
+        if flow.id in self._risk_tasks:
             return False
 
         # Příkaz, který TWS teprve přijímá, ruší nebo už plní, se upravovat nesmí
@@ -4398,28 +4837,22 @@ class FlowEngine:
         if cena_podkladu is None or flow.option_spread_pct is None:
             return False
 
+        # Úrovně, množství i riziko stejnými kroky jako při přípravě zadání;
+        # PT v procentech prémie se přepočte na novou odhadovanou nákupní cenu
         preview = self._preview_from_flow(flow, cena_podkladu)
-        used_delta = self._load_option_market(preview, flow.entry_price, flow.max_spread_pct)
-
-        # PT v procentech prémie se odvíjí od ceny opce: totéž procento se
-        # přepočítá z nové odhadované nákupní ceny (stejný základ jako
-        # v dialogu - odhad při vstupu, jinak ASK, nakonec cena pro model).
-        # Procento se vrací z uložené úrovně a ceny, ze které vyšla
-        profit_target = flow.profit_target
-        premie: float | None = None
-        if flow.pt_in_premium and flow.premium_base:
-            premie = (
-                preview.expected_fill_price or preview.option_ask or preview.option_price
-            )
-            if not premie or premie <= 0:
-                return False
-            profit_target = round(flow.profit_target / flow.premium_base * premie, 2)
-
-        self._derive_levels(
-            preview, flow.entry_price, profit_target, None, used_delta, flow.max_spread_pct
-        )
+        vstupy = self._flow_inputs(flow)
+        self._evaluate_contract(preview, vstupy)
+        premie = preview.premium_base if vstupy.procenta is not None else None
+        if vstupy.procenta is not None and not self.premium_of(preview):
+            return False
         if preview.quantity < 1:
             return False
+
+        # Obchod, který se do rizika nevejde, se zruší dřív, než by se mu
+        # zbytečně upravoval příkaz; hledání strike na pozadí naopak nechá
+        # obchod do svého výsledku běžet s přepočtenými úrovněmi
+        if self._handle_risk_overflow(flow, preview):
+            return True
 
         # Zvýšení množství příkazu v trhu průběžným přepočtem je nepovinná
         # úprava. Projde jen tehdy, když by vyšší množství obstálo i s riskem
@@ -4429,8 +4862,11 @@ class FlowEngine:
         # Snížení se posílá vždy - chrání riziko na obchod
         if not po_otevreni and trade is not None and preview.quantity > flow.quantity:
             pasmo = self.cfg.trading.refresh_increase_margin_pct / 100.0
-            s_rezervou = self._quantity_for_risk(
-                preview, flow.entry_price, used_delta, self.risk_amount * (1.0 - pasmo)
+            s_rezervou = calc.suggest_quantity_for_loss(
+                self.risk_amount * (1.0 - pasmo),
+                preview.loss_per_contract,
+                self.cfg.trading.min_quantity,
+                self.cfg.trading.max_quantity,
             )
             if s_rezervou <= flow.quantity or not self._oer_allows(
                 1, flow, "zvýšení množství přepočtem"
@@ -4440,19 +4876,7 @@ class FlowEngine:
         puvodni_pt, puvodni_sl, puvodni_ks = flow.profit_target, flow.stop_loss, flow.quantity
         byl_runner = flow.runner_active
         popis_pt, popis_sl = flow.level_text("pt"), flow.level_text("sl")
-
-        flow.profit_target = profit_target
-        flow.original_profit_target = profit_target
-        flow.stop_loss = preview.stop_loss
-        flow.original_stop_loss = preview.stop_loss
-        flow.quantity = preview.quantity
-        # Nové množství vychází z nového odhadu nákupní ceny - přehled musí
-        # stropovat spread ze stejného základu. Bez odhadu zůstává původní
-        if preview.expected_fill_price is not None:
-            flow.expected_fill_price = preview.expected_fill_price
-        if premie is not None:
-            flow.premium_base = premie
-        self._sync_runner(flow, "po přepočtu")
+        self._apply_preview_levels(flow, preview, "po přepočtu")
 
         # Příkaz v trhu se upraví na místě - odeslání se stejným orderId je
         # modifikace, příkaz se neruší a nevzniká mezera, ve které by vstup
@@ -4475,7 +4899,6 @@ class FlowEngine:
             zmeny.append(f"množství {puvodni_ks} → {flow.quantity} ks")
         if flow.runner_active != byl_runner:
             zmeny.append("runner zapnut" if flow.runner_active else "runner vypnut")
-        self._compute_expected_pnl(flow)
 
         # Průběžný přepočet se opakuje každou půlminutu a PT v procentech
         # prémie se hýbe s každou kotací - do logu jde jen změna množství
@@ -4494,6 +4917,173 @@ class FlowEngine:
             f"{flow.id}: {popis} podle živých kotací - {souhrn}{zaklad}.{vyhrady}"
         )
         return True
+
+    @staticmethod
+    def _flow_inputs(flow: Flow) -> _LevelInputs:
+        """
+        Vstupy posouzení kontraktu čekajícího obchodu pro přepočet i hledání
+        strike na pozadí. Přepočet SL vždy dopočítává z PT podle poměru,
+        procentem prémie se proto přepočítává jen PT.
+        """
+        procenta = (
+            _PremiumLevels(flow.premium_base, True, False)
+            if flow.pt_in_premium and flow.premium_base
+            else None
+        )
+        return _LevelInputs(
+            flow.entry_price, flow.profit_target, None, flow.max_spread_pct, procenta
+        )
+
+    def _apply_preview_levels(self, flow: Flow, preview: Preview, kdy: str) -> None:
+        """
+        Převezme do čekajícího obchodu úrovně, množství a odhad nákupní ceny
+        z náhledu nad jeho kontraktem a srovná podle nich runner a očekávaný
+        výsledek. kdy je popis příležitosti pro log runneru.
+        """
+        flow.profit_target = preview.profit_target
+        flow.original_profit_target = preview.profit_target
+        flow.stop_loss = preview.stop_loss
+        flow.original_stop_loss = preview.stop_loss
+        flow.quantity = preview.quantity
+        # Nové množství vychází z nového odhadu nákupní ceny - přehled musí
+        # stropovat spread ze stejného základu. Bez odhadu zůstává původní
+        if preview.expected_fill_price is not None:
+            flow.expected_fill_price = preview.expected_fill_price
+        if preview.premium_base is not None:
+            flow.premium_base = preview.premium_base
+        self._sync_runner(flow, kdy)
+        self._compute_expected_pnl(flow)
+
+    def _handle_risk_overflow(self, flow: Flow, preview: Preview) -> bool:
+        """
+        Posoudí riziko čekajícího obchodu podle náhledu z přepočtu. Vejde-li
+        se, nic se neděje. Jinak se podle trading.risk_overflow buď na pozadí
+        hledá vzdálenější strike (_restrike_pending), nebo se rovnou řeší
+        neúspěch (_resolve_risk_failure). Vrací True, pokud byl obchod ukončen.
+
+        Obchod, u kterého už se jen varovalo, se znovu neposuzuje, dokud se
+        do rizika zase nevejde - jinak by průběžný přepočet hledal a hlásil
+        totéž každých pár minut.
+        """
+        klic = f"{flow.id}:risk"
+        if not preview.risk_problem:
+            self._warned.discard(klic)
+            return False
+        if klic in self._warned:
+            return False
+
+        if self.cfg.trading.risk_overflow == "restrike":
+            self._risk_tasks[flow.id] = asyncio.create_task(
+                self._restrike_pending(flow, preview)
+            )
+            return False
+        return self._resolve_risk_failure(flow, preview.risk_problem)
+
+    def _resolve_risk_failure(self, flow: Flow, text: str) -> bool:
+        """
+        Čekající obchod se do rizika nevejde a vzdálenější strike nepomohl
+        (nebo se nehledá). Obchod s tvrdým dodržením rizika se zruší i s
+        příkazem v trhu, jinak se jednou varuje do logu. Vrací True, pokud
+        byl obchod ukončen.
+        """
+        if not flow.enforce_risk:
+            self._warned.add(f"{flow.id}:risk")
+            self.log_event(f"{flow.id}: POZOR - {text}")
+            return False
+
+        # Nákup se mohl vyplnit mezi průchody smyčky - pozice se neruší
+        if not self._still_before_entry(flow):
+            return False
+        self.ib.cancel(flow.entry_trade)
+        self._end_before_entry(
+            flow, FlowState.CANCELLED, f"{text} Obchod zrušen před nákupem."
+        )
+        return True
+
+    async def _restrike_pending(self, flow: Flow, preview: Preview) -> None:
+        """
+        Na pozadí hledá pro čekající obchod vzdálenější strike, na kterém se
+        vejde do rizika na obchod, a obchod na něj přesune (_switch_contract).
+        Nenajde-li ho, rozhodne _resolve_risk_failure. Dotazy do TWS trvají
+        sekundy, proto neběží v monitorovací smyčce; ta mezitím obchod dál
+        hlídá a přepočet čeká, dokud hledání neskončí.
+
+        preview je náhled z přepočtu nad dosavadním kontraktem s popisem
+        překročení rizika v risk_problem.
+        """
+        problem = preview.risk_problem
+        try:
+            chain = await self.ib.option_chain(flow.underlying_contract)
+            vyhovujici, duvod = await self._shift_strike_for_risk(
+                preview, chain, self._flow_inputs(flow), []
+            )
+        except Exception as exc:
+            # Selhání dotazu obchod neruší - další přepočet to zkusí znovu
+            log.exception("Hledání vzdálenějšího strike pro %s selhalo.", flow.id)
+            self.log_event(f"{flow.id}: hledání vzdálenějšího strike selhalo ({exc}).")
+        else:
+            if vyhovujici is None:
+                self._resolve_risk_failure(flow, f"{problem} {duvod}")
+            elif not self._still_before_entry(flow):
+                # Obchod mezitím nakoupil, nebo skončil - kontrakt už měnit nelze
+                self.ib.unsubscribe(vyhovujici.option)
+                if flow.state.is_active:
+                    self.log_event(
+                        f"{flow.id}: POZOR - nákup se vyplnil během hledání vzdálenějšího "
+                        f"strike, kontrakt zůstává. {problem}"
+                    )
+            else:
+                self._switch_contract(flow, vyhovujici, problem)
+            self._notify()
+        finally:
+            self._risk_tasks.pop(flow.id, None)
+
+    def _switch_contract(self, flow: Flow, kandidat: Preview, problem: str) -> None:
+        """
+        Přesune čekající obchod na vzdálenější strike z hledání podle rizika:
+        převezme kontrakt, úrovně i množství z náhledu, zruší nákupní příkaz
+        na dosavadním kontraktu a zadá nový. Obchod bez příkazu v trhu
+        (spread nad limitem, chybějící kotace) si ho zadá sám, až to půjde.
+        Výměna stojí dvě zprávy; nepustí-li je rozpočet OER, řeší se jako
+        neúspěch hledání.
+        """
+        mel_prikaz = flow.state == FlowState.ARMED and flow.entry_trade is not None
+        if mel_prikaz and not self._oer_allows(2, flow, "posun strike kvůli riziku"):
+            self.ib.unsubscribe(kandidat.option)
+            self._resolve_risk_failure(
+                flow,
+                f"{problem} Posun na strike {kandidat.strike:g} nelze odeslat - "
+                f"vyčerpán rozpočet zpráv.",
+            )
+            return
+
+        if mel_prikaz:
+            self.ib.cancel(flow.entry_trade)
+        # Obchod přebírá odběr nového kontraktu z hledání, starý uvolní
+        self.ib.unsubscribe(flow.option_contract)
+
+        puvodni = flow.strike
+        flow.option_contract = kandidat.option
+        flow.option_conid = kandidat.option.conId
+        flow.strike = kandidat.strike
+        flow.original_strike = kandidat.original_strike
+        flow.min_tick = kandidat.min_tick
+        flow.entry_trade = None
+        flow.entry_order_id = None
+        flow.option_bid = kandidat.option_bid
+        flow.option_ask = kandidat.option_ask
+        flow.option_spread_pct = kandidat.spread_pct
+        flow.delta = kandidat.delta
+        self._apply_preview_levels(flow, kandidat, "po posunu strike")
+
+        self.log_event(
+            f"{flow.id}: strike posunut z {puvodni:g} na {flow.strike:g} kvůli riziku na "
+            f"obchod - PT {flow.level_text('pt')}, SL {flow.level_text('sl')}, "
+            f"{flow.quantity} ks, ztráta na SL ≈ "
+            f"{flow.quantity * (kandidat.loss_per_contract or 0):.0f} USD."
+        )
+        if mel_prikaz:
+            self._place_entry(flow)
 
     def entry_cross_start(self) -> datetime | None:
         """
@@ -4740,6 +5330,16 @@ class FlowEngine:
             f"{flow.id}: SL navýšen o zaplacený spread {spread:g} USD/ks "
             f"na {flow.level_text('sl')}."
         )
+
+        # Skutečný spread bývá jiný než odhad, se kterým počítalo množství.
+        # Pozice už je otevřená, takže se překročení rizika jen ohlásí
+        prekroceni = self._risk_overflow_text(
+            min(flow.stop_loss, calc.max_option_loss(flow.fill_price, flow.min_tick)),
+            flow.filled_quantity or flow.quantity,
+            flow.strike,
+        )
+        if prekroceni:
+            self.log_event(f"{flow.id}: POZOR - po připočtení zaplaceného spreadu: {prekroceni}")
 
     def _register_fill(self, flow: Flow) -> bool:
         """Zaznamená nákup opce a připraví flow na zadání výstupního příkazu."""

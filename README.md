@@ -137,9 +137,13 @@ projít.
    na kontrakt a obchod, engine i uložený stav dál pracují s USD úplně stejně
    jako u zápisu *na opci [USD/ks]*. Základem přepočtu je **odhadovaná nákupní
    cena** opce, tedy cena v okamžiku, kdy podklad dosáhne vstupní úrovně;
-   náhled ji uvádí jako `základ procent: prémie ≈ 317.00 USD/ks`. Celý přepočet
-   drží jednu jedinou prémii — do USD i zpět do procent — takže si PT a SL
-   navzájem odpovídají, i když příprava nakonec vybere jinak drahý strike.
+   náhled ji uvádí jako `základ procent: prémie ≈ 317.00 USD/ks`. Procenta
+   se převádějí vždy na prémii **kontraktu, který příprava skutečně vybere**
+   — i vzdálenějšího strike hledaného kvůli riziku (viz
+   [Dodržení rizika na obchod](#dodržení-rizika-na-obchod)) — a tatáž prémie
+   pak slouží celému přepočtu, do USD i zpět do procent, takže si PT a SL
+   navzájem odpovídají. Totéž platí při odeslání: založený obchod si nese
+   částky přepočtené na prémii vybraného kontraktu a tuto prémii jako základ.
    Protože se procenta převádějí z ceny opce, kterou aplikace teprve musí
    načíst, sáhne si v tomto režimu do TWS dvakrát — poprvé jen pro odhad ceny
    opce, podruhé už se skutečnými úrovněmi; jakmile odhad pro daný ticker má,
@@ -298,7 +302,9 @@ projít.
    příkaz zrovna mění), se do odstupu počítá.
    Každá úprava příkazu v trhu je zpráva do TWS, která zvyšuje OER.
    Průběžný přepočet proto **snižuje** množství vždy (chrání riziko na
-   obchod), ale **zvyšuje** ho jen tehdy, když by vyšší množství vyšlo
+   obchod; nevejde-li se ani jediný kontrakt, viz
+   [Dodržení rizika na obchod](#dodržení-rizika-na-obchod)), ale **zvyšuje**
+   ho jen tehdy, když by vyšší množství vyšlo
    i z rizika sníženého o pásmo necitlivosti
    `trading.refresh_increase_margin_pct` (výchozí 10 %) a když zvýšení
    dovolí limit OER. Drobný pohyb prémie tak množství nepřehazuje tam
@@ -652,6 +658,10 @@ stejně daleko — v režimech `otm_offset` a `atm` pak dostane přednost ten
 mimo peníze, aby režim dodržel, co slibuje; v režimu `target` rozhoduje jen
 vzdálenost od cíle. Náhradu aplikace hlásí varováním v náhledu.
 
+Nevejde-li se na vybraném strike do rizika na obchod ani jediný kontrakt,
+může aplikace sáhnout po strike **dál od peněz** — viz
+[Dodržení rizika na obchod](#dodržení-rizika-na-obchod).
+
 **Kontrola delty.** Meze `strike.delta_warn_min` a `strike.delta_warn_max`
 (výchozí 0,25 a 0,60) nejsou kritériem výběru, jen kontrolou: vypadne-li
 delta vybrané opce z pásma, náhled upozorní. Nízká delta znamená kontrakt
@@ -661,6 +671,75 @@ Porovnává se absolutní hodnota, protože u PUT je delta záporná, a bere se
 delta **při vstupu** (viz níže). Hodnota `0` příslušnou kontrolu vypne.
 Chybí-li delta úplně, upozorní na to samostatné varování a množství se
 spočítá s náhradní hodnotou `trading.default_delta`.
+
+### Dodržení rizika na obchod
+
+Množství vychází z riskované částky (`account.size × account.risk_pct`)
+a ztráty jednoho kontraktu na SL, zaokrouhluje se dolů a nikdy neklesne
+pod `trading.min_quantity`. U drahé opce ale může ztráta **jediného**
+kontraktu riziko výrazně převýšit: při účtu 6000 USD a 2 % je riziko
+120 USD, AMD CALL za 11,86 se SL 20 % prémie a spreadem ztratí na SL
+přes 280 USD. Dřívější verze takový obchod tiše zadaly s 1 ks; teď o tom
+rozhoduje `trading.risk_overflow`:
+
+| `risk_overflow` | Chování |
+| --- | --- |
+| `restrike` (výchozí) | zkusí vzdálenější, levnější strike; nevejde-li se ani tak, obchod se nezadá, resp. zruší |
+| `cancel` | vzdálenější strike nezkouší, obchod rovnou nezadá, resp. zruší |
+| `allow` | zadá `min_quantity` i přes překročení (dřívější chování) |
+
+Do rizika se počítá i tolerance `trading.risk_tolerance_pct` (výchozí 10 %):
+při riziku 120 USD projde ztráta až 132 USD.
+
+**Vzdálenější strike.** Opce dál od peněz je levnější a má nižší deltu,
+takže ztráta na SL klesá. Aplikace prochází strike za původně vybraným
+(u CALL výš, u PUT níž), nejvýš `strike.risk_max_extra_steps` kroků rastru
+(výchozí 10), a každý ověří živými kotacemi stejně jako vybraný kontrakt.
+Vezme první, na kterém se do rizika vejde aspoň `min_quantity` kontraktů.
+Kontrakt se spreadem nad limitem přeskočí; hledání končí u strike s deltou
+při vstupu pod `strike.risk_min_delta` (výchozí 0,20) — taková opce se
+z pohybu podkladu skoro nezhodnotí a dál je delta ještě nižší. Aby se
+nemuselo ověřovat strike po strike, odhadne aplikace první vhodný modelem
+(implikovaná volatilita vybraného kontraktu, cena a delta každého kandidáta
+při vstupu) a ověřování začne o jeden strike blíž než odhad.
+
+Pomůže to jen tam, kde ztráta na kontrakt závisí na ceně opce:
+
+* **SL v % prémie** — ztráta klesá úměrně prémii; PT i SL se přepočtou
+  na prémii nového kontraktu, procento zůstává (PT 10 % z opce za 4,35
+  je 43,50 USD místo 118,60 USD),
+* **SL na podkladu** — ztráta klesá s deltou,
+* **SL pevnou částkou v USD/ks** se strikem nemění — takový obchod se
+  rovnou nezadá, resp. zruší, a důvod to uvede.
+
+Posun hlásí náhled formuláře i stav řádku v dialogu načtení pozic
+(`Strike posunut z 522.5 na 545 kvůli riziku…`) a provozní log; obchod
+si původní strike pamatuje (`original_strike` v uloženém stavu).
+
+**Kdo se ruší a kdo jen varuje.** Hromadné zadání ze souboru riziko
+dodržuje **tvrdě**: řádek, do jehož rizika se nevejde ani jeden kontrakt,
+se při přípravě odmítne a odškrtne, engine ho nezadá ani při zadání
+z naplánovaného času a vyšší ručně zapsané množství sníží na doporučené.
+Ruční **formulář jen varuje** — náhled ukáže důvod, obchod se zadá
+a do logu jde `POZOR – Riziko na obchod … nelze dodržet`; rozhodnutí
+zůstává na obchodníkovi, ručně zadané množství se nemění.
+
+**Čekající obchod.** Přepočet po otevření burzy i průběžný přepočet
+(viz [Zadání](#jak-aplikace-pracuje)) riziko posuzují znovu — prémie se
+po otevření často pohne. Přestane-li se obchod do rizika vejít, hledá se
+vzdálenější strike **na pozadí** (dotazy do TWS trvají sekundy a monitoring
+ostatních obchodů nesmí stát). Najde-li se, nákupní příkaz na původním
+kontraktu se zruší a zadá se nový na posunutý strike — stojí to dvě zprávy
+do TWS a musí to dovolit limit OER. Nenajde-li se, obchod ze souboru se
+**zruší** i s příkazem v trhu; obchod z formuláře zůstane a do logu se
+jednou zapíše varování (znovu se posoudí, až se do rizika zase vejde).
+Strike se posouvá jen směrem od peněz a zpět se nevrací, ani když prémie
+později klesne — obchod by jinak mezi kontrakty přeskakoval. Vyplní-li se
+nákup během hledání, kontrakt zůstává a log na překročení upozorní.
+
+**Po nákupu** už obchod zrušit nelze. Připočte-li se k SL skutečně
+zaplacený spread a ztráta na SL tím riziko překročí, upozorní na to
+provozní log.
 
 ### Delta při vstupu
 
@@ -1051,6 +1130,16 @@ při přepnutí zamčený otevřenou pozicí), nebo u kterého příprava selhal
 sám nezaškrtne a tlačítko *Zadat* jej odmítne s výzvou k přepočtu — jinak by
 úroveň odešla do trhu ve špatné jednotce.
 
+Riziko na obchod se v dialogu dodržuje **tvrdě** (viz
+[Dodržení rizika na obchod](#dodržení-rizika-na-obchod)): je-li kontrakt
+na jediný kus příliš drahý, příprava zkusí vzdálenější strike a ve sloupci
+*Stav* to uvede (`Strike posunut z … na …`), PT v % prémie se přitom
+přepočte na prémii nového kontraktu. Nevejde-li se ani tak, řádek se
+odmítne a odškrtne s důvodem ve sloupci *Stav* a do trhu nejde. Při
+zadání do trhu engine převezme kontrakt z přípravy řádku a jen ho
+přehodnotí živými kotacemi — hledání vzdálenějšího strike se neopakuje
+a obchod dostane tentýž kontrakt, jaký byl v tabulce.
+
 V obou opčních režimech (USD/ks i % prémie) má smysl zaškrtávátko
 **SL o zaplacený spread dál** — chová se stejně jako v běžném formuláři.
 
@@ -1336,13 +1425,15 @@ Vše podstatné je v `config.yaml` (podrobné komentáře u každé položky):
 * `connection` — spojení s TWS (adresa, port, `client_id`, účet, typ tržních
   dat `market_data_type`, automatické znovupřipojení `auto_reconnect`),
 * `account` — velikost účtu a riskované procento `risk_pct`,
-* `trading` — typ nákupního příkazu (`LMT_ASK` / `MKT` / `LMT_MID`) a jeho
+* `trading` — dodržení rizika na obchod (`risk_overflow`,
+  `risk_tolerance_pct`), typ nákupního příkazu (`LMT_ASK` / `MKT` / `LMT_MID`) a jeho
   průběžný přepočet, typ prodejního příkazu, limit spreadu, jeho výjimka
   pro levné opce a jeho hlídání, poměr SL:PT, výchozí režimy PT a SL, prvotní úroveň, kompenzace
   spreadu, meze množství, runner, chování strike při posunu cíle, doba
   platnosti příkazů, automatické uzavírání před koncem seance a hlídání
   Order Efficiency Ratio (`oer_limit`),
-* `expiration` a `strike` — výběr expirace a strike,
+* `expiration` a `strike` — výběr expirace a strike včetně mezí hledání
+  vzdálenějšího strike kvůli riziku (`risk_max_extra_steps`, `risk_min_delta`),
 * `engine` — časování monitorovací smyčky, čekání na tržní data, kontrola
   pozic bez dozoru a obnova velikosti účtu,
 * `state` — ukládání stavu obchodů,
@@ -1359,7 +1450,8 @@ Testy běží proti náhradě TWS (`tests/fake_ib.py`, společný základ
 v `tests/zaklad.py`) — pokrývají výpočty (`tests/test_calc.py`),
 čtení tržních dat (`tests/test_ib_service.py`) i celý průběh obchodu včetně
 příkazů, jejich podmínek a runneru (`tests/test_engine.py`), režimy PT/SL
-na opci (`tests/test_rezimy.py`), načítání pozic ze
+na opci (`tests/test_rezimy.py`), dodržení rizika na obchod a posun
+strike (`tests/test_riziko.py`), načítání pozic ze
 souboru (`tests/test_import.py`), souhrn obchodního dne
 (`tests/test_report.py`), obnovu po restartu (`tests/test_obnova.py`)
 a hlídání Order Efficiency Ratio (`tests/test_oer.py`).

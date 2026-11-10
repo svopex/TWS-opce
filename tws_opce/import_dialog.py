@@ -954,6 +954,8 @@ class ImportDialog:
 
         pozice = radek.pozice
         try:
+            # Průchod jen kvůli ceně opce - hledání strike podle rizika
+            # by tu běželo zbytečně, posoudí ho až příprava se skutečnými úrovněmi
             odhad = await self.engine.prepare(
                 pozice.symbol,
                 pozice.entry_price,
@@ -964,6 +966,7 @@ class ImportDialog:
                 False,
                 None,
                 self._max_spread(),
+                fit_risk=False,
             )
         except Exception as exc:
             radek.premie = None
@@ -972,8 +975,9 @@ class ImportDialog:
             return None
 
         # Nejlepší je odhad ceny v okamžiku vstupu; bez modelu poslouží
-        # aktuální ASK (nakupuje se u něj), nakonec cena pro model
-        premie = odhad.expected_fill_price or odhad.option_ask or odhad.option_price
+        # aktuální ASK (nakupuje se u něj), nakonec cena pro model - stejný
+        # základ, jakým engine procenta přepočítává
+        premie = self.engine.premium_of(odhad)
         if not premie or premie <= 0:
             radek.premie = None
             radek.kontrakt_label.set_text("-")
@@ -1040,6 +1044,8 @@ class ImportDialog:
 
         pt_on, sl_on = self._rezimy()
         try:
+            # PT z procenta prémie engine přepočte na prémii kontraktu, který
+            # vybere - i vzdálenějšího strike hledaného kvůli riziku
             preview = await self.engine.prepare(
                 radek.pozice.symbol,
                 radek.pozice.entry_price,
@@ -1050,6 +1056,9 @@ class ImportDialog:
                 self._sl_spread(),
                 self._pomer(),
                 self._max_spread(),
+                premium_base=radek.premie,
+                pt_in_premium=bool(radek.premie),
+                sl_in_premium=bool(radek.premie),
             )
         except Exception as exc:
             self._zahod_dopocet(radek)
@@ -1071,6 +1080,11 @@ class ImportDialog:
         radek.kontrakt_label.set_text(
             f"{preview.right_label} {preview.expiration} @ {preview.strike:g}"
         )
+        # PT v procentech prémie se mohlo přepočítat na prémii vybraného
+        # kontraktu; řádek si nese tutéž prémii, aby zadání vyšlo stejně
+        if radek.premie and preview.premium_base:
+            radek.premie = preview.premium_base
+            radek.pt_input.set_value(round(preview.profit_target, 2))
         radek.sl_input.set_value(round(preview.stop_loss, 2))
         radek.qty_input.set_value(preview.quantity)
 
@@ -1095,6 +1109,12 @@ class ImportDialog:
                     f"{preview.right_label} místo {radek.pozice.right_label} - "
                     f"zkontrolujte řádek v souboru.",
                 )
+            return
+
+        # Do rizika na obchod se nevejde ani nejmenší množství, a to ani
+        # na vzdálenějším strike - takový řádek do trhu nesmí
+        if preview.risk_problem:
+            self._zamitni_radek(radek, preview.risk_problem)
             return
 
         # Kontrola propásnutého vstupu podle minutových svíček
@@ -2110,6 +2130,13 @@ class ImportDialog:
                     # obchod téhož tickeru. Se směrem engine takové zadání
                     # odmítne jako propásnutý vstup
                     intended_right=radek.pozice.right,
+                    # Hromadné zadání riziko dodržuje tvrdě: obchod, který se
+                    # do něj nevejde, se nezadá a později zruší
+                    enforce_risk=True,
+                    # Kontrakt z přípravy řádku - engine ho jen přehodnotí
+                    # a hledání vzdálenějšího strike neopakuje
+                    strike=radek.preview.strike if radek.preview else None,
+                    original_strike=radek.preview.original_strike if radek.preview else None,
                 )
                 try:
                     flow = await self.engine.start_flow(request)

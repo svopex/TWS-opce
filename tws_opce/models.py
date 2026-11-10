@@ -396,6 +396,18 @@ class FlowRequest:
     # načtení pozic ze souboru; překročil-li podklad vstup, engine zadání
     # odmítne jako propásnutý vstup. None = nekontrolovat
     entry_cross_since: datetime | None = None
+    # Tvrdé dodržení rizika na obchod (trading.risk_overflow): True = obchod,
+    # do jehož rizika se nevejde ani nejmenší množství, se nezadá (a čekající
+    # se později zruší); ručně zadané vyšší množství se sníží. Tak zadává
+    # hromadné načtení ze souboru. False = jen varovat - ruční formulář
+    enforce_risk: bool = False
+    # Strike, který zadavatel už vybral v náhledu (i posunutý kvůli riziku),
+    # a strike vybraný původně podle konfigurace, byl-li posunut. Engine pak
+    # kontrakt nevybírá znovu, jen ho přehodnotí - hledání vzdálenějšího
+    # strike se neopakuje a obchod dostane kontrakt, jaký byl vidět v náhledu.
+    # None = vybrat podle konfigurace
+    strike: float | None = None
+    original_strike: float | None = None
 
 
 @dataclass
@@ -520,6 +532,13 @@ class Flow:
     option_conid: int = 0
     underlying_conid: int = 0
     min_tick: float = 0.01
+    # Strike vybraný podle konfigurace, pokud ho kvůli riziku na obchod
+    # nahradil vzdálenější (levnější); None = strike se neposouval
+    original_strike: float | None = None
+    # Dodržení rizika na obchod ze zadání - viz FlowRequest.enforce_risk.
+    # Podle něj přepočet čekajícího obchodu, který se do rizika nevejde
+    # ani na vzdálenějším strike, obchod zruší, nebo jen varuje
+    enforce_risk: bool = False
 
     state: FlowState = FlowState.NEW
     message: str = ""

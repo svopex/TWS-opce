@@ -48,10 +48,6 @@ class ZakladTestu(ZakladEnginu):
             setattr(pozadavek, klic, hodnota)
         return await self.engine.start_flow(pozadavek)
 
-    def zaznamy(self, text: str) -> int:
-        """Počet zápisů v provozním logu obsahujících daný text."""
-        return sum(1 for _, zprava in self.engine.events if text in zprava)
-
     def omez_oer(self, limit: float) -> None:
         """
         Nastaví počítadlu OER limit poměru bez volného základu, aby test
@@ -3315,14 +3311,15 @@ class ZakladPrepoctu(ZakladTestu):
         self.cfg.account.size = 50000.0
 
     def burza(self, sekund_po_otevreni: float) -> None:
-        """Podvrhne čas burzy na daný počet sekund od otevření (středa 19. 8. 2026)."""
-        otevreni = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("America/New_York"))
-        self.engine._exchange_now = lambda: otevreni + timedelta(seconds=sekund_po_otevreni)
+        """Podvrhne čas burzy na daný počet sekund od otevření."""
+        self.podvrhni_sekundy_po_otevreni(sekund_po_otevreni)
 
     async def zaloz_v_premii(self, **zmeny):
         """
         Obchod v procentech prémie: PT 9 USD/ks jsou 3 % z prémie 3,00
         (300 USD na kontrakt), SL podle poměru 1:1, přepočet 60 s po otevření.
+        Engine procenta přepočte na prémii vybraného kontraktu, takže obchod
+        drží 3 % z ní, ne pevných 9 USD.
         """
         self.ib.price_underlying = 230.0
         pozadavek = FlowRequest(
@@ -3518,7 +3515,9 @@ class TestPrepoctuPoOtevreni(ZakladPrepoctu):
 
     async def test_pt_v_procentech_premie_se_prepocita_z_nove_ceny(self):
         flow = await self.zaloz_v_premii()
-        self.assertAlmostEqual(flow.stop_loss, 9.0)
+        puvodni_premie = flow.premium_base
+        self.assertAlmostEqual(flow.profit_target, round(3.0 * puvodni_premie, 2))
+        self.assertAlmostEqual(flow.stop_loss, flow.profit_target)
 
         # Opce zdražila - stejná tři procenta znamenají větší částku
         self.ib.price_bid = 4.00
@@ -3527,7 +3526,7 @@ class TestPrepoctuPoOtevreni(ZakladPrepoctu):
         await self.engine._tick()
 
         self.assertTrue(flow.refresh_after_open_done)
-        self.assertGreater(flow.premium_base, 3.0)
+        self.assertGreater(flow.premium_base, puvodni_premie)
         self.assertAlmostEqual(flow.profit_target, round(3.0 * flow.premium_base, 2))
         self.assertAlmostEqual(flow.original_profit_target, flow.profit_target)
         self.assertAlmostEqual(flow.stop_loss, round(flow.profit_target * 1.0, 2))
@@ -3567,7 +3566,7 @@ class TestPrepoctuPoOtevreni(ZakladPrepoctu):
     async def test_runner_pred_nakupem_se_prepocita_na_nove_urovne(self):
         flow = await self.zaloz_v_premii()
         await self.engine.set_runner(flow.id, 2.0)
-        self.assertAlmostEqual(flow.runner_profit_target, 18.0)
+        self.assertAlmostEqual(flow.runner_profit_target, round(flow.profit_target * 2, 2))
 
         self.ib.price_bid = 4.00
         self.ib.price_ask = 4.10

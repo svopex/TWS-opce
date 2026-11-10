@@ -619,6 +619,11 @@ class TestZadaniDoTrhu(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(zadani.pt_on_underlying)
         self.assertFalse(zadani.sl_on_underlying)
 
+    async def test_import_riziko_dodrzuje_tvrde(self):
+        # Obchod ze souboru, který se do rizika nevejde, engine nezadá
+        await self.zadej(self.radek())
+        self.assertTrue(self.zadani[0].enforce_risk)
+
     async def test_obchod_ukonceny_pri_zadani_dialog_nezablokuje(self):
         # Obchod odmítnutý rušicím oknem je i s důvodem v monitoringu,
         # dialog proto po dávce zavře stejně jako po čistém zadání
@@ -975,6 +980,16 @@ class TestKontrolySvicekVDialogu(ZakladEnginu):
         self.assertTrue(self.radek.stav_label.text.startswith("Připraveno"))
         self.assertIn("Kontrola svíček se nezdařila", self.radek.stav_label.text)
         self.assertTrue(self.dialog._pripraveno(self.radek))
+
+    async def test_radek_nad_riziko_se_odmitne(self):
+        # PT i SL 300 USD na kontrakt proti riziku 50 USD: pevná částka se
+        # vzdálenějším strike nezmenší, řádek do trhu nesmí
+        self.dialog.usd_input = Pole(300.0)
+        await self.dialog._priprav_radek(self.radek)
+        self.assertIn("nelze dodržet", self.radek.stav_label.text)
+        self.assertIn("pevná částka", self.radek.stav_label.text)
+        self.assertFalse(self.radek.vybrano.value)
+        self.assertFalse(self.dialog._pripraveno(self.radek))
 
 
 class TestMinimumProRunner(unittest.TestCase):

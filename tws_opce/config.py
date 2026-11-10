@@ -28,6 +28,8 @@ PRIMARY_LEVELS = ("pt", "sl")
 EXPIRATION_MODES = ("nearest", "fixed")
 # Povolené režimy výběru strike ceny opčního kontraktu
 STRIKE_MODES = ("otm_offset", "atm", "target")
+# Co udělat, když se ani nejmenší množství nevejde do rizika na obchod
+RISK_OVERFLOW_MODES = ("restrike", "cancel", "allow")
 # Povolené režimy zadání cíle v dialogu načtení pozic ze souboru. Tytéž
 # hodnoty nesou konstanty REZIM_* v import_dialog, kde se přepínač staví
 IMPORT_PT_MODES = ("pct", "usd", "premium")
@@ -98,6 +100,18 @@ class TradingConfig:
     risk_free_rate_pct: float = 4.0
     min_quantity: int = 1
     max_quantity: int = 100
+    # Co udělat, když se do rizika na obchod nevejde ani min_quantity
+    # kontraktů (ztráta jednoho kontraktu na SL je větší než riskovaná částka):
+    #   restrike = zkusit vzdálenější, levnější strike (viz strike.risk_*);
+    #              nevejde-li se ani tak, obchod ze souboru se nezadá,
+    #              resp. čekající obchod se zruší
+    #   cancel   = vzdálenější strike nezkoušet, rovnou nezadat, resp. zrušit
+    #   allow    = zadat min_quantity i přes překročení rizika (dřívější chování)
+    # Ruční zadání z formuláře se nikdy neruší - náhled i log jen varují
+    risk_overflow: str = "restrike"
+    # O kolik procent smí ztráta na SL riskovanou částku překročit, aby se
+    # obchod ještě považoval za vejitý do rizika
+    risk_tolerance_pct: float = 10.0
     exchange: str = "SMART"
     currency: str = "USD"
     tif: str = "GTC"
@@ -301,6 +315,11 @@ class StrikeConfig:
     # z pohybu podkladu skoro nezhodnotí. Nula obě kontroly vypíná.
     delta_warn_min: float = 0.25
     delta_warn_max: float = 0.60
+    # Hledání vzdálenějšího strike kvůli riziku (trading.risk_overflow =
+    # restrike): o kolik kroků rastru za původně vybraný strike smí odejít
+    # a nejnižší delta při vstupu, kterou posunutý strike ještě smí mít
+    risk_max_extra_steps: int = 10
+    risk_min_delta: float = 0.20
 
 
 @dataclass
@@ -583,6 +602,13 @@ def validate_config(cfg: AppConfig) -> None:
             problems.append(f"strike.{nazev} musí ležet mezi 0 a 1, nalezeno {hodnota:g}")
     if 0.0 < cfg.strike.delta_warn_max < cfg.strike.delta_warn_min:
         problems.append("strike.delta_warn_max nesmí být menší než strike.delta_warn_min")
+    if cfg.strike.risk_max_extra_steps < 0:
+        problems.append("strike.risk_max_extra_steps nesmí být záporné")
+    if not 0.0 <= cfg.strike.risk_min_delta < 1.0:
+        problems.append(
+            f"strike.risk_min_delta musí ležet v intervalu [0, 1), "
+            f"nalezeno {cfg.strike.risk_min_delta:g}"
+        )
 
     if cfg.account.size < 0:
         problems.append("account.size nesmí být záporná (0 = převzít z TWS)")
@@ -618,6 +644,13 @@ def validate_config(cfg: AppConfig) -> None:
         problems.append("trading.min_quantity musí být alespoň 1")
     if cfg.trading.max_quantity < cfg.trading.min_quantity:
         problems.append("trading.max_quantity nesmí být menší než trading.min_quantity")
+    if cfg.trading.risk_overflow not in RISK_OVERFLOW_MODES:
+        problems.append(
+            f"trading.risk_overflow musí být jedna z {RISK_OVERFLOW_MODES}, "
+            f"nalezeno '{cfg.trading.risk_overflow}'"
+        )
+    if cfg.trading.risk_tolerance_pct < 0:
+        problems.append("trading.risk_tolerance_pct nesmí být záporné")
     if cfg.expiration.min_dte < 0:
         problems.append("expiration.min_dte nesmí být záporné")
     if cfg.connection.market_data_type not in (1, 2, 3, 4):

@@ -207,26 +207,24 @@ def suggest_quantity_for_loss(
     return max(min_quantity, min(qty, max_quantity))
 
 
-def suggest_quantity(
-    risk_amount: float,
-    entry_price: float,
-    stop_loss: float,
-    delta: float,
-    min_quantity: int = 1,
-    max_quantity: int = 100,
-) -> int:
+def underlying_loss(entry_price: float, stop_loss: float, delta: float) -> float:
     """
-    Doporučené množství opčních kontraktů při SL zadaném na podkladu.
-    Odhadovaná ztráta na 1 kontrakt = pohyb podkladu ke SL * |delta| * multiplikátor.
+    Odhad ztráty jednoho opčního kontraktu v USD při SL zadaném na podkladu:
+    pohyb podkladu ke SL krát |delta| krát multiplikátor.
     """
-    move = abs(entry_price - stop_loss)
-    d = abs(delta)
-    if move <= 0 or d <= 0:
-        return min_quantity
+    return abs(entry_price - stop_loss) * abs(delta) * OPTION_MULTIPLIER
 
-    return suggest_quantity_for_loss(
-        risk_amount, move * d * OPTION_MULTIPLIER, min_quantity, max_quantity
-    )
+
+def fits_risk(
+    risk_amount: float, loss_per_contract: float, quantity: int, tolerance_pct: float = 0.0
+) -> bool:
+    """
+    True, pokud se `quantity` kontraktů se ztrátou `loss_per_contract` USD
+    na kontrakt vejde do riskované částky zvětšené o toleranci v procentech.
+    Malá rezerva pohltí zaokrouhlení na centy.
+    """
+    strop = risk_amount * (1.0 + tolerance_pct / 100.0)
+    return quantity * loss_per_contract <= strop + 0.005
 
 
 def runner_quantity(quantity: int, runner_pct: float) -> int:
@@ -346,16 +344,28 @@ def otm_strike(strikes: list[float], entry: float, right: str, steps: int) -> fl
 
     # Kandidáti mimo peníze seřazení od vstupu dál: u CALL vzestupně nad
     # vstupem, u PUT sestupně pod ním
-    if right == "C":
-        kandidati = [s for s in serazene if s > entry]
-    else:
-        kandidati = [s for s in reversed(serazene) if s < entry]
+    kandidati = strikes_beyond(serazene, entry, right, len(serazene))
 
     # Celý řetězec je na opačné straně - zbývá nejbližší strike ke vstupu
     if not kandidati:
         return nearest_strike(serazene, entry)
 
     return kandidati[min(steps, len(kandidati)) - 1]
+
+
+def strikes_beyond(strikes: list[float], strike: float, right: str, count: int) -> list[float]:
+    """
+    Nejvýše `count` strike cen za zadaným strikem směrem od peněz, seřazených
+    od nejbližšího: u CALL vzestupně nad ním, u PUT sestupně pod ním. Opce
+    na nich je levnější a má nižší deltu, takže ztráta na SL klesá.
+    """
+    if count <= 0:
+        return []
+    if right == "C":
+        dal = sorted(s for s in strikes if s > strike)
+    else:
+        dal = sorted((s for s in strikes if s < strike), reverse=True)
+    return dal[:count]
 
 
 def days_to_expiry(expiration: str, today: date | None = None) -> int:

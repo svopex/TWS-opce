@@ -1478,9 +1478,19 @@ class TradingUI:
 
         premie = self._premie_pro(symbol)
         if premie is None:
-            # Hrubý první průchod jen kvůli ceně opce; jeho úrovně se zahodí
+            # Hrubý první průchod jen kvůli ceně opce; jeho úrovně se zahodí,
+            # proto se v něm ani nehledá strike podle rizika
             odhad = await self.engine.prepare(
-                symbol, entry, pt, sl, pt_on, sl_on, sl_spread, pomer, self._max_spread()
+                symbol,
+                entry,
+                pt,
+                sl,
+                pt_on,
+                sl_on,
+                sl_spread,
+                pomer,
+                self._max_spread(),
+                fit_risk=False,
             )
             self._zapamatuj_premii(odhad)
             premie = self._premie_pro(symbol)
@@ -1488,15 +1498,28 @@ class TradingUI:
                 self.premium_used = None
                 return odhad
 
-        # Od téhle chvíle platí pro celý přepočet jediná prémie - do USD i zpět
-        # do procent. Příprava sice může vybrat jiný strike (a s ním jinak
-        # drahou opci), ale úrovně se podle něj už nepřepočítávají; jinak by PT
-        # vycházelo z jedné ceny opce a SL se do procent vracelo podle druhé
+        # Procenta se převedou na USD z odhadnuté prémie a engine je přepočte
+        # na prémii kontraktu, který skutečně vybere (může to být i vzdálenější
+        # strike hledaný kvůli riziku). Tu pak formulář drží pro celý přepočet
+        # - do USD i zpět do procent - aby PT a SL vycházely z jedné ceny opce
         self.premium_used = premie
         pt_usd, sl_usd = self._urovne_v_usd(pt, sl, premie)
         preview = await self.engine.prepare(
-            symbol, entry, pt_usd, sl_usd, pt_on, sl_on, sl_spread, pomer, self._max_spread()
+            symbol,
+            entry,
+            pt_usd,
+            sl_usd,
+            pt_on,
+            sl_on,
+            sl_spread,
+            pomer,
+            self._max_spread(),
+            premium_base=premie,
+            pt_in_premium=pt_mode == MODE_PREMIUM,
+            sl_in_premium=sl_mode == MODE_PREMIUM,
         )
+        if preview.premium_base:
+            self.premium_used = preview.premium_base
         self._zapamatuj_premii(preview)
         return preview
 

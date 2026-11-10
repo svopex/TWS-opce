@@ -1775,10 +1775,11 @@ class TestJednotkyZadani(ZakladRezimu):
 
         self.assertTrue(flow.pt_in_premium)
         self.assertTrue(flow.sl_in_premium)
-        self.assertAlmostEqual(flow.premium_base, 3.00)
-        # Úrovně samotné zůstávají v USD na kontrakt - procento je jen jednotka zadání
-        self.assertAlmostEqual(flow.profit_target, 60.0)
-        self.assertAlmostEqual(flow.stop_loss, 30.0)
+        # Úrovně zůstávají v USD na kontrakt, jen se přepočtou na prémii
+        # vybraného kontraktu - podíl z ní (20 %, resp. 10 %) se zachová
+        self.assertAlmostEqual(flow.premium_base, flow.expected_fill_price)
+        self.assertAlmostEqual(flow.profit_target / flow.premium_base, 20.0, delta=0.01)
+        self.assertAlmostEqual(flow.stop_loss / flow.premium_base, 10.0, delta=0.01)
 
     async def test_zadani_v_usd_zadnou_premii_nedrzi(self):
         flow = await self.zaloz(False, False, 60.0, 30.0)
@@ -1821,7 +1822,7 @@ class TestJednotkyZadani(ZakladRezimu):
 
         self.assertTrue(obnovene.pt_in_premium)
         self.assertTrue(obnovene.sl_in_premium)
-        self.assertAlmostEqual(obnovene.premium_base, 3.00)
+        self.assertAlmostEqual(obnovene.premium_base, flow.premium_base)
 
     async def test_prvotni_uroven_i_pomer_prezijou_ulozeni_stavu(self):
         self.cfg.trading.sl_to_pt_ratio = 1.0

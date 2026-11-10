@@ -194,20 +194,25 @@ class TestMnozstvi(unittest.TestCase):
 
     def test_vypocet_podle_delty(self):
         # Riziko 500 USD, pohyb 5 USD, delta 0,5 -> ztráta 250 USD na kontrakt -> 2 ks
-        self.assertEqual(calc.suggest_quantity(500.0, 105.0, 100.0, 0.5), 2)
+        ztrata = calc.underlying_loss(105.0, 100.0, 0.5)
+        self.assertAlmostEqual(ztrata, 250.0)
+        self.assertEqual(calc.suggest_quantity_for_loss(500.0, ztrata), 2)
 
     def test_zaokrouhluje_se_dolu(self):
         # 50 / (1 * 0,3 * 100) = 1,67 -> 1 ks
-        self.assertEqual(calc.suggest_quantity(50.0, 105.0, 104.0, 0.3), 1)
+        ztrata = calc.underlying_loss(105.0, 104.0, 0.3)
+        self.assertEqual(calc.suggest_quantity_for_loss(50.0, ztrata), 1)
 
     def test_zaporna_delta_putu_se_bere_v_absolutni_hodnote(self):
-        self.assertEqual(calc.suggest_quantity(500.0, 105.0, 100.0, -0.5), 2)
+        self.assertAlmostEqual(calc.underlying_loss(105.0, 100.0, -0.5), 250.0)
 
     def test_horni_mez_se_dodrzi(self):
-        self.assertEqual(calc.suggest_quantity(1_000_000.0, 105.0, 100.0, 0.5, 1, 10), 10)
+        ztrata = calc.underlying_loss(105.0, 100.0, 0.5)
+        self.assertEqual(calc.suggest_quantity_for_loss(1_000_000.0, ztrata, 1, 10), 10)
 
     def test_nulovy_pohyb_vraci_minimum(self):
-        self.assertEqual(calc.suggest_quantity(500.0, 100.0, 100.0, 0.5), 1)
+        ztrata = calc.underlying_loss(100.0, 100.0, 0.5)
+        self.assertEqual(calc.suggest_quantity_for_loss(500.0, ztrata), 1)
 
 
 class TestVelikostiRunneru(unittest.TestCase):
@@ -512,13 +517,6 @@ class TestUrovneNaOpci(unittest.TestCase):
         self.assertEqual(calc.suggest_quantity_for_loss(50.0, 1000.0), 1)
         self.assertEqual(calc.suggest_quantity_for_loss(50.0, 0.0), 1)
         self.assertEqual(calc.suggest_quantity_for_loss(5000.0, 1.0, max_quantity=100), 100)
-
-    def test_mnozstvi_pres_deltu_odpovida_obecnemu_vzorci(self):
-        # Pohyb 3 body * delta 0,5 * 100 = 150 USD na kontrakt
-        self.assertEqual(
-            calc.suggest_quantity(600.0, 232.0, 229.0, 0.5),
-            calc.suggest_quantity_for_loss(600.0, 150.0),
-        )
 
     def test_inverze_ceny_opce_vrati_puvodni_podklad(self):
         # Cena opce při podkladu S* a zpět musí dát S*

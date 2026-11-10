@@ -76,6 +76,8 @@ connection:
 #   množství           = riskovaná částka / ztráta na kontrakt (zaokrouhleno dolů)
 #
 # Množství je pouze návrh — ve formuláři jej lze kdykoliv přepsat.
+# Nevejde-li se do rizika ani jediný kontrakt, rozhoduje trading.risk_overflow
+# (vzdálenější strike, nebo obchod nezadat).
 # -----------------------------------------------------------------------------
 account:
   # Velikost obchodního účtu v USD, ze které se počítá riskovaná částka.
@@ -194,6 +196,27 @@ trading:
   # proti nesmyslnému návrhu při chybných vstupech.
   min_quantity: 1
   max_quantity: 100
+
+  # Co udělat, když se do rizika na obchod nevejde ani min_quantity kontraktů
+  # - typicky drahá opce, u které jediný kontrakt ztratí na SL víc, než
+  # dovoluje account.risk_pct (při účtu 6000 USD a 2 % třeba SL 280 USD
+  # proti riziku 120 USD):
+  #   restrike = zkusit vzdálenější, levnější strike (meze viz
+  #              strike.risk_max_extra_steps a strike.risk_min_delta);
+  #              nevejde-li se ani tak, obchod ze souboru se nezadá,
+  #              resp. čekající obchod se zruší
+  #   cancel   = vzdálenější strike nezkoušet, rovnou nezadat, resp. zrušit
+  #   allow    = zadat min_quantity i přes překročení rizika (dřívější chování)
+  # Vzdálenější strike pomůže, jen když ztráta na kontrakt závisí na ceně
+  # opce: SL v % prémie nebo SL na podkladu (přes deltu). SL zadaný pevnou
+  # částkou v USD na kontrakt se strikem nemění - takový obchod se rovnou
+  # nezadá. Ruční zadání z formuláře se nikdy neruší, náhled i log jen varují.
+  risk_overflow: restrike
+
+  # O kolik procent smí ztráta na SL riskovanou částku překročit, aby se
+  # obchod ještě považoval za vejitý do rizika. Při riziku 120 USD a 10 %
+  # projde ztráta až 132 USD.
+  risk_tolerance_pct: 10.0
 
   # Burza pro směrování příkazů a pro vyhodnocení cenových podmínek.
   # SMART = automatické směrování Interactive Brokers.
@@ -528,6 +551,19 @@ strike:
   # i doporučené množství kontraktů. Náhled ukazuje obě delty vedle sebe.
   delta_warn_min: 0.25
   delta_warn_max: 0.60
+
+  # Hledání vzdálenějšího strike, když se kontrakt nevejde do rizika
+  # (trading.risk_overflow: restrike). Hledá se jen směrem od peněz
+  # (u CALL výš, u PUT níž), protože tam je opce levnější a ztráta na SL
+  # menší. Posunutý strike se už nevrací zpět, ani když prémie později
+  # klesne - obchod by jinak mezi kontrakty přeskakoval.
+  #
+  # O kolik kroků rastru za původně vybraný strike smí hledání odejít.
+  risk_max_extra_steps: 10
+  # Nejnižší delta při vstupu, kterou posunutý strike ještě smí mít. Opce
+  # s nižší deltou se z pohybu podkladu skoro nezhodnotí - takový obchod
+  # se raději nezadá, resp. zruší.
+  risk_min_delta: 0.20
 
 
 # -----------------------------------------------------------------------------

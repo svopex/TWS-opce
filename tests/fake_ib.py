@@ -64,6 +64,10 @@ class FakeIBService(IBService):
         self.positions_unavailable: bool = False
         # Strike ceny, které řetězec nabízí, ale kontrakt pro ně v TWS neexistuje
         self.unavailable_strikes: set[float] = set()
+        # Kotace opcí podle strike (BID, ASK) - test jimi odliší levnější
+        # vzdálenější strike. Opce se zapsaným strikem dostane vlastní conId;
+        # ostatní sdílí OPTION_CONID a kotace price_bid / price_ask
+        self.strike_quotes: dict[float, tuple[float, float]] = {}
         # Počet odběratelů tržních dat podle conId - testy tak odhalí odběr,
         # který se po chybě nebo zrušení přípravy neuvolnil
         self.subscribed: dict[int, int] = {}
@@ -160,10 +164,16 @@ class FakeIBService(IBService):
                 f"Opční kontrakt {symbol} {expiration} {right} {strike:g} není v TWS dostupný."
             )
         option = Option(symbol, expiration, strike, right, "SMART", currency="USD")
-        option.conId = OPTION_CONID
+        option.conId = self.option_conid(strike)
         option.multiplier = "100"
         details = ContractDetails(contract=option, minTick=0.05)
         return option, details
+
+    def option_conid(self, strike: float) -> int:
+        """conId opce: vlastní pro strike s kotacemi podle strike, jinak společný."""
+        if strike in self.strike_quotes:
+            return OPTION_CONID + int(round(strike * 100))
+        return OPTION_CONID
 
     # --- tržní data ---
 
@@ -209,6 +219,8 @@ class FakeIBService(IBService):
 
         ticker.bid = NAN if self.price_bid is None else self.price_bid
         ticker.ask = NAN if self.price_ask is None else self.price_ask
+        if contract.strike in self.strike_quotes and contract.conId != OPTION_CONID:
+            ticker.bid, ticker.ask = self.strike_quotes[contract.strike]
         ticker.last = NAN if self.price_last is None else self.price_last
         ticker.close = NAN if self.price_close is None else self.price_close
         if self.greek_delta is not None:

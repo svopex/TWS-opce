@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -89,6 +89,15 @@ class ZakladEnginu(unittest.IsolatedAsyncioTestCase):
         self.engine._exchange_now = lambda: datetime(
             rok, mesic, den, hodina, minuta, tzinfo=ZoneInfo("America/New_York")
         )
+
+    def podvrhni_sekundy_po_otevreni(self, sekund: float) -> None:
+        """Podvrhne čas burzy na daný počet sekund od otevření (středa 19. 8. 2026)."""
+        otevreni = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("America/New_York"))
+        self.engine._exchange_now = lambda: otevreni + timedelta(seconds=sekund)
+
+    def zaznamy(self, text: str) -> int:
+        """Počet zápisů v provozním logu obsahujících daný text."""
+        return sum(1 for _, zprava in self.engine.events if text in zprava)
 
 
 class ZakladSeStavem(unittest.IsolatedAsyncioTestCase):
