@@ -201,8 +201,7 @@ class TradingConfig:
     # a okamžik přepočtu čekajících obchodů po otevření (import.refresh_after_open)
     exchange_open_time: str = "09:30"
     # Čas zavření burzy ve formátu HH:MM (v časové zóně burzy).
-    # Zkrácené obchodní dny (např. před svátky) zná jen zadání po otevření
-    # trhu (import.plan_trading_days_only); uzavírání pozic se jimi neřídí.
+    # Zkrácené obchodní dny (např. před svátky) aplikace nezná.
     exchange_close_time: str = "16:00"
 
     @property
@@ -278,12 +277,6 @@ class ImportConfig:
     auto_load_time: str = "09:15"
     # Adresář se soubory zadání dne; ~ znamená domovský adresář
     auto_load_dir: str = "~/Tmp"
-    # Zadání po otevření trhu (tlačítko v dialogu i načtení podle
-    # konfigurace) jen v řádný obchodní den: o víkendu, ve svátek burzy,
-    # ve zkrácený obchodní den ani v americký bank holiday neproběhne.
-    # Svátky a zkrácené dny se ověřují v obchodních hodinách z TWS, bank
-    # holidays podle pravidel Federal Reserve. Ruční zadání se netýká
-    plan_trading_days_only: bool = True
 
 
 @dataclass

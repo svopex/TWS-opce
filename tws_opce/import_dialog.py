@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -168,15 +168,12 @@ def fmt(value: float | None, digits: int = 2, suffix: str = "") -> str:
     return f"{cislo_text(value, digits)}{suffix}"
 
 
-def neobchodni_den(den: date, duvod: str) -> str:
-    """
-    Věta o dni, kdy naplánované zadání neobchoduje - sdílí ji zapnutí plánu
-    i jeho spuštění, aby hlášky zněly stejně.
-
-    den   - den, na který plán míří (zóna burzy)
-    duvod - důvod z FlowEngine.non_trading_reason či verify_trading_day
-    """
-    return f"{den:%d.%m.%Y} se neobchoduje - {duvod}."
+# Popis souboru, který v daný den obchodování zakazuje (Options -> trading:
+# disabled) - sdílí ho popisek nad tabulkou i hlášky o načtení
+ZAKAZ_OBCHODOVANI = (
+    f"soubor zakazuje obchodování ({importer.OPTIONS_KEY} → "
+    f"{importer.OPTION_TRADING}: {importer.TRADING_DISABLED})"
+)
 
 
 @dataclass
@@ -502,6 +499,12 @@ class ImportDialog:
             return
         self._nacti_pozice(vysledek, soubor.name)
 
+        if not vysledek.trading_enabled:
+            self._oznam(
+                f"Pozice ze souboru {soubor.name} se nenačetly - {ZAKAZ_OBCHODOVANI}.",
+                type="warning",
+            )
+            return
         if not vysledek.positions:
             self._oznam("V souboru není žádná použitelná položka.", type="warning")
             return
@@ -517,11 +520,21 @@ class ImportDialog:
         souboru v okně i načtení podle konfigurace. Výsledek hlásí volající,
         každý po svém.
 
+        Soubor, který obchodování zakazuje (Options -> trading: disabled),
+        nemá ani jednu pozici (viz importer.parse_positions), tabulka tedy
+        zůstane prázdná. Bez řádků nejde nic zadat ručně
+        ani naplánovat, nová prázdná tabulka zruší i plán zapnutý nad
+        předchozím souborem a uložený stav to stejně vrátí po restartu.
+
         vysledek - rozebraný soubor se zadáním dne
         nazev    - jméno souboru pro popisek nad tabulkou
         """
         self.nazev_souboru = nazev
-        self.soubor_label.set_text(f"{nazev} – {len(vysledek.positions)} pozic k zadání")
+        if vysledek.trading_enabled:
+            popis = f"{len(vysledek.positions)} pozic k zadání"
+        else:
+            popis = ZAKAZ_OBCHODOVANI
+        self.soubor_label.set_text(f"{nazev} – {popis}")
         self._vykresli_tabulku(vysledek.positions)
 
         if vysledek.warnings:
@@ -1428,6 +1441,10 @@ class ImportDialog:
         posledni = nacitani.get("posledni")
         self.nacitani_posledni = datetime.fromisoformat(posledni) if posledni else None
 
+        # Popisek souboru se obnovuje i bez řádků - soubor, který obchodování
+        # zakazuje, tabulku nemá a právě popisek říká proč
+        self.nazev_souboru = str(obsah.get("nazev_souboru") or "")
+        self.soubor_label.set_text(str(obsah.get("soubor_text") or ""))
         zaznamy = obsah.get("radky") or []
         if not zaznamy:
             return
@@ -1440,8 +1457,6 @@ class ImportDialog:
             )
             for zaznam in zaznamy
         ]
-        self.nazev_souboru = str(obsah.get("nazev_souboru") or "")
-        self.soubor_label.set_text(str(obsah.get("soubor_text") or ""))
         self._vykresli_tabulku(pozice)
         varovani = str(obsah.get("varovani") or "")
         self.warning_label.set_text(varovani)
@@ -1669,8 +1684,9 @@ class ImportDialog:
         otevření trhu s uplynulou prodlevou by plán zadal do trhu hned po
         stisku, což od tlačítka se slovem "po otevření" nikdo nečeká -
         v takové chvíli má obchodník po ruce Přepočítat a Zadat vybrané
-        pozice do trhu a udělá totéž vědomě. Nezapne se ani na den, o kterém
-        je už známo, že se neobchoduje (import.plan_trading_days_only).
+        pozice do trhu a udělá totéž vědomě. Zda se v daný den obchoduje,
+        rozhoduje soubor (Options -> trading) - soubor se zákazem nedá do
+        tabulky žádnou pozici, takže plán nad ním zapnout nejde.
         """
         if not self.radky:
             return "Není načtena žádná pozice ze souboru."
@@ -1693,14 +1709,6 @@ class ImportDialog:
                 f"trh je otevřený už {format_countdown(uplynulo)}. Použijte "
                 f"Přepočítat a Zadat vybrané pozice do trhu."
             )
-        # Plán obchoduje jen v řádný obchodní den. Den, na který míří, se
-        # tu posoudí podle dosud známých obchodních hodin z TWS - rozhodne
-        # až ověření těsně před zadáním (viz _spust_plan)
-        if self.cfg.import_.plan_trading_days_only:
-            den = self._den_planu()
-            duvod = self.engine.non_trading_reason(den)
-            if duvod:
-                return neobchodni_den(den, duvod)
 
         self.plan_prodleva = prodleva
         self.plan_aktivni = True
@@ -1723,14 +1731,6 @@ class ImportDialog:
             type="positive",
         )
         return None
-
-    def _den_planu(self) -> date:
-        """
-        Den (v zóně burzy), na jehož otevření trhu plán míří: během seance
-        dnešek, jinak den nejbližšího otevření.
-        """
-        do_otevreni = self.engine.market_open_seconds() or 0.0
-        return (self._ted() + timedelta(seconds=do_otevreni)).date()
 
     def _tik_planu(self) -> None:
         """
@@ -1815,21 +1815,9 @@ class ImportDialog:
         Je to táž dvojice kroků jako ruční Přepočítat a Zadat vybrané pozice
         do trhu, včetně jejich kontrol - obchod tedy vznikne přesně jako
         z ruky. Selhání se ohlásí a režim se v každém případě vypne, aby
-        se dávka po chybě neopakovala. Ve dni, kdy se neobchoduje (víkend,
-        svátek, zkrácený obchodní den, bank holiday), se nezadá nic.
+        se dávka po chybě neopakovala.
         """
         try:
-            # Těsně před zadáním se den ověří proti čerstvým obchodním hodinám
-            # z TWS - plán zapnutý dřív o svátku či zkráceném dni vědět nemusel
-            if self.cfg.import_.plan_trading_days_only:
-                den = self._ted().date()
-                duvod = await self.engine.verify_trading_day(den)
-                if duvod:
-                    self._trvala_hlaska(
-                        "Naplánované zadání pozic ze souboru neproběhlo: "
-                        + neobchodni_den(den, duvod)
-                    )
-                    return
             await self._priprav_vse()
             await self._zadej()
         except Exception as exc:
@@ -1962,6 +1950,8 @@ class ImportDialog:
         Načte dnešní soubor podle konfigurace a zapne naplánované zadání po
         otevření trhu. Pokus se poznamená předem, takže selhání (chybějící
         či vadný soubor) se ohlásí jednou a týž nastavený čas se neopakuje.
+        Soubor, který obchodování zakazuje (Options -> trading: disabled),
+        plán nezapne.
         """
         self.nacitani_posledni = ted = self._ted()
         cesta = self._soubor_dne(ted)
@@ -1981,6 +1971,16 @@ class ImportDialog:
             self._trvala_hlaska(f"Soubor {cesta} se podle konfigurace nepodařilo načíst: {exc}")
             return
         self._nacti_pozice(vysledek, cesta.name)
+        # Den bez obchodování určil soubor - nejde o chybu, takže stačí
+        # záznam v průběhu a běžná hláška místo trvalé
+        if not vysledek.trading_enabled:
+            zprava = (
+                f"Načten soubor {cesta} podle konfigurace - {ZAKAZ_OBCHODOVANI}, "
+                "zadání po otevření trhu se nezapnulo."
+            )
+            self.engine.log_event(zprava)
+            self._oznam(zprava, type="info")
+            return
         duvod = self._zapni_plan()
         if duvod:
             self._trvala_hlaska(

@@ -6,6 +6,11 @@ Soubor je YAML slovník, kde každý klíč popisuje jeden obchod. Aplikace
 a to jen ze tří údajů: tickeru, vstupní ceny podkladu a cílové ceny
 podkladu. Ostatní pole souboru patří jinému nástroji a ignorují se.
 
+Vedle obchodů může na kořenové úrovni stát sekce Options s volbami celého
+souboru. Volba trading v ní říká, zda se v den souboru obchoduje
+(enabled), nebo ne (disabled) - o víkendu, svátcích a bank holidays
+rozhoduje nástroj, který soubor vytváří.
+
 Modul je záměrně bez závislosti na TWS i na uživatelském rozhraní, takže
 jej lze testovat samostatně - stejně jako výpočty v calc.py.
 """
@@ -26,6 +31,14 @@ PLUS_SUFFIX = "+"
 FIELD_SYMBOL = "symbol"
 FIELD_ENTRY = "entry_price"
 FIELD_TARGET = "target_price"
+
+# Sekce voleb celého souboru na kořenové úrovni. Klíč sekce i jejích voleb
+# se porovnává bez ohledu na velikost písmen a okolní mezery
+OPTIONS_KEY = "Options"
+# Volba sekce Options, zda se v den souboru obchoduje, a její hodnoty
+OPTION_TRADING = "trading"
+TRADING_ENABLED = "enabled"
+TRADING_DISABLED = "disabled"
 
 
 @dataclass
@@ -65,12 +78,16 @@ class ImportResult:
     """
     Výsledek načtení souboru.
 
-    positions - použitelné pozice v pořadí ze souboru
-    warnings  - popisy položek, které se načíst nepodařilo (a proč)
+    positions       - použitelné pozice v pořadí ze souboru
+    warnings        - popisy položek, které se načíst nepodařilo (a proč)
+    trading_enabled - zda se v den souboru obchoduje (Options -> trading);
+                      soubor bez sekce Options obchodování povoluje.
+                      Se zákazem zůstávají positions i warnings prázdné
     """
 
     positions: list[ImportedPosition] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    trading_enabled: bool = True
 
 
 def _to_price(value: Any, popis: str) -> float:
@@ -113,14 +130,54 @@ def _position_from_item(key: str, data: Any) -> ImportedPosition:
     return ImportedPosition(key=key, symbol=symbol, entry_price=entry, target_price=target)
 
 
+def _trading_enabled(options: Any) -> bool:
+    """
+    Zjistí ze sekce Options, zda se v den souboru obchoduje.
+
+    Prázdná sekce i sekce bez volby trading obchodování povolují - stejně
+    jako soubor, který sekci vůbec nemá. Vadnou sekci či hodnotu ale
+    odmítne ValueError a soubor se nenačte: překlep v zákazu obchodování
+    by se jinak tiše vyložil jako povolení.
+
+    options - obsah sekce Options ze souboru
+    """
+    if options is None:
+        return True
+    if not isinstance(options, dict):
+        raise ValueError(
+            f"Sekce {OPTIONS_KEY} musí být slovník voleb ve tvaru „název: hodnota“."
+        )
+
+    # Klíče voleb se porovnávají bez ohledu na velikost písmen a mezery
+    volby = {str(klic).strip().lower(): hodnota for klic, hodnota in options.items()}
+    if OPTION_TRADING not in volby:
+        return True
+
+    # Platí jen dvě hodnoty; prázdná volba („trading:") či ano/ne v podobě
+    # YAML booleanu je stejná chyba jako překlep
+    hodnota = volby[OPTION_TRADING]
+    text = hodnota.strip().lower() if isinstance(hodnota, str) else None
+    if text == TRADING_ENABLED:
+        return True
+    if text == TRADING_DISABLED:
+        return False
+    raise ValueError(
+        f"Neplatná hodnota {OPTIONS_KEY} → {OPTION_TRADING}: {hodnota!r} "
+        f"(povoleno {TRADING_ENABLED} nebo {TRADING_DISABLED})."
+    )
+
+
 def parse_positions(text: str) -> ImportResult:
     """
     Načte pozice z obsahu souboru se zadáním obchodního dne.
 
     Bere jen položky s klíčem končícím plusem. Vadná položka celé načtení
     nezastaví - přeskočí se a důvod se vrátí mezi varováními, aby zbytek
-    souboru zůstal použitelný. Nečitelný soubor nebo soubor zcela bez
-    „plus" položek vyvolá ValueError.
+    souboru zůstal použitelný. Sekce Options na kořenové úrovni obchodem
+    není; její volba trading se vrátí v trading_enabled a soubor se
+    zákazem obchodování nevrátí žádnou pozici. Nečitelný soubor,
+    vadná sekce Options nebo soubor, který obchodování povoluje, ale nemá
+    jedinou „plus" položku, vyvolá ValueError.
     """
     try:
         data = yaml.safe_load(text)
@@ -134,8 +191,17 @@ def parse_positions(text: str) -> ImportResult:
 
     vysledek = ImportResult()
     nalezeno = 0
+    sekce_voleb = False
     for key, item in data.items():
         nazev = str(key).strip()
+        # Sekce voleb celého souboru. Dvojí výskyt (například Options
+        # i options) by mohl říkat dvě různé věci - nehádá se, která platí
+        if nazev.lower() == OPTIONS_KEY.lower():
+            if sekce_voleb:
+                raise ValueError(f"Sekce {OPTIONS_KEY} je v souboru vícekrát.")
+            sekce_voleb = True
+            vysledek.trading_enabled = _trading_enabled(item)
+            continue
         if not nazev.endswith(PLUS_SUFFIX):
             continue
         nalezeno += 1
@@ -144,6 +210,10 @@ def parse_positions(text: str) -> ImportResult:
         except ValueError as exc:
             vysledek.warnings.append(f"{nazev}: {exc}")
 
+    # Zákaz obchodování platí pro celý soubor - pozice ani přeskočené
+    # položky nejsou k ničemu a soubor nemusí žádný obchod obsahovat
+    if not vysledek.trading_enabled:
+        return ImportResult(trading_enabled=False)
     if nalezeno == 0:
         raise ValueError(
             "Soubor neobsahuje žádnou položku s klíčem končícím plusem "

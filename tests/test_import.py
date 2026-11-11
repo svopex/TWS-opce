@@ -13,7 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.fake_ib import FakeIBService
-from tests.zaklad import BURZA, HODINY_THANKSGIVING, ZakladEnginu, svicka
+from tests.zaklad import BURZA, ZakladEnginu, svicka
 from tws_opce import import_dialog, importer
 from tws_opce.config import AppConfig, validate_config
 from tws_opce.engine import FlowEngine
@@ -140,6 +140,10 @@ SPY Short+:
 """
 
 
+# Sekce Options, která v den souboru obchodování zakazuje
+ZAKAZ = "Options:\n  trading: disabled\n"
+
+
 class TestNacteniPozic(unittest.TestCase):
     """Výběr položek ze souboru a převod na pozice."""
 
@@ -248,6 +252,78 @@ class TestNecitelnySoubor(unittest.TestCase):
         with self.assertRaises(ValueError) as chyba:
             importer.parse_positions("A+:\n  symbol: [nedokoncene\n")
         self.assertIn("YAML", str(chyba.exception))
+
+
+class TestSekceOptions(unittest.TestCase):
+    """
+    Sekce Options na kořenové úrovni souboru: volba trading říká, zda se
+    v den souboru obchoduje. Sama obchodem není a soubor se zákazem
+    obchodování nemusí obsahovat žádnou položku.
+    """
+
+    def test_bez_sekce_se_obchoduje(self):
+        # Starší soubory sekci nemají - obchodují jako dosud
+        self.assertTrue(importer.parse_positions(SOUBOR).trading_enabled)
+
+    def test_trading_enabled(self):
+        vysledek = importer.parse_positions("Options:\n  trading: enabled\n" + SOUBOR)
+        self.assertTrue(vysledek.trading_enabled)
+        # Sekce se nebere jako obchod ani jako přeskočená položka
+        self.assertEqual([p.key for p in vysledek.positions], ["AMZN Long+", "SPY Short+"])
+        self.assertEqual(vysledek.warnings, [])
+
+    def test_trading_disabled(self):
+        vysledek = importer.parse_positions(ZAKAZ + SOUBOR)
+        self.assertFalse(vysledek.trading_enabled)
+        # Se zákazem soubor nevrací nic k obchodování ani přeskočené položky
+        self.assertEqual(vysledek.positions, [])
+        self.assertEqual(vysledek.warnings, [])
+
+    def test_sekce_kdekoliv_v_souboru(self):
+        vysledek = importer.parse_positions(SOUBOR + "\nOptions:\n  trading: disabled\n")
+        self.assertFalse(vysledek.trading_enabled)
+
+    def test_velikost_pismen_a_mezery_nerozhoduji(self):
+        vysledek = importer.parse_positions(
+            "options:\n  Trading: ' Disabled '\n" + SOUBOR
+        )
+        self.assertFalse(vysledek.trading_enabled)
+
+    def test_zakaz_bez_jedine_polozky_projde(self):
+        # Soubor dne bez obchodování nemusí žádný obchod obsahovat
+        vysledek = importer.parse_positions(ZAKAZ)
+        self.assertFalse(vysledek.trading_enabled)
+        self.assertEqual(vysledek.positions, [])
+
+    def test_povoleni_bez_jedine_polozky_neprojde(self):
+        with self.assertRaises(ValueError) as chyba:
+            importer.parse_positions("Options:\n  trading: enabled\n")
+        self.assertIn("plusem", str(chyba.exception))
+
+    def test_sekce_bez_volby_trading_obchoduje(self):
+        for sekce in ("Options:\n", "Options:\n  jina_volba: 1\n"):
+            with self.subTest(sekce=sekce):
+                self.assertTrue(importer.parse_positions(sekce + SOUBOR).trading_enabled)
+
+    def test_neplatna_hodnota_soubor_odmitne(self):
+        # Překlep i YAML boolean by se jinak mohl tiše vyložit jako povolení
+        for hodnota in ("disable", "false", "no", "", "[disabled]"):
+            with self.subTest(hodnota=hodnota):
+                with self.assertRaises(ValueError) as chyba:
+                    importer.parse_positions(f"Options:\n  trading: {hodnota}\n" + SOUBOR)
+                self.assertIn("trading", str(chyba.exception))
+
+    def test_sekce_neni_slovnik(self):
+        with self.assertRaises(ValueError) as chyba:
+            importer.parse_positions("Options: disabled\n" + SOUBOR)
+        self.assertIn("Options", str(chyba.exception))
+
+    def test_dvoji_sekce_soubor_odmitne(self):
+        with self.assertRaises(ValueError) as chyba:
+            importer.parse_positions(
+                "Options:\n  trading: enabled\noptions:\n  trading: disabled\n" + SOUBOR
+            )
+        self.assertIn("vícekrát", str(chyba.exception))
 
 
 class TestCilZProcent(unittest.TestCase):
@@ -1200,8 +1276,6 @@ class TestVarovaniNaSpojeni(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = AppConfig()
         self.cfg.state.enabled = False
-        # Test běží se skutečnými hodinami - o víkendu by plán nešel zapnout
-        self.cfg.import_.plan_trading_days_only = False
         self.ib = FakeIBService(self.cfg)
         self.engine = FlowEngine(self.cfg, self.ib)
         self.dialog = ImportDialog(self.cfg, self.engine, self.ib)
@@ -1414,11 +1488,6 @@ class ZakladPlanu(ZakladEnginu):
         self.assertFalse(self.dialog.plan_bezi)
         self.assertFalse(self.dialog.plan_aktivni)
 
-    def udalosti(self) -> str:
-        """Všechny zápisy průběhu enginu v jednom textu."""
-        return " | ".join(zprava for _, zprava in self.engine.events)
-
-
 class TestPlanBezOkna(ZakladPlanu):
     """
     Naplánované zadání žije ve sdíleném stavu na serveru - doběhne i bez
@@ -1428,6 +1497,14 @@ class TestPlanBezOkna(ZakladPlanu):
     async def test_plan_se_spusti_ze_serverove_obnovy(self):
         await self.spust_plan()
         self.assertEqual(self.kroky, ["priprava", "zadani"])
+
+    def test_plan_se_zapne_pred_otevrenim_trhu(self):
+        # Plán jde zapnout jen s vyplněným cílem; výběr řádků se obchází
+        self.dialog._zadana_hodnota = lambda: 30.0
+        self.dialog._k_zadani = lambda: self.dialog.radky
+        self.podvrhni_cas_burzy(8, 0)
+        self.assertIsNone(self.dialog._zapni_plan())
+        self.assertTrue(self.dialog.plan_aktivni)
 
     def test_znovuotevreni_dialogu_nemeni_vyber_planu(self):
         radek = self.dialog.radky[0]
@@ -1440,74 +1517,6 @@ class TestPlanBezOkna(ZakladPlanu):
         self.dialog.plan_aktivni = False
         self.dialog.pri_otevreni()
         self.assertFalse(radek.vybrano.value)
-
-
-class TestPlanJenVObchodniDen(ZakladPlanu):
-    """
-    Zadání po otevření trhu obchoduje jen v řádný obchodní den - ne ve
-    svátek, ve zkrácený obchodní den ani v bank holiday. Plán na takový
-    den nejde zapnout, a zapnutý se těsně před zadáním zruší.
-    """
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.cfg.import_.plan_trading_days_only = True
-        self.ib.liquid_hours_text = HODINY_THANKSGIVING
-        # Plán jde zapnout jen s vyplněným cílem; výběr řádků se obchází
-        self.dialog._zadana_hodnota = lambda: 30.0
-        self.dialog._k_zadani = lambda: self.dialog.radky
-
-    async def test_ve_zkraceny_den_plan_nezada_nic(self):
-        self.podvrhni_cas_burzy(9, 30, den=27, mesic=11)
-        await self.spust_plan()
-        self.assertEqual(self.kroky, [])
-        self.assertIn(
-            "neproběhlo: 27.11.2026 se neobchoduje - zkrácené obchodování "
-            "(burza zavírá v 13:00)",
-            self.udalosti(),
-        )
-        # Trvalá hláška nezmizí sama
-        self.assertEqual(self.dialog._oznam.call_args.kwargs.get("timeout"), 0)
-
-    async def test_v_bezny_den_plan_zada(self):
-        self.podvrhni_cas_burzy(9, 30, den=30, mesic=11)
-        await self.spust_plan()
-        self.assertEqual(self.kroky, ["priprava", "zadani"])
-
-    async def test_neoverene_hodiny_plan_nezada(self):
-        # TWS obchodní hodiny nevydal a žádné dřív načtené den nepokrývají
-        self.ib.liquid_hours_text = ""
-        self.podvrhni_cas_burzy(9, 30, den=30, mesic=11)
-        await self.spust_plan()
-        self.assertEqual(self.kroky, [])
-        self.assertIn("nepodařilo načíst", self.udalosti())
-
-    async def test_vypnuta_kontrola_zada_i_ve_zkraceny_den(self):
-        self.cfg.import_.plan_trading_days_only = False
-        self.podvrhni_cas_burzy(9, 30, den=27, mesic=11)
-        await self.spust_plan()
-        self.assertEqual(self.kroky, ["priprava", "zadani"])
-
-    async def test_na_znamy_zkraceny_den_plan_nejde_zapnout(self):
-        # Čtvrtek večer: další otevření je v pátek, o kterém hodiny z TWS
-        # (načtené smyčkou) už vědí, že je zkrácený
-        await self.engine._load_trading_hours()
-        self.podvrhni_cas_burzy(18, 0, den=26, mesic=11)
-        duvod = self.dialog._zapni_plan()
-        self.assertIn("27.11.2026 se neobchoduje - zkrácené obchodování", duvod)
-        self.assertFalse(self.dialog.plan_aktivni)
-
-    def test_na_bank_holiday_plan_nejde_zapnout(self):
-        # Pátek večer: další otevření je o Columbus Day - bez hodin z TWS
-        self.podvrhni_cas_burzy(17, 0, den=9, mesic=10)
-        duvod = self.dialog._zapni_plan()
-        self.assertIn("12.10.2026 se neobchoduje - bank holiday (Columbus Day)", duvod)
-        self.assertFalse(self.dialog.plan_aktivni)
-
-    def test_na_bezny_den_se_plan_zapne(self):
-        self.podvrhni_cas_burzy(17, 0, den=12, mesic=10)
-        self.assertIsNone(self.dialog._zapni_plan())
-        self.assertTrue(self.dialog.plan_aktivni)
 
 
 class TestObnovaPoRestartu(unittest.TestCase):
@@ -1760,6 +1769,50 @@ class TestNacitaniPodleKonfigurace(unittest.TestCase):
         self.assertEqual(self.dialog._oznam.call_args.kwargs.get("timeout"), 0)
         # Další pokus až příští obchodní den
         self.assertIn("20261022.yaml", self.dialog.nacitani_popis())
+
+    def test_soubor_se_zakazem_obchodovani_plan_nezapne(self):
+        (self.adresar / "20261021.yaml").write_text(
+            ZAKAZ + SOUBOR, "utf-8"
+        )
+        self.dialog._prepni_nacitani()
+        self.ted = self.ted.replace(minute=15)
+        self.dialog.refresh()
+        # Pozice se do tabulky nedostanou - nejde nic zadat ani naplánovat
+        self.assertEqual(self.dialog.radky, [])
+        self.assertFalse(self.dialog.plan_aktivni)
+        self.assertFalse(self.dialog.zadat_button.enabled)
+        self.assertFalse(self.dialog.plan_button.enabled)
+        self.assertIn("zakazuje obchodování", self.dialog.soubor_label.text)
+        self.assertIn("zakazuje obchodování", self.udalosti())
+        # Den bez obchodování není chyba, hláška proto nezůstává trvale
+        self.assertNotEqual(self.dialog._oznam.call_args.kwargs.get("timeout"), 0)
+        # Další načtení je zítra jako po každém jiném souboru
+        self.assertIn("20261022.yaml", self.dialog.nacitani_popis())
+
+    def test_zakaz_obchodovani_zrusi_drive_zapnuty_plan(self):
+        self.dialog._prepni_nacitani()
+        self.ted = self.ted.replace(minute=15)
+        self.dialog.refresh()
+        self.assertTrue(self.dialog.plan_aktivni)
+        # Ručně vybraný soubor téhož dne obchodování zakazuje
+        self.dialog._nacti_pozice(
+            importer.parse_positions(ZAKAZ), "20261021.yaml"
+        )
+        self.assertFalse(self.dialog.plan_aktivni)
+        self.assertEqual(self.dialog.radky, [])
+
+    def test_zakaz_obchodovani_vrati_i_restart(self):
+        self.cfg.state.enabled = True
+        self.dialog._nacti_pozice(
+            importer.parse_positions(ZAKAZ + SOUBOR),
+            "20261021.yaml",
+        )
+        self.dialog._uloz()
+        obnoveny = self.novy_dialog()
+        obnoveny.obnov()
+        self.assertEqual(obnoveny.radky, [])
+        self.assertIn("zakazuje obchodování", obnoveny.soubor_label.text)
+        self.assertFalse(obnoveny.zadat_button.enabled)
 
     def test_vypnuti_nacitani(self):
         self.dialog._prepni_nacitani()

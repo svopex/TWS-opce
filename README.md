@@ -1076,6 +1076,43 @@ se přeskočí. Vadná položka (chybějící ticker či cena, cíl shodný se v
 načtení nezastaví — přeskočí se a důvod se vypíše nad tabulkou, aby zbytek
 souboru zůstal použitelný.
 
+### Obchodovat, nebo ne — sekce `Options`
+
+Zda se v den souboru obchoduje, říká **sám soubor**. Na kořenové úrovni
+(vedle položek obchodů, na pořadí nezáleží) může stát sekce `Options`:
+
+```yaml
+Options:
+  trading: disabled
+AMZN Long+:
+  symbol: AMZN
+  entry_price: 272.88
+  target_price: 276.56
+```
+
+| Obsah souboru | Chování |
+|---|---|
+| `trading: enabled` | obchoduje se jako dosud |
+| bez sekce `Options`, nebo sekce bez volby `trading` | obchoduje se (starší soubory sekci nemají) |
+| `trading: disabled` | **neobchoduje se** — pozice se do tabulky nenačtou |
+| jiná hodnota (`disable`, `false`, prázdná…), sekce, která není slovník, nebo sekce dvakrát | soubor se odmítne jako vadný a nenačte se |
+
+Klíč sekce, volby i hodnota se porovnávají bez ohledu na velikost písmen
+(`options`, `Trading: Disabled`). Víkendy, svátky a bank holidays tedy
+řeší nástroj, který soubor vytváří — aplikace sama žádný kalendář svátků
+nemá. Soubor se `trading: disabled` nemusí obsahovat žádnou položku;
+s `enabled` (nebo bez sekce) se soubor bez jediné „plus" položky dál
+odmítne.
+
+Se zákazem obchodování zůstane tabulka prázdná a nad ní stojí
+*soubor zakazuje obchodování (Options → trading: disabled)*. Nejde tedy
+nic zadat ani naplánovat: *Zadat vybrané pozice do trhu* i *Zadat po
+otevření trhu* jsou zakázané a plán zapnutý nad dříve načteným souborem
+se zruší. Načtení podle konfigurace soubor načte, plán nezapne a zapíše to
+do *Průběhu* (běžnou hláškou, nejde o chybu). Stav přežije i restart
+aplikace. Formulář *Zadání obchodu* se zákazu netýká — soubor řídí jen
+tento dialog — a obchody založené dřív běží dál.
+
 Nad tabulkou se volí režim cíle, společný všem načteným pozicím:
 
 - **PT na podkladu v % dráhy k cíli** — PT je cena
@@ -1209,20 +1246,10 @@ pruh s počtem pozic a odpočtem a titulek záložky prohlížeče začíná
 „⚠ TWS NEPŘIPOJEN“. Zapnutí plánu bez spojení navíc ohlásí hláška, která
 sama nezmizí.
 
-Plán obchoduje **jen v řádný obchodní den**. O víkendu, ve svátek burzy,
-ve zkrácený obchodní den (burza zavírá dřív než v `trading.exchange_close_time`,
-například 27.11.2026 ve 13:00) ani v americký bank holiday (Columbus Day,
-Veterans Day a další svátky Federal Reserve) nezadá nic. Svátky a zkrácené
-dny aplikace bere z obchodních hodin, které TWS vydává k tickeru SPY zhruba
-na týden dopředu (americké akcie sdílejí kalendář NYSE); bank holidays
-počítá sama podle pravidel Fedu. Na den, o kterém už ví, že se neobchoduje,
-plán nejde zapnout a hláška řekne proč. Rozhoduje ale až ověření těsně před
-zadáním proti čerstvě načteným obchodním hodinám: vyjde-li, že se dnes
-neobchoduje, plán se zruší s trvalou hláškou a záznamem v *Průběhu*. Nevydá-li
-TWS obchodní hodiny ani tehdy a žádné dřív načtené den nepokrývají, plán
-raději neobchoduje také. Ruční zadání — formulář *Zadání obchodu* i **Zadat
-vybrané pozice do trhu** — se kontrola netýká. Vypíná ji
-`import.plan_trading_days_only`.
+Plán sám žádný kalendář svátků nezná — zda se v daný den obchoduje,
+určuje soubor (viz [sekce `Options`](#obchodovat-nebo-ne--sekce-options)).
+Soubor se zákazem obchodování do tabulky žádnou pozici nedá, takže plán
+nad ním zapnout nejde.
 
 Plán běží v aplikaci, ne v okně prohlížeče: zavření dialogu ani celého
 prohlížeče ho nezastaví a pozice se po otevření trhu zadají i bez otevřené
@@ -1245,9 +1272,9 @@ ručně. Stejně tak se neopakuje plán, který restart přerušil uprostřed
 zadávání — část pozic už může být v trhu.
 
 Tlačítko **Načíst podle konfigurace** vedle *Zadat po otevření trhu* celé
-zadání zautomatizuje. Zapne denní načítání: každý obchodní den (po–pá; ve
-svátek či jiný den bez obchodování se soubor načte, ale plán se nezapne
-nebo nezadá, viz výše) v čase `import.auto_load_time` (výchozí 9:15 v časové zóně
+zadání zautomatizuje. Zapne denní načítání: každý obchodní den (po–pá; se
+`Options` → `trading: disabled` se soubor načte, ale plán se nezapne, viz
+výše) v čase `import.auto_load_time` (výchozí 9:15 v časové zóně
 burzy `trading.exchange_timezone`) se načte soubor
 `<import.auto_load_dir>/<RRRRMMDD>.yaml` s dnešním datem burzy — s výchozím
 adresářem `~/Tmp` tedy například `~/Tmp/20261021.yaml` — a hned se zapne
@@ -1315,7 +1342,6 @@ takže se po otevření nemusí nic přepínat:
 | `refresh_interval`, `refresh_interval_sec` | přepínač *Přepočítávat každých* a pole *Odstup [s]*; platí i pro formulář zadání |
 | `entry_cross_check`, `entry_cross_check_from` | kontrola propásnutého vstupu podle minutových svíček a čas (HH:MM, zóna burzy), od kterého se svíčky procházejí |
 | `auto_load_time`, `auto_load_dir` | čas (HH:MM, zóna burzy, před otevřením) a adresář tlačítka *Načíst podle konfigurace* |
-| `plan_trading_days_only` | *Zadat po otevření trhu* jen v řádný obchodní den — ne o víkendu, ve svátek, ve zkrácený den ani v bank holiday |
 | `max_spread_pct`, `rrr`, `sl_spread_compensated` | totéž co v běžném formuláři; `null` = převzít ze sekce `trading` |
 
 Volby `max_spread_pct`, `rrr` a `sl_spread_compensated` má i formulář
