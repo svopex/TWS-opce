@@ -475,7 +475,7 @@ import:
   # ležet před otevřením burzy (trading.exchange_open_time).
   auto_load_time: "09:25"
   # Adresář se soubory zadání dne; ~ znamená domovský adresář.
-  auto_load_dir: "~/Tmp"
+  auto_load_dir: "~/Applications/ai-robot-watchlist"
 
   # Zadat po otevření trhu (tlačítko i načtení podle konfigurace) jen
   # v řádný obchodní den. O víkendu, ve svátek burzy, ve zkrácený obchodní
